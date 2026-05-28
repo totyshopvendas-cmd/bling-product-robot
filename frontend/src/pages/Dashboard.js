@@ -55,6 +55,10 @@ export default function Dashboard() {
     error: { color: "bg-rose-100 text-rose-700", label: "ERRO" },
   }[stats.robot_state] || { color: "bg-zinc-100 text-zinc-700", label: stats.robot_state };
 
+  const robotTone =
+    stats.robot_state === "running" ? "success" :
+    stats.robot_state === "error" ? "danger" : "default";
+
   return (
     <div className="space-y-8">
       <div>
@@ -96,7 +100,7 @@ export default function Dashboard() {
         <StatCard
           testId="stat-robot"
           icon={Bot}
-          tone={stats.robot_state === "running" ? "success" : stats.robot_state === "error" ? "danger" : "default"}
+          tone={robotTone}
           label="Robô"
           value={<span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-sm ${robotMeta.color}`}>{robotMeta.label}</span>}
           sub={stats.products_processed_today + " processados hoje"}

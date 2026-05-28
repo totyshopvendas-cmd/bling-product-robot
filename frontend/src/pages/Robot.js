@@ -4,6 +4,13 @@ import { logger } from "@/lib/logger";
 import { Play, Square, RefreshCw, Bot, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
+const LOG_DOT_COLORS = {
+  success: "bg-emerald-500",
+  error: "bg-rose-500",
+  warning: "bg-amber-500",
+  info: "bg-zinc-400",
+};
+
 const STATE_META = {
   idle: { label: "Ocioso", color: "bg-zinc-100 text-zinc-700 border-zinc-300" },
   running: { label: "Em execução", color: "bg-emerald-100 text-emerald-700 border-emerald-400" },
@@ -180,11 +187,9 @@ export default function RobotPage() {
           ) : (
             logs.map((log) => (
               <div key={log.id} className="px-6 py-3 flex items-start gap-4 text-sm">
-                <span className={`mt-1 inline-block h-2 w-2 rounded-full flex-shrink-0 ${
-                  log.level === "success" ? "bg-emerald-500" :
-                  log.level === "error" ? "bg-rose-500" :
-                  log.level === "warning" ? "bg-amber-500" : "bg-zinc-400"
-                }`} />
+                <span
+                  className={`mt-1 inline-block h-2 w-2 rounded-full flex-shrink-0 ${LOG_DOT_COLORS[log.level] || LOG_DOT_COLORS.info}`}
+                />
                 <div className="flex-1 min-w-0">
                   <div className="font-mono text-xs text-muted-foreground">
                     {new Date(log.created_at).toLocaleTimeString("pt-BR")}
