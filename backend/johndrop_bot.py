@@ -384,16 +384,35 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
         return False
 
 
-async def _process_one_product(page, dry_run: bool) -> bool:
-    """Process the next pending product card. Returns True if a card was found and handled."""
+async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
+    """Process the next pending product card. Returns True if a card was found and handled.
+    In dry-run, skips cards whose href/sku matches an already-processed product."""
     buttons = await page.query_selector_all(CARD_SELECTOR)
     if not buttons:
         await add_log("info", "Nenhum produto pendente encontrado nesta página")
         return False
 
+    # Pick the first card whose target URL (createv2/<id>) hasn't been processed yet
+    chosen = None
+    for btn in buttons:
+        try:
+            href = await btn.get_attribute("href") or ""
+        except Exception:
+            href = ""
+        if href and href in seen_skus:
+            continue
+        chosen = btn
+        if href:
+            seen_skus.add(href)
+        break
+
+    if chosen is None:
+        await add_log("info", "Não há mais produtos NOVOS nesta página (dry-run já processou todos)")
+        return False
+
     try:
         async with page.expect_navigation(wait_until="networkidle", timeout=60000):
-            await buttons[0].click()
+            await chosen.click()
     except Exception as e:
         await add_log("error", f"Erro ao abrir produto: {e}")
         robot.failed += 1
@@ -409,6 +428,8 @@ async def _process_one_product(page, dry_run: bool) -> bool:
 
     # 3. Clean SKU (only letters, digits, hyphen)
     sku = await _clean_sku_field(page)
+    if sku:
+        seen_skus.add(sku)
 
     # 4. Lookup sale price
     price = await lookup_price(cost)
@@ -470,12 +491,13 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
             await _open_catalog(page)
 
+            seen_skus: set = set()
             processed_count = 0
             while processed_count < max_products:
                 if robot.stop_flag:
                     await add_log("warning", "Robô interrompido")
                     break
-                if not await _process_one_product(page, dry_run):
+                if not await _process_one_product(page, dry_run, seen_skus):
                     break
                 processed_count += 1
         finally:
