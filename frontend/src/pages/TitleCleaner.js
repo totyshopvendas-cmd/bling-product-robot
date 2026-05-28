@@ -3,6 +3,7 @@ import { endpoints } from "@/lib/api";
 import { Sparkles, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 
+const COPY_FEEDBACK_MS = 1500;
 const EXAMPLES = [
   "Caneta Touch Screen Stylus Universal Para Tablet e Celular XLS B125 / A-P18",
   "(KA-1369 (4X AAA)) Carregador de Pilhas com LED + 04 Pilhas AAA Recarregáveis Kapbom KA-1369",
@@ -39,7 +40,7 @@ export default function TitleCleanerPage() {
     await navigator.clipboard.writeText(result.cleaned);
     setCopied(true);
     toast.success("Título copiado");
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
   };
 
   return (

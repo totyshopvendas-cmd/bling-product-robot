@@ -16,6 +16,8 @@ const NAV = [
   { to: "/configuracoes", icon: SettingsIcon, label: "Configurações" },
 ];
 
+const STATUS_POLL_INTERVAL_MS = 4000;
+
 const STATE_LABEL = {
   idle: { label: "Ocioso", color: "bg-zinc-400", dotColor: "bg-zinc-400" },
   running: { label: "Em execução", color: "bg-emerald-500", dotColor: "bg-emerald-500" },

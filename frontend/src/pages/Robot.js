@@ -11,6 +11,8 @@ const LOG_DOT_COLORS = {
   info: "bg-zinc-400",
 };
 
+const POLL_INTERVAL_MS = 2500;
+
 const STATE_META = {
   idle: { label: "Ocioso", color: "bg-zinc-100 text-zinc-700 border-zinc-300" },
   running: { label: "Em execução", color: "bg-emerald-100 text-emerald-700 border-emerald-400" },
@@ -39,7 +41,7 @@ export default function RobotPage() {
 
   useEffect(() => {
     tick();
-    const timer = setInterval(tick, 2500);
+    const timer = setInterval(tick, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [tick]);
 

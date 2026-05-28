@@ -3,9 +3,11 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API_BASE = `${BACKEND_URL}/api`;
 
+const API_TIMEOUT_MS = 60000;
+
 export const api = axios.create({
   baseURL: API_BASE,
-  timeout: 60000,
+  timeout: API_TIMEOUT_MS,
 });
 
 export const endpoints = {

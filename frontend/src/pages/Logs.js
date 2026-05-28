@@ -11,6 +11,8 @@ const LEVEL_COLORS = {
   info: "bg-zinc-50 border-zinc-200 text-zinc-700",
 };
 
+const AUTO_REFRESH_INTERVAL_MS = 4000;
+
 export default function LogsPage() {
   const [logs, setLogs] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -26,7 +28,7 @@ export default function LogsPage() {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 4000);
+    const timer = setInterval(load, AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [load]);
 
