@@ -9,7 +9,7 @@ import { Link } from "react-router-dom";
 const StatCard = ({ icon: Icon, label, value, sub, tone = "default", testId }) => {
   const tones = {
     default: "border-border",
-    primary: "border-[#002FA7]",
+    primary: "border-[#EE7B22]",
     success: "border-emerald-500",
     danger: "border-rose-500",
   };
@@ -132,9 +132,9 @@ export default function Dashboard() {
         <Link
           to="/robo"
           data-testid="action-go-robot"
-          className="border border-border bg-white p-6 hover:border-[#002FA7] transition-colors"
+          className="border border-border bg-white p-6 hover:border-[#EE7B22] transition-colors"
         >
-          <Bot className="h-5 w-5 mb-3 text-[#002FA7]" strokeWidth={2} />
+          <Bot className="h-5 w-5 mb-3 text-[#EE7B22]" strokeWidth={2} />
           <div className="font-display font-bold text-lg mb-1">Executar Robô</div>
           <p className="text-sm text-muted-foreground">
             Inicia o robô que limpa títulos automaticamente, busca preços na tabela e cadastra produtos no JohnDrop.
@@ -143,9 +143,9 @@ export default function Dashboard() {
         <Link
           to="/limpeza"
           data-testid="action-go-cleaner"
-          className="border border-border bg-white p-6 hover:border-[#002FA7] transition-colors"
+          className="border border-border bg-white p-6 hover:border-[#EE7B22] transition-colors"
         >
-          <Activity className="h-5 w-5 mb-3 text-[#002FA7]" strokeWidth={2} />
+          <Activity className="h-5 w-5 mb-3 text-[#EE7B22]" strokeWidth={2} />
           <div className="font-display font-bold text-lg mb-1">Testar Limpeza de Título</div>
           <p className="text-sm text-muted-foreground">
             Cole um título cru do fornecedor e veja o título limpo seguindo as regras (máx 60 chars, código no final).

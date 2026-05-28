@@ -123,7 +123,7 @@ export default function RobotPage() {
               max={100}
               value={maxProducts}
               onChange={(e) => setMaxProducts(e.target.value)}
-              className="w-full text-sm border border-border rounded-sm px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
             />
           </div>
           <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -142,7 +142,7 @@ export default function RobotPage() {
               data-testid="start-robot-btn"
               onClick={start}
               disabled={status?.state === "running"}
-              className="w-full bg-[#002FA7] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#00227A] disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              className="w-full bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center justify-center gap-2"
             >
               <Play className="h-4 w-4" />
               Iniciar Robô

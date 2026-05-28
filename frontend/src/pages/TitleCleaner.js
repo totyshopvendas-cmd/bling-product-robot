@@ -61,7 +61,7 @@ export default function TitleCleanerPage() {
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
             rows={5}
-            className="w-full text-sm border border-border rounded-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#002FA7] font-mono"
+            className="w-full text-sm border border-border rounded-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#EE7B22] font-mono"
           />
           <div className="mt-3 grid grid-cols-2 gap-3">
             <div>
@@ -72,7 +72,7 @@ export default function TitleCleanerPage() {
                 value={sku}
                 onChange={(e) => setSku(e.target.value)}
                 placeholder="ex: KA-1369"
-                className="w-full text-sm border border-border rounded-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
+                className="w-full text-sm border border-border rounded-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
               />
             </div>
             <label className="flex items-end gap-2 text-sm pb-2 cursor-pointer">
@@ -92,7 +92,7 @@ export default function TitleCleanerPage() {
               data-testid="clean-btn"
               onClick={onClean}
               disabled={loading}
-              className="bg-[#002FA7] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#00227A] disabled:opacity-50 inline-flex items-center gap-2"
+              className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
             >
               <Sparkles className="h-4 w-4" />
               {loading ? "Processando…" : "Limpar Título"}
@@ -110,7 +110,7 @@ export default function TitleCleanerPage() {
                   key={ex}
                   data-testid={`example-${ex.slice(0, 15)}`}
                   onClick={() => setRaw(ex)}
-                  className="block w-full text-left text-xs px-3 py-2 border border-border rounded-sm hover:border-[#002FA7] hover:bg-zinc-50 truncate font-mono"
+                  className="block w-full text-left text-xs px-3 py-2 border border-border rounded-sm hover:border-[#EE7B22] hover:bg-zinc-50 truncate font-mono"
                   title={ex}
                 >
                   {ex}
@@ -127,7 +127,7 @@ export default function TitleCleanerPage() {
               <button
                 data-testid="copy-btn"
                 onClick={copyResult}
-                className="text-xs flex items-center gap-1 text-zinc-600 hover:text-[#002FA7]"
+                className="text-xs flex items-center gap-1 text-zinc-600 hover:text-[#EE7B22]"
               >
                 {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                 {copied ? "Copiado" : "Copiar"}

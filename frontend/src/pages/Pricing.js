@@ -91,7 +91,7 @@ export default function PricingPage() {
             data-testid="pricing-upload-btn"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="bg-[#002FA7] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#00227A] disabled:opacity-50 inline-flex items-center gap-2"
+            className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
           >
             <Upload className="h-4 w-4" />
             {uploading ? "Importando…" : "Selecionar CSV"}
@@ -115,12 +115,12 @@ export default function PricingPage() {
             value={lookup.cost}
             onChange={(e) => setLookup(l => ({ ...l, cost: e.target.value }))}
             placeholder="Custo do catálogo (ex: 21.99)"
-            className="flex-1 text-sm border border-border rounded-sm px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
+            className="flex-1 text-sm border border-border rounded-sm px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
           />
           <button
             data-testid="lookup-btn"
             type="submit"
-            className="bg-[#002FA7] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#00227A]"
+            className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A]"
           >
             Consultar
           </button>

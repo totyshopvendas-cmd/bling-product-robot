@@ -122,7 +122,7 @@ export default function SettingsPage() {
           <button
             data-testid="connect-bling-btn"
             onClick={connectBling}
-            className="bg-[#002FA7] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#00227A] inline-flex items-center gap-2"
+            className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] inline-flex items-center gap-2"
           >
             <Link2 className="h-4 w-4" /> Conectar Bling
           </button>
@@ -157,7 +157,7 @@ export default function SettingsPage() {
               value={creds.username}
               onChange={(e) => setCreds((c) => ({ ...c, username: e.target.value }))}
               placeholder="email@exemplo.com"
-              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
             />
           </div>
           <div>
@@ -168,7 +168,7 @@ export default function SettingsPage() {
               value={creds.password}
               onChange={(e) => setCreds((c) => ({ ...c, password: e.target.value }))}
               placeholder={jd.configured ? "•••••••• (preencha para alterar)" : "Senha JohnDrop"}
-              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#002FA7]"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
             />
           </div>
         </div>
@@ -182,7 +182,7 @@ export default function SettingsPage() {
           data-testid="save-jd-btn"
           type="submit"
           disabled={saving}
-          className="bg-[#002FA7] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#00227A] disabled:opacity-50 inline-flex items-center gap-2"
+          className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
         >
           <Save className="h-4 w-4" />
           {saving ? "Salvando…" : "Salvar Credenciais"}

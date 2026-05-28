@@ -71,7 +71,7 @@ export default function LogsPage() {
             data-testid={`filter-${f}`}
             onClick={() => setFilter(f)}
             className={`text-xs px-3 py-1.5 rounded-sm border uppercase font-semibold tracking-wider ${
-              filter === f ? "bg-[#002FA7] text-white border-[#002FA7]" : "border-border hover:bg-zinc-50"
+              filter === f ? "bg-[#EE7B22] text-white border-[#EE7B22]" : "border-border hover:bg-zinc-50"
             }`}
           >
             {f === "all" ? "Todos" : f}

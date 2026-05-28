@@ -51,12 +51,17 @@ export default function Layout({ children }) {
         data-testid="app-sidebar"
         className={`${open ? "fixed inset-y-0 left-0 z-40" : "hidden"} md:flex md:static w-64 flex-col border-r border-border bg-white`}
       >
-        <div className="flex items-center gap-3 px-6 py-5 border-b border-border">
-          <div className="h-8 w-8 rounded-sm bg-[#002FA7] grid place-items-center text-white font-display font-extrabold text-sm">
-            TS
-          </div>
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
+          <img
+            src="https://customer-assets.emergentagent.com/job_bling-product-robot/artifacts/r2hhfsdn_TotyShop%20%201080x1080.jpg"
+            alt="TotyShop"
+            className="h-11 w-11 rounded-sm object-cover"
+            data-testid="brand-logo"
+          />
           <div>
-            <div className="font-display font-bold tracking-tight text-base leading-none">TotyShop</div>
+            <div className="font-display font-bold tracking-tight text-base leading-none">
+              <span className="text-zinc-900">Toty</span><span className="text-[#EE7B22]">Shop</span>
+            </div>
             <div className="label-overline mt-1">Automação</div>
           </div>
         </div>
@@ -72,7 +77,7 @@ export default function Layout({ children }) {
                 onClick={() => setOpen(false)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-sm text-sm transition-colors ${
                   active
-                    ? "bg-[#002FA7] text-white"
+                    ? "bg-[#EE7B22] text-white"
                     : "text-zinc-700 hover:bg-zinc-100"
                 }`}
               >

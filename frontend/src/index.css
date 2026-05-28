@@ -14,7 +14,8 @@
         --card-foreground: 240 10% 4%;
         --popover: 0 0% 100%;
         --popover-foreground: 240 10% 4%;
-        --primary: 224 100% 33%; /* Klein Blue #002FA7 */
+        --primary: 24 86% 53%; /* TotyShop Orange #EE7B22 */
+        --primary-hover: 22 78% 45%;
         --primary-foreground: 0 0% 100%;
         --secondary: 240 5% 96%;
         --secondary-foreground: 240 10% 4%;
@@ -26,8 +27,11 @@
         --destructive-foreground: 0 0% 100%;
         --border: 240 6% 90%;
         --input: 240 6% 90%;
-        --ring: 224 100% 33%;
+        --ring: 24 86% 53%;
         --radius: 0.25rem;
+        --brand-orange: #EE7B22;
+        --brand-orange-hover: #C9651A;
+        --brand-black: #0F0F10;
     }
 }
 
