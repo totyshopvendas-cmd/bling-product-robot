@@ -1,0 +1,93 @@
+{
+  "project_name": "TotyShop Automation Dashboard",
+  "theme": "LIGHT",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "language": "pt-BR",
+  "design_philosophy": "Swiss Grid-first layout, rigorous high-contrast typography, monochrome base with vivid accents for statuses. No playful elements. Designed for speed, data density, and trust.",
+  "colors": {
+    "background": "#FFFFFF",
+    "surface": "#FAFAFA",
+    "surface_secondary": "#F4F4F5",
+    "text_primary": "#09090B",
+    "text_secondary": "#52525B",
+    "border": "#E4E4E7",
+    "primary": "#002FA7",
+    "primary_hover": "#00227A",
+    "primary_foreground": "#FFFFFF",
+    "status": {
+      "success": "#10B981",
+      "success_bg": "#D1FAE5",
+      "error": "#E11D48",
+      "error_bg": "#FFE4E6",
+      "warning": "#F59E0B",
+      "warning_bg": "#FEF3C7",
+      "idle": "#9CA3AF",
+      "idle_bg": "#F3F4F6"
+    }
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "rules": [
+      "Headings must use tight letter spacing (tracking-tight).",
+      "Overlines/Labels must be uppercase, tiny, wide spacing (tracking-[0.2em]).",
+      "No Inter or Roboto."
+    ],
+    "scales": {
+      "h1": "text-3xl font-bold tracking-tighter",
+      "h2": "text-2xl font-semibold tracking-tight",
+      "h3": "text-lg font-medium",
+      "body": "text-sm leading-relaxed",
+      "label": "text-xs font-semibold uppercase tracking-[0.2em]"
+    }
+  },
+  "layout_and_spacing": {
+    "grid_system": "MODE B: THE CONTROL ROOM GRID",
+    "spacing_scale": "Generous internal padding for containers (p-6, p-8), tight gaps for data correlation (gap-4, gap-6).",
+    "borders": "1px solid borders (border-border), sharp or max rounded-sm (4px) radii. No soft shadows. Use Grid Borders (The Technical Look).",
+    "surfaces": "Flat Solid. Do not use glassmorphism for this data-heavy admin tool."
+  },
+  "component_strategy": {
+    "ui_library": "shadcn/ui",
+    "tables": "Dense-but-readable. Compact padding, clear 1px bottom dividers, no zebra striping.",
+    "buttons": "Square or rounded-sm. High contrast. Primary uses Klein Blue (#002FA7).",
+    "badges": "Crucial for robot status. Use explicit labels paired with solid background colors (e.g., green for Running, yellow for Paused, gray for Idle).",
+    "forms": "Use Shadcn Form, Input, Select. Left-aligned labels. 1px border for inputs, focus state must have 2px ring of primary color.",
+    "cards": "Modular card system. 1px border, flat background. Highlight key metrics by scale."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use stroke-width 2. Keep icons functional, avoid decorative icons."
+  },
+  "animations": {
+    "style": "Minimalist. Instant feedback. Use subtle hover states (darken background, 1px lift) rather than bouncy effects.",
+    "robot_status": "Use a subtle pulsing dot animation for 'Running' status to indicate live background processing."
+  },
+  "media": [
+    {
+      "category": "logo",
+      "url": "https://static.prod-images.emergentagent.com/jobs/4736fe18-0903-41bd-a7a6-f6350c9385a9/images/471f161f914f4c89f6ebb74bd16017fef3148fa49e6b4673b6a6da40530d4cd1.png",
+      "description": "Minimalist TotyShop logo for the top-left navigation."
+    },
+    {
+      "category": "user_avatar",
+      "url": "https://images.unsplash.com/photo-1560250097-0b93528c311a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2ODh8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBhZG1pbmlzdHJhdG9yJTIwYXZhdGFyJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzc5OTkzNzMyfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Admin user avatar for the top-right profile dropdown."
+    }
+  ],
+  "accessibility_and_testing": {
+    "contrast": "Ensure minimum 4.5:1 ratio for text. Text over status badges must be readable (use dark text on light badge backgrounds).",
+    "test_ids": "All interactive elements MUST include data-testid (e.g., data-testid='connect-bling-btn', data-testid='start-robot-btn')."
+  },
+  "instructions_to_main_agent": [
+    "Build the dashboard using pure React/Tailwind/Shadcn.",
+    "Use 'js' extensions, NOT 'tsx'.",
+    "Implement the 'Control Room' grid for the pending products dashboard.",
+    "Include a real-time robot status panel (Idle/Running/Paused) with visual badges and a pulsing indicator when running.",
+    "Implement a UI section for raw vs cleaned title preview.",
+    "Add a file upload zone for the CSV pricing table.",
+    "Place the 'Conectar Bling' OAuth button prominently in settings or the header.",
+    "Display real-time logs (success/error lists) for product syncs.",
+    "All copy MUST be in Portuguese (Brazil)."
+  ]
+}
