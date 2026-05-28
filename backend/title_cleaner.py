@@ -49,11 +49,6 @@ PAREN_REGEX = re.compile(r"\([^)]*\)")
 # Allowed characters: letters, digits, spaces, and hyphen. Strip everything else.
 ALLOWED_REGEX = re.compile(r"[^\w\s\-áéíóúâêîôûãõàèìòùçÁÉÍÓÚÂÊÎÔÛÃÕÀÈÌÒÙÇ]+", re.UNICODE)
 
-# Words too generic that should be deduped
-REDUNDANT_PAIRS = [
-    ("Touch Screen", "Touch"),
-]
-
 MAX_LEN = 60
 
 

@@ -7,6 +7,11 @@ Designed to fail gracefully if Playwright/Chromium is not installed.
 """
 import asyncio
 import os
+
+# Use shared browser cache if container has one (Emergent provides /pw-browsers)
+if os.path.isdir("/pw-browsers") and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
+
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -36,10 +41,23 @@ async def _get_credentials():
 
 
 async def _playwright_available() -> bool:
+    """Verify both the python package AND the chromium binary are usable."""
     try:
-        from playwright.async_api import async_playwright  # noqa: F401
-        return True
+        from playwright.async_api import async_playwright
     except Exception:
+        return False
+    # Probe: try a quick launch+close. If it fails, fall back to mock.
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            await browser.close()
+        return True
+    except Exception as e:
+        # Log to robot logs so the user sees why
+        await add_log("warning", f"Playwright indisponível — modo MOCKED ativo. ({str(e)[:120]})")
         return False
 
 
@@ -72,9 +90,13 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
     try:
         await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
     except Exception as e:
-        robot.state = "error"
-        robot.message = str(e)
-        await add_log("error", f"Erro fatal no robô: {e}")
+        await add_log("error", f"Playwright falhou ({str(e)[:160]}) — caindo para modo MOCKED")
+        try:
+            await _run_mock(max_products)
+        except Exception as e2:
+            robot.state = "error"
+            robot.message = str(e2)
+            await add_log("error", f"Erro no fallback MOCKED: {e2}")
     finally:
         robot.finished_at = datetime.now(timezone.utc)
         if robot.state == "running":
@@ -142,24 +164,41 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
         # 2. Catalog (filter without_integration)
         await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
         await add_log("info", "Acessando catálogo (não cadastrados)...")
+        # Wait for product cards to render (give JS a chance)
+        try:
+            await page.wait_for_selector(
+                'a[href*="/dashboard/product/createv2/"], a:has-text("Cadastrar Produto"), button:has-text("Cadastrar Produto")',
+                timeout=15000,
+            )
+        except Exception:
+            await add_log("warning", "Selector de produtos não apareceu em 15s — pode estar sem produtos pendentes ou layout mudou")
+            # Dump main content snippet for debugging
+            try:
+                html_snippet = await page.evaluate(
+                    "() => document.querySelector('.content-page, main, body')?.innerText?.slice(0, 600) || ''"
+                )
+                if html_snippet:
+                    await add_log("info", f"Página: {html_snippet[:400]}")
+            except Exception:
+                pass
 
-        # 3. Iterate over product cards — find "Cadastrar Produto" buttons
+        # 3. Iterate over product cards — find "Cadastrar Produto" links
         processed_count = 0
         while processed_count < max_products:
             if robot.stop_flag:
                 await add_log("warning", "Robô interrompido")
                 break
 
-            buttons = await page.query_selector_all('a:has-text("Cadastrar Produto"), button:has-text("Cadastrar Produto")')
+            # Multiple selectors to be robust against UI changes
+            buttons = await page.query_selector_all(
+                'a[href*="/dashboard/product/createv2/"], a:has-text("Cadastrar Produto"), button:has-text("Cadastrar Produto")'
+            )
             if not buttons:
                 await add_log("info", "Nenhum produto pendente encontrado nesta página")
                 break
 
             btn = buttons[0]
-            # Read parent card for raw title & cost
-            card = await btn.evaluate_handle("el => el.closest('.card, .product-card, div')")
             try:
-                # Click cadastrar — opens createv2
                 async with page.expect_navigation(wait_until="networkidle", timeout=60000):
                     await btn.click()
             except Exception as e:
@@ -170,10 +209,17 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                 continue
 
             # 4. On product creation page — extract raw title from input
-            raw_title = await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
-            cost_text = await page.input_value('input[name="cost"], input#cost') or "0"
+            raw_title = (
+                await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
+                if await page.query_selector('input[name="name"], input#name, input[placeholder*="Nome"]')
+                else ""
+            )
+            cost_text = "0"
+            cost_input = await page.query_selector('input[placeholder*="Custo"], input[name="cost"], input#cost')
+            if cost_input:
+                cost_text = await cost_input.input_value() or "0"
             try:
-                cost = float(cost_text.replace(",", "."))
+                cost = float(cost_text.replace(".", "").replace(",", "."))
             except Exception:
                 cost = 0.0
 
