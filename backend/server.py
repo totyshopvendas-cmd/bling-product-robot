@@ -1,89 +1,224 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+"""FastAPI server for TotyShop Automation."""
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
 from datetime import datetime, timezone
 
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query
+from fastapi.responses import RedirectResponse
+from starlette.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from db import db, init_indexes
+from models import (
+    TitleCleanRequest, TitleCleanResponse, PriceLookupResponse,
+    JohnDropCreds, RobotJobConfig, RobotStatusResponse, DashboardStats,
+)
+from title_cleaner import clean_title
+import pricing_service
+import bling_service
+import robot_service
+import johndrop_bot
+from llm_cleaner import llm_clean_title
 
-# Create the main app without a prefix
-app = FastAPI()
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+app = FastAPI(title="TotyShop Automation")
+api = APIRouter(prefix="/api")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+@app.on_event("startup")
+async def _startup():
+    try:
+        await init_indexes()
+    except Exception as e:
+        logger.warning(f"index init: {e}")
+
+
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"app": "TotyShop Automation", "version": "0.1"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+# ---------- Title cleaner ----------
+@api.post("/titles/clean", response_model=TitleCleanResponse)
+async def clean_title_endpoint(payload: TitleCleanRequest):
+    result = clean_title(payload.raw_title, preferred_code=payload.sku)
+    if payload.use_llm_fallback:
+        try:
+            llm = await llm_clean_title(payload.raw_title, code_hint=result.get("code_used") or payload.sku)
+            result["cleaned"] = llm
+            result["length"] = len(llm)
+            result["method"] = "llm"
+        except Exception as e:
+            logger.warning(f"LLM fallback falhou: {e}")
+    return TitleCleanResponse(**result)
 
-# Include the router in the main app
-app.include_router(api_router)
+
+class BatchTitleRequest(BaseModel):
+    items: list[TitleCleanRequest]
+
+
+@api.post("/titles/clean/batch")
+async def clean_titles_batch(payload: BatchTitleRequest):
+    out = []
+    for item in payload.items:
+        result = clean_title(item.raw_title, preferred_code=item.sku)
+        out.append(result)
+    return {"items": out}
+
+
+# ---------- Pricing ----------
+@api.post("/pricing/upload")
+async def upload_pricing(file: UploadFile = File(...)):
+    content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(413, "Arquivo muito grande (>50MB)")
+    res = await pricing_service.import_csv(content)
+    return res
+
+
+@api.get("/pricing/lookup", response_model=PriceLookupResponse)
+async def lookup_price_endpoint(cost: float = Query(...)):
+    return await pricing_service.lookup_price(cost)
+
+
+@api.get("/pricing/stats")
+async def pricing_stats():
+    return await pricing_service.stats()
+
+
+# ---------- Bling OAuth ----------
+@api.get("/bling/authorize-url")
+async def bling_authorize_url(next: str = "/configuracoes"):
+    return {"url": bling_service.build_authorize_url(next)}
+
+
+@api.get("/bling/callback")
+async def bling_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    app_base = os.environ["APP_BASE_URL"]
+    if error:
+        return RedirectResponse(f"{app_base}/configuracoes?bling_error={error}")
+    if not code or not state:
+        return RedirectResponse(f"{app_base}/configuracoes?bling_error=missing_code")
+    try:
+        state_data = bling_service.parse_state(state)
+        tokens = await bling_service.exchange_code(code)
+        await bling_service.save_tokens(tokens)
+        next_path = state_data.get("next", "/configuracoes")
+        return RedirectResponse(f"{app_base}{next_path}?bling=connected")
+    except HTTPException as he:
+        return RedirectResponse(f"{app_base}/configuracoes?bling_error={he.detail}")
+    except Exception as e:
+        return RedirectResponse(f"{app_base}/configuracoes?bling_error={str(e)[:100]}")
+
+
+@api.get("/bling/status")
+async def bling_status():
+    return await bling_service.status()
+
+
+@api.post("/bling/disconnect")
+async def bling_disconnect_ep():
+    await bling_service.disconnect()
+    return {"ok": True}
+
+
+@api.get("/bling/products")
+async def bling_list_products(pagina: int = 1, limite: int = 20):
+    resp = await bling_service.bling_request("GET", "/produtos", params={"pagina": pagina, "limite": limite})
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text)
+    return resp.json()
+
+
+@api.get("/bling/categories")
+async def bling_categories():
+    resp = await bling_service.bling_request("GET", "/categorias/produtos")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text)
+    return resp.json()
+
+
+# ---------- Settings ----------
+@api.post("/settings/johndrop")
+async def set_johndrop_creds(creds: JohnDropCreds):
+    await johndrop_bot.save_johndrop_credentials(creds.username, creds.password)
+    return {"ok": True}
+
+
+@api.get("/settings/johndrop")
+async def get_johndrop_creds_status():
+    creds = await johndrop_bot.get_johndrop_credentials()
+    if not creds:
+        return {"configured": False}
+    return {"configured": True, "username": creds.get("username")}
+
+
+# ---------- Robot ----------
+@api.post("/robot/start", response_model=RobotStatusResponse)
+async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)):
+    if robot_service.robot.state == "running":
+        raise HTTPException(400, "Robô já está em execução")
+    await johndrop_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.post("/robot/stop")
+async def robot_stop():
+    await johndrop_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/robot/status", response_model=RobotStatusResponse)
+async def robot_status():
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.get("/robot/logs")
+async def robot_logs(limit: int = 100):
+    return await robot_service.get_logs(limit)
+
+
+@api.post("/robot/logs/clear")
+async def robot_logs_clear():
+    await robot_service.clear_logs()
+    return {"ok": True}
+
+
+# ---------- Dashboard ----------
+@api.get("/dashboard/stats", response_model=DashboardStats)
+async def dashboard_stats():
+    pricing_count = await db.pricing.count_documents({})
+    bling = await bling_service.status()
+    jd = await johndrop_bot.get_johndrop_credentials()
+    processed = await robot_service.count_logs_today()
+    success = await robot_service.count_logs_today("success")
+    failed = await robot_service.count_logs_today("error")
+    return DashboardStats(
+        pricing_rows=pricing_count,
+        bling_connected=bling.get("connected", False),
+        johndrop_configured=bool(jd),
+        products_processed_today=processed,
+        success_today=success,
+        failed_today=failed,
+        robot_state=robot_service.robot.state,
+    )
+
+
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
