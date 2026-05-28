@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import { Play, Square, RefreshCw, Bot, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
@@ -16,7 +16,7 @@ export default function RobotPage() {
   const [dryRun, setDryRun] = useState(true);
   const [logs, setLogs] = useState([]);
 
-  const tick = async () => {
+  const tick = useCallback(async () => {
     try {
       const [{ data: s }, { data: l }] = await Promise.all([
         endpoints.robotStatus(),
@@ -24,14 +24,16 @@ export default function RobotPage() {
       ]);
       setStatus(s);
       setLogs(l);
-    } catch {}
-  };
+    } catch (err) {
+      console.error("Failed to fetch robot status/logs:", err);
+    }
+  }, []);
 
   useEffect(() => {
     tick();
-    const t = setInterval(tick, 2500);
-    return () => clearInterval(t);
-  }, []);
+    const timer = setInterval(tick, 2500);
+    return () => clearInterval(timer);
+  }, [tick]);
 
   const start = async () => {
     try {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import {
   Activity, Database, KeyRound, Bot, CheckCircle2, AlertTriangle, Cog,
@@ -30,17 +30,20 @@ const StatCard = ({ icon: Icon, label, value, sub, tone = "default", testId }) =
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const { data } = await endpoints.dashboardStats();
-        setStats(data);
-      } catch {}
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+  const load = useCallback(async () => {
+    try {
+      const { data } = await endpoints.dashboardStats();
+      setStats(data);
+    } catch (err) {
+      console.error("Failed to load dashboard stats:", err);
+    }
   }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
 
   if (!stats) return <div className="text-sm text-muted-foreground">Carregando…</div>;
 

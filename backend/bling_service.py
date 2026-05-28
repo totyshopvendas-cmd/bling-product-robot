@@ -137,6 +137,9 @@ async def get_valid_access_token() -> Tuple[str, str]:
     except HTTPException:
         await disconnect()
         raise HTTPException(status_code=400, detail="Falha ao renovar token Bling — reconecte")
+    except Exception as e:
+        await disconnect()
+        raise HTTPException(status_code=400, detail=f"Erro inesperado ao renovar token: {e}")
     await save_tokens(data)
     return data["access_token"], data.get("token_type", "Bearer")
 

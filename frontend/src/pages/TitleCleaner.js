@@ -105,10 +105,10 @@ export default function TitleCleanerPage() {
           <div className="mt-6">
             <div className="label-overline mb-2">Exemplos rápidos</div>
             <div className="space-y-1.5">
-              {EXAMPLES.map((ex, i) => (
+              {EXAMPLES.map((ex) => (
                 <button
-                  key={i}
-                  data-testid={`example-${i}`}
+                  key={ex}
+                  data-testid={`example-${ex.slice(0, 15)}`}
                   onClick={() => setRaw(ex)}
                   className="block w-full text-left text-xs px-3 py-2 border border-border rounded-sm hover:border-[#002FA7] hover:bg-zinc-50 truncate font-mono"
                   title={ex}
@@ -172,9 +172,9 @@ export default function TitleCleanerPage() {
                 <div>
                   <div className="label-overline mb-2">Removidos</div>
                   <div className="flex flex-wrap gap-1.5">
-                    {result.removed_terms.map((t, i) => (
+                    {result.removed_terms.map((t) => (
                       <span
-                        key={i}
+                        key={t}
                         className="text-xs px-2 py-1 bg-rose-50 text-rose-700 rounded-sm border border-rose-200 font-mono"
                       >
                         {t}

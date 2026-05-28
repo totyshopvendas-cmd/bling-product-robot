@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Sparkles, Tags, Bot, ScrollText, Settings as SettingsIcon,
@@ -27,18 +27,20 @@ export default function Layout({ children }) {
   const [robotState, setRobotState] = useState("idle");
   const [open, setOpen] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    const tick = async () => {
-      try {
-        const { data } = await endpoints.robotStatus();
-        if (mounted) setRobotState(data.state);
-      } catch {}
-    };
-    tick();
-    const t = setInterval(tick, 4000);
-    return () => { mounted = false; clearInterval(t); };
+  const fetchStatus = useCallback(async () => {
+    try {
+      const { data } = await endpoints.robotStatus();
+      setRobotState(data.state);
+    } catch (err) {
+      console.error("Failed to fetch robot status:", err);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    const timer = setInterval(fetchStatus, 4000);
+    return () => clearInterval(timer);
+  }, [fetchStatus]);
 
   const meta = STATE_LABEL[robotState] || STATE_LABEL.idle;
 

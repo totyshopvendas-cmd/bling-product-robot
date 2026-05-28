@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { endpoints } from "@/lib/api";
 import { CheckCircle2, Link2, KeyRound, Save, Lock } from "lucide-react";
@@ -23,17 +23,21 @@ export default function SettingsPage() {
     }
   }, [searchParams, setSearchParams]);
 
-  const load = async () => {
-    const [b, j] = await Promise.all([
-      endpoints.blingStatus(),
-      endpoints.getJohnDropStatus(),
-    ]);
-    setBling(b.data);
-    setJd(j.data);
-    if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
-  };
+  const load = useCallback(async () => {
+    try {
+      const [b, j] = await Promise.all([
+        endpoints.blingStatus(),
+        endpoints.getJohnDropStatus(),
+      ]);
+      setBling(b.data);
+      setJd(j.data);
+      if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
+    } catch (err) {
+      console.error("Failed to load settings:", err);
+    }
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const connectBling = async () => {
     try {

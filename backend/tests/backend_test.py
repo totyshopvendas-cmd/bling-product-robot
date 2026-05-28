@@ -139,7 +139,7 @@ class TestPricing:
         r = client.get(f"{API}/pricing/lookup", params={"cost": 21.99})
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["found"] is True
+        assert data["found"] == True
         assert data["cost_cents"] == 2199
         assert data["sale_price_int"] == 5250
         assert data["store_price_brl"] == "52,50"
@@ -148,12 +148,12 @@ class TestPricing:
         # 21.995 (cents 2200) — should round to nearest higher
         r = client.get(f"{API}/pricing/lookup", params={"cost": 21.995})
         assert r.status_code == 200
-        assert r.json()["found"] is True
+        assert r.json()["found"] == True
 
     def test_lookup_far_high_not_found(self, client):
         r = client.get(f"{API}/pricing/lookup", params={"cost": 99999999.99})
         assert r.status_code == 200
-        assert r.json()["found"] is False
+        assert r.json()["found"] == False
 
 
 # ---------- Bling ----------
@@ -173,12 +173,12 @@ class TestBling:
         client.post(f"{API}/bling/disconnect")
         r = client.get(f"{API}/bling/status")
         assert r.status_code == 200
-        assert r.json().get("connected") is False
+        assert r.json().get("connected") == False
 
     def test_disconnect(self, client):
         r = client.post(f"{API}/bling/disconnect")
         assert r.status_code == 200
-        assert r.json().get("ok") is True
+        assert r.json().get("ok") == True
 
 
 # ---------- Settings (JohnDrop) ----------
@@ -187,13 +187,13 @@ class TestJohnDropSettings:
         payload = {"username": "totyshopvendas@gmail.com", "password": "1593572864To@@##$$"}
         r = client.post(f"{API}/settings/johndrop", json=payload)
         assert r.status_code == 200
-        assert r.json().get("ok") is True
+        assert r.json().get("ok") == True
 
     def test_get_creds_status(self, client):
         r = client.get(f"{API}/settings/johndrop")
         assert r.status_code == 200
         data = r.json()
-        assert data["configured"] is True
+        assert data["configured"] == True
         assert data["username"] == "totyshopvendas@gmail.com"
 
 
@@ -257,7 +257,7 @@ class TestRobot:
     def test_stop(self, client):
         r = client.post(f"{API}/robot/stop")
         assert r.status_code == 200
-        assert r.json().get("ok") is True
+        assert r.json().get("ok") == True
 
 
 # ---------- Dashboard ----------

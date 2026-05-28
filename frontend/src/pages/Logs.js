@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import { Trash2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -14,16 +14,20 @@ export default function LogsPage() {
   const [logs, setLogs] = useState([]);
   const [filter, setFilter] = useState("all");
 
-  const load = async () => {
-    const { data } = await endpoints.robotLogs(200);
-    setLogs(data);
-  };
+  const load = useCallback(async () => {
+    try {
+      const { data } = await endpoints.robotLogs(200);
+      setLogs(data);
+    } catch (err) {
+      console.error("Failed to load logs:", err);
+    }
+  }, []);
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
-  }, []);
+    const timer = setInterval(load, 4000);
+    return () => clearInterval(timer);
+  }, [load]);
 
   const clearAll = async () => {
     if (!window.confirm("Limpar todos os logs?")) return;

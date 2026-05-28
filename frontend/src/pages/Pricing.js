@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import { Upload, Search, Database } from "lucide-react";
 import { toast } from "sonner";
@@ -9,12 +9,16 @@ export default function PricingPage() {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
 
-  const load = async () => {
-    const { data } = await endpoints.pricingStats();
-    setStats(data);
-  };
+  const load = useCallback(async () => {
+    try {
+      const { data } = await endpoints.pricingStats();
+      setStats(data);
+    } catch (err) {
+      console.error("Failed to load pricing stats:", err);
+    }
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -162,8 +166,8 @@ export default function PricingPage() {
               </tr>
             </thead>
             <tbody>
-              {[...stats.first, ...stats.last].map((r, i) => (
-                <tr key={i} className="border-b border-border last:border-b-0">
+              {[...stats.first, ...stats.last].map((r) => (
+                <tr key={r.cost_cents} className="border-b border-border last:border-b-0">
                   <td className="px-6 py-2.5 font-mono">{(r.cost_cents / 100).toFixed(2).replace(".", ",")}</td>
                   <td className="px-6 py-2.5 font-mono">R$ {r.store_price_brl}</td>
                   <td className="px-6 py-2.5 font-mono font-semibold">{r.sale_price_int}</td>
