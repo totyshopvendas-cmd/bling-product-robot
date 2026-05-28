@@ -132,6 +132,7 @@ async def get_valid_access_token() -> Tuple[str, str]:
     if expires_at - timedelta(seconds=60) > _now():
         return doc["access_token"], doc.get("token_type", "Bearer")
     # refresh
+    data: dict = {}
     try:
         data = await refresh_tokens(doc["refresh_token"])
     except HTTPException:

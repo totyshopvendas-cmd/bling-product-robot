@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { Trash2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,7 +20,7 @@ export default function LogsPage() {
       const { data } = await endpoints.robotLogs(200);
       setLogs(data);
     } catch (err) {
-      console.error("Failed to load logs:", err);
+      logger.error("Failed to load logs:", err);
     }
   }, []);
 

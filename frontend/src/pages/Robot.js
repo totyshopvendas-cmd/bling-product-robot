@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { Play, Square, RefreshCw, Bot, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -25,7 +26,7 @@ export default function RobotPage() {
       setStatus(s);
       setLogs(l);
     } catch (err) {
-      console.error("Failed to fetch robot status/logs:", err);
+      logger.error("Failed to fetch robot status/logs:", err);
     }
   }, []);
 

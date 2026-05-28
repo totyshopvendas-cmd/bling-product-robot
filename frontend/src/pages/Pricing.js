@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { Upload, Search, Database } from "lucide-react";
 import { toast } from "sonner";
 
@@ -14,7 +15,7 @@ export default function PricingPage() {
       const { data } = await endpoints.pricingStats();
       setStats(data);
     } catch (err) {
-      console.error("Failed to load pricing stats:", err);
+      logger.error("Failed to load pricing stats:", err);
     }
   }, []);
 

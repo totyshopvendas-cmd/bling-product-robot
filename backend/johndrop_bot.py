@@ -13,7 +13,7 @@ if os.path.isdir("/pw-browsers") and not os.environ.get("PLAYWRIGHT_BROWSERS_PAT
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
@@ -137,8 +137,145 @@ async def _run_mock(max_products: int):
     robot.state = "idle"
 
 
+CARD_SELECTOR = (
+    'a[href*="/dashboard/product/createv2/"], '
+    'a:has-text("Cadastrar Produto"), '
+    'button:has-text("Cadastrar Produto")'
+)
+
+
+async def _login_johndrop(page, username: str, password: str) -> bool:
+    """Login on JohnDrop. Returns True on success."""
+    await add_log("info", "Abrindo página de login JohnDrop...")
+    await page.goto(JOHNDROP_LOGIN_URL, wait_until="networkidle", timeout=60000)
+    await page.fill('input[type="email"], input[name="email"]', username)
+    await page.fill('input[type="password"], input[name="password"]', password)
+    async with page.expect_navigation(wait_until="networkidle", timeout=60000):
+        await page.click('button[type="submit"]')
+    if "login" in page.url.lower():
+        await add_log("error", "Falha no login JohnDrop — verifique credenciais")
+        return False
+    await add_log("success", "Login JohnDrop OK")
+    return True
+
+
+async def _open_catalog(page) -> None:
+    """Open catalog page and wait for product cards. Logs debug info if missing."""
+    await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
+    await add_log("info", "Acessando catálogo (não cadastrados)...")
+    try:
+        await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+    except Exception:
+        await add_log("warning", "Selector de produtos não apareceu em 15s — sem produtos pendentes ou layout mudou")
+        try:
+            snippet = await page.evaluate(
+                "() => document.querySelector('.content-page, main, body')?.innerText?.slice(0, 600) || ''"
+            )
+            if snippet:
+                await add_log("info", f"Página: {snippet[:400]}")
+        except Exception:
+            pass
+
+
+async def _read_product_fields(page) -> Tuple[str, float]:
+    """Read raw title and cost from JohnDrop product creation form."""
+    raw_title = ""
+    if await page.query_selector('input[name="name"], input#name, input[placeholder*="Nome"]'):
+        raw_title = await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
+    cost = 0.0
+    cost_input = await page.query_selector('input[placeholder*="Custo"], input[name="cost"], input#cost')
+    if cost_input:
+        cost_text = (await cost_input.input_value() or "0").strip()
+        cost = _parse_brl_number(cost_text)
+    return raw_title, cost
+
+
+def _parse_brl_number(text: str) -> float:
+    """Parse a price string handling both BR ('21,99' or '1.234,56') and EN ('21.99') formats."""
+    if not text:
+        return 0.0
+    text = text.strip().replace("R$", "").replace(" ", "")
+    if "," in text:
+        # Brazilian format: 1.234,56 -> 1234.56
+        text = text.replace(".", "").replace(",", ".")
+    # else: assume already in English/decimal format with '.'
+    try:
+        return float(text)
+    except Exception:
+        return 0.0
+
+
+async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: str) -> bool:
+    """Click 'Criar Produto' and wait for completion. Returns True on success."""
+    try:
+        await page.click('button:has-text("Criar Produto")')
+        await page.wait_for_load_state("networkidle", timeout=60000)
+        await add_log(
+            "success",
+            f"Cadastrado: {cleaned_title}",
+            raw_title=raw_title,
+            cleaned_title=cleaned_title,
+            sale_price=sale_price,
+        )
+        return True
+    except Exception as e:
+        await add_log("error", f"Falha ao submeter: {e}", raw_title=raw_title)
+        return False
+
+
+async def _process_one_product(page, dry_run: bool) -> bool:
+    """Process the next pending product card. Returns True if a card was found and handled."""
+    buttons = await page.query_selector_all(CARD_SELECTOR)
+    if not buttons:
+        await add_log("info", "Nenhum produto pendente encontrado nesta página")
+        return False
+
+    try:
+        async with page.expect_navigation(wait_until="networkidle", timeout=60000):
+            await buttons[0].click()
+    except Exception as e:
+        await add_log("error", f"Erro ao abrir produto: {e}")
+        robot.failed += 1
+        robot.processed += 1
+        return True
+
+    raw_title, cost = await _read_product_fields(page)
+    robot.current_product = raw_title[:60]
+    cleaned = clean_title(raw_title)
+    price = await lookup_price(cost)
+
+    if not price.found:
+        await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw_title)
+        robot.failed += 1
+        robot.processed += 1
+        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
+        return True
+
+    await page.fill('input[name="name"], input#name', cleaned["cleaned"])
+    await page.fill('input[placeholder*="Preço de Venda"], input[name*="price"]', str(price.sale_price_int))
+
+    if dry_run:
+        await add_log(
+            "info",
+            f"[DRY-RUN] Pronto: {cleaned['cleaned']} | Preço: {price.sale_price_int}",
+            raw_title=raw_title,
+            cleaned_title=cleaned["cleaned"],
+            sale_price=price.sale_price_int,
+        )
+        robot.success += 1
+    elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
+        robot.success += 1
+    else:
+        robot.failed += 1
+
+    robot.processed += 1
+    await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
+    await asyncio.sleep(1.5)
+    return True
+
+
 async def _run_playwright(username: str, password: str, max_products: int, dry_run: bool):
-    """Actual Playwright-based automation against app.jonhdrop.com.br"""
+    """Playwright automation orchestrator against app.jonhdrop.com.br"""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
@@ -146,134 +283,30 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
         context = await browser.new_context(viewport={"width": 1366, "height": 900})
         page = await context.new_page()
 
-        # 1. Login
-        await add_log("info", "Abrindo página de login JohnDrop...")
-        await page.goto(JOHNDROP_LOGIN_URL, wait_until="networkidle", timeout=60000)
-        await page.fill('input[type="email"], input[name="email"]', username)
-        await page.fill('input[type="password"], input[name="password"]', password)
-        async with page.expect_navigation(wait_until="networkidle", timeout=60000):
-            await page.click('button[type="submit"]')
-        if "login" in page.url.lower():
-            await add_log("error", "Falha no login JohnDrop — verifique credenciais")
-            robot.state = "error"
-            robot.message = "Login falhou"
-            await browser.close()
-            return
-        await add_log("success", "Login JohnDrop OK")
-
-        # 2. Catalog (filter without_integration)
-        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
-        await add_log("info", "Acessando catálogo (não cadastrados)...")
-        # Wait for product cards to render (give JS a chance)
         try:
-            await page.wait_for_selector(
-                'a[href*="/dashboard/product/createv2/"], a:has-text("Cadastrar Produto"), button:has-text("Cadastrar Produto")',
-                timeout=15000,
-            )
-        except Exception:
-            await add_log("warning", "Selector de produtos não apareceu em 15s — pode estar sem produtos pendentes ou layout mudou")
-            # Dump main content snippet for debugging
-            try:
-                html_snippet = await page.evaluate(
-                    "() => document.querySelector('.content-page, main, body')?.innerText?.slice(0, 600) || ''"
-                )
-                if html_snippet:
-                    await add_log("info", f"Página: {html_snippet[:400]}")
-            except Exception:
-                pass
+            if not await _login_johndrop(page, username, password):
+                robot.state = "error"
+                robot.message = "Login falhou"
+                return
 
-        # 3. Iterate over product cards — find "Cadastrar Produto" links
-        processed_count = 0
-        while processed_count < max_products:
-            if robot.stop_flag:
-                await add_log("warning", "Robô interrompido")
-                break
+            await _open_catalog(page)
 
-            # Multiple selectors to be robust against UI changes
-            buttons = await page.query_selector_all(
-                'a[href*="/dashboard/product/createv2/"], a:has-text("Cadastrar Produto"), button:has-text("Cadastrar Produto")'
-            )
-            if not buttons:
-                await add_log("info", "Nenhum produto pendente encontrado nesta página")
-                break
-
-            btn = buttons[0]
-            try:
-                async with page.expect_navigation(wait_until="networkidle", timeout=60000):
-                    await btn.click()
-            except Exception as e:
-                await add_log("error", f"Erro ao abrir produto: {e}")
-                robot.failed += 1
-                robot.processed += 1
+            processed_count = 0
+            while processed_count < max_products:
+                if robot.stop_flag:
+                    await add_log("warning", "Robô interrompido")
+                    break
+                if not await _process_one_product(page, dry_run):
+                    break
                 processed_count += 1
-                continue
-
-            # 4. On product creation page — extract raw title from input
-            raw_title = (
-                await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
-                if await page.query_selector('input[name="name"], input#name, input[placeholder*="Nome"]')
-                else ""
+        finally:
+            await browser.close()
+            if robot.state == "running":
+                robot.state = "idle"
+            await add_log(
+                "info",
+                f"Robô finalizado. Processados={robot.processed} Sucesso={robot.success} Falhas={robot.failed}",
             )
-            cost_text = "0"
-            cost_input = await page.query_selector('input[placeholder*="Custo"], input[name="cost"], input#cost')
-            if cost_input:
-                cost_text = await cost_input.input_value() or "0"
-            try:
-                cost = float(cost_text.replace(".", "").replace(",", "."))
-            except Exception:
-                cost = 0.0
-
-            robot.current_product = raw_title[:60]
-            cleaned = clean_title(raw_title)
-            price = await lookup_price(cost)
-
-            if not price.found:
-                await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw_title)
-                robot.failed += 1
-                robot.processed += 1
-                processed_count += 1
-                await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
-                continue
-
-            # 5. Fill cleaned title & sale price
-            await page.fill('input[name="name"], input#name', cleaned["cleaned"])
-            # Find sale price field labeled "Preço de Venda" - second-to-last value input
-            await page.fill('input[placeholder*="Preço de Venda"], input[name*="price"]', str(price.sale_price_int))
-
-            if dry_run:
-                await add_log(
-                    "info",
-                    f"[DRY-RUN] Pronto: {cleaned['cleaned']} | Preço: {price.sale_price_int}",
-                    raw_title=raw_title,
-                    cleaned_title=cleaned["cleaned"],
-                    sale_price=price.sale_price_int,
-                )
-                robot.success += 1
-            else:
-                try:
-                    await page.click('button:has-text("Criar Produto")')
-                    await page.wait_for_load_state("networkidle", timeout=60000)
-                    await add_log(
-                        "success",
-                        f"Cadastrado: {cleaned['cleaned']}",
-                        raw_title=raw_title,
-                        cleaned_title=cleaned["cleaned"],
-                        sale_price=price.sale_price_int,
-                    )
-                    robot.success += 1
-                except Exception as e:
-                    await add_log("error", f"Falha ao submeter: {e}", raw_title=raw_title)
-                    robot.failed += 1
-
-            robot.processed += 1
-            processed_count += 1
-
-            await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
-            await asyncio.sleep(1.5)
-
-        await browser.close()
-        robot.state = "idle"
-        await add_log("info", f"Robô finalizado. Processados={robot.processed} Sucesso={robot.success} Falhas={robot.failed}")
 
 
 async def start_bot(max_products: int = 10, dry_run: bool = True):

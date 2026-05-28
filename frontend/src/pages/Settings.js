@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { CheckCircle2, Link2, KeyRound, Save, Lock } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,7 +34,7 @@ export default function SettingsPage() {
       setJd(j.data);
       if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
     } catch (err) {
-      console.error("Failed to load settings:", err);
+      logger.error("Failed to load settings:", err);
     }
   }, []);
 

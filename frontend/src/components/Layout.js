@@ -5,6 +5,7 @@ import {
   CircleDot, Power, Menu, X,
 } from "lucide-react";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 
 const NAV = [
   { to: "/", icon: LayoutDashboard, label: "Painel" },
@@ -32,7 +33,7 @@ export default function Layout({ children }) {
       const { data } = await endpoints.robotStatus();
       setRobotState(data.state);
     } catch (err) {
-      console.error("Failed to fetch robot status:", err);
+      logger.error("Failed to fetch robot status:", err);
     }
   }, []);
 

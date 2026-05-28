@@ -157,64 +157,58 @@ def _extract_trailing_codes(text: str) -> Tuple[str, List[str]]:
     return " ".join(tokens), trailing
 
 
+def _strip_inline_codes(body: str) -> str:
+    """Remove any tokens looking like product codes from body and collapse whitespace."""
+    for c in _find_codes(body):
+        body = re.sub(rf"\b{re.escape(c)}\b", " ", body, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", body).strip()
+
+
+def _dedupe_and_remove_connectors(text: str) -> List[str]:
+    """Split text, remove connector words (pt-BR), case-insensitively dedupe."""
+    seen = set()
+    out: List[str] = []
+    for w in text.split():
+        wl = w.lower()
+        if wl in CONNECTORS or wl in seen:
+            continue
+        seen.add(wl)
+        out.append(w)
+    return out
+
+
+def _strip_all(text: str) -> Tuple[str, List[str]]:
+    """Run EAN + brand + filler removal pipeline. Returns (text, removed_terms)."""
+    removed: List[str] = []
+    text, eans = _strip_eans(text)
+    removed.extend(f"EAN:{e}" for e in eans)
+    text, brands = _strip_brands(text)
+    removed.extend(brands)
+    text, fillers = _strip_fillers(text)
+    removed.extend(fillers)
+    return _normalize_chars(text), removed
+
+
 def clean_title(raw: str, preferred_code: Optional[str] = None) -> dict:
     """Clean a product title following all rules. Returns dict with details."""
     original = raw or ""
-    text = original
 
-    removed_terms: List[str] = []
+    # 1. Run removal pipeline (EAN, brands, fillers, char normalization)
+    text, removed_terms = _strip_all(original)
 
-    # 1. Strip EANs first (before code detection so 13-digit numbers don't get confused with codes)
-    text, eans = _strip_eans(text)
-    if eans:
-        removed_terms.extend([f"EAN:{e}" for e in eans])
-
-    # 2. Strip brands
-    text, brands = _strip_brands(text)
-    removed_terms.extend(brands)
-
-    # 3. Strip filler words / stock warnings
-    text, fillers = _strip_fillers(text)
-    removed_terms.extend(fillers)
-
-    # 4. Normalize chars (keep hyphen only)
-    text = _normalize_chars(text)
-
-    # 5. Detect TRAILING codes (1 or 2 tokens at the end that look like codes)
+    # 2. Detect trailing codes (or use preferred_code if provided)
     body, trailing_codes = _extract_trailing_codes(text)
-
     if preferred_code:
-        # Force preferred_code to be the trailing suffix
         trailing_codes = [preferred_code]
-        # Remove any occurrence of preferred_code from body
         body = re.sub(rf"\b{re.escape(preferred_code)}\b", " ", body, flags=re.IGNORECASE)
 
-    # 6. Remove leftover inline codes from body (anything still matching code pattern)
-    body_codes = _find_codes(body)
-    for c in body_codes:
-        body = re.sub(rf"\b{re.escape(c)}\b", " ", body, flags=re.IGNORECASE)
-    body = re.sub(r"\s+", " ", body).strip()
+    # 3. Remove leftover inline codes + dedupe + drop connectors
+    body = _strip_inline_codes(body)
+    words = _dedupe_and_remove_connectors(body)
 
-    # 7. Remove connector words and dedupe
-    seen = set()
-    deduped = []
-    for w in body.split():
-        wl = w.lower()
-        if wl in CONNECTORS:
-            continue
-        if wl in seen:
-            continue
-        seen.add(wl)
-        deduped.append(w)
-
-    # 8. Build suffix from trailing codes
+    # 4. Compose final title with suffix and truncate to MAX_LEN
     suffix = " ".join(trailing_codes)
-    chosen_code = trailing_codes[-1] if trailing_codes else None
-
-    # 9. Smart truncate to MAX_LEN, ensuring suffix fits at end
-    cleaned = _smart_truncate(deduped, MAX_LEN, suffix)
-
-    # Safety: hard truncate if still too long (very unlikely)
+    cleaned = _smart_truncate(words, MAX_LEN, suffix)
     if len(cleaned) > MAX_LEN:
         cleaned = cleaned[:MAX_LEN].rstrip()
 
@@ -223,6 +217,6 @@ def clean_title(raw: str, preferred_code: Optional[str] = None) -> dict:
         "cleaned": cleaned,
         "length": len(cleaned),
         "removed_terms": removed_terms,
-        "code_used": chosen_code,
+        "code_used": trailing_codes[-1] if trailing_codes else None,
         "method": "regex",
     }

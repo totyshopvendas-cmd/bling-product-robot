@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import {
   Activity, Database, KeyRound, Bot, CheckCircle2, AlertTriangle, Cog,
 } from "lucide-react";
@@ -35,7 +36,7 @@ export default function Dashboard() {
       const { data } = await endpoints.dashboardStats();
       setStats(data);
     } catch (err) {
-      console.error("Failed to load dashboard stats:", err);
+      logger.error("Failed to load dashboard stats:", err);
     }
   }, []);
 
