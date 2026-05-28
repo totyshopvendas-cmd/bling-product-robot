@@ -273,53 +273,94 @@ async def _clean_sku_field(page) -> Optional[str]:
 
 
 async def _fill_sale_price(page, sale_price: int) -> bool:
-    """Fill the 'Preço de Venda' field in the integration values section.
-
-    Tries several strategies because JohnDrop's HTML for this field varies."""
+    """Fill the 'Preço de Venda' field by locating the input next to that label
+    and typing the digits via keyboard so currency masks/React handlers fire."""
     value_str = str(sale_price)
-    selectors = [
-        'input[placeholder*="Preço de Venda"]',
-        'input[name*="sale_price"]',
-        'input[name*="price"]',
-    ]
-    for sel in selectors:
-        el = await page.query_selector(sel)
-        if el:
-            try:
-                await el.fill(value_str)
-                return True
-            except Exception:
-                continue
 
-    # Fallback: find the input that sits in the same row as the "TotyShop-Bling" label
-    try:
-        filled = await page.evaluate(
-            """
-            (priceStr) => {
-                const rows = Array.from(document.querySelectorAll('div, tr, li'));
-                for (const row of rows) {
-                    const text = (row.innerText || '').trim();
-                    if (text.includes('Preço de Venda') || text.includes('TotyShop-Bling')) {
-                        const inputs = row.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
-                        for (const inp of inputs) {
-                            const placeholder = (inp.placeholder || '').toLowerCase();
-                            const name = (inp.name || '').toLowerCase();
-                            if (placeholder.includes('custo') || name.includes('cost')) continue;
-                            inp.focus();
-                            inp.value = priceStr;
-                            inp.dispatchEvent(new Event('input', { bubbles: true }));
-                            inp.dispatchEvent(new Event('change', { bubbles: true }));
-                            return true;
-                        }
-                    }
+    # Find the actual input element by walking the DOM around the "Preço de Venda" text
+    handle = await page.evaluate_handle(
+        """
+        () => {
+            const norm = s => (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
+            const target = 'preco de venda';
+
+            // 1. Direct match: input with placeholder containing the text
+            const phMatch = Array.from(document.querySelectorAll('input')).find(
+                i => norm(i.placeholder).includes(target)
+            );
+            if (phMatch) return phMatch;
+
+            // 2. Find element whose text is "Preço de Venda" then locate input around it
+            const all = Array.from(document.querySelectorAll('label, span, div, td, th, p'));
+            const labelEl = all.find(el => {
+                const t = norm(el.innerText || el.textContent || '');
+                return t === target || (t.includes(target) && t.length < 60);
+            });
+            if (!labelEl) return null;
+
+            // Look at siblings first, then walk up
+            const findInput = (el) => {
+                if (!el) return null;
+                if (el.tagName === 'INPUT') {
+                    const ph = norm(el.placeholder);
+                    if (!ph.includes('custo')) return el;
                 }
-                return false;
+                const ins = el.querySelectorAll
+                    ? el.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')
+                    : [];
+                for (const inp of ins) {
+                    const ph = norm(inp.placeholder);
+                    const nm = norm(inp.name);
+                    if (ph.includes('custo') || nm.includes('cost')) continue;
+                    return inp;
+                }
+                return null;
+            };
+
+            // Try next siblings of the label
+            let sib = labelEl.nextElementSibling;
+            for (let i = 0; i < 4 && sib; i++) {
+                const inp = findInput(sib);
+                if (inp) return inp;
+                sib = sib.nextElementSibling;
             }
-            """,
-            value_str,
-        )
-        return bool(filled)
-    except Exception:
+            // Walk up
+            let parent = labelEl.parentElement;
+            for (let i = 0; i < 5 && parent; i++) {
+                const inp = findInput(parent);
+                if (inp) return inp;
+                parent = parent.parentElement;
+            }
+            return null;
+        }
+        """
+    )
+    elem = handle.as_element() if handle else None
+    if not elem:
+        await add_log("error", "Input 'Preço de Venda' não localizado no DOM")
+        return False
+
+    try:
+        await elem.scroll_into_view_if_needed()
+        await elem.click(click_count=3)  # triple-click to select existing content
+        await page.keyboard.press("Backspace")
+        # Type digits one by one — triggers currency masks / React onChange
+        for ch in value_str:
+            await page.keyboard.type(ch, delay=40)
+        await page.keyboard.press("Tab")  # blur to apply mask
+
+        # Verify the value was written
+        try:
+            final_value = await elem.input_value()
+        except Exception:
+            final_value = ""
+        if not final_value:
+            await add_log("warning", f"Preço de Venda parece vazio após digitar ({value_str})")
+            return False
+        await add_log("info", f"Preço de Venda preenchido: '{final_value}' (esperado: {value_str})")
+        return True
+    except Exception as e:
+        await add_log("error", f"Erro ao digitar preço: {e}")
         return False
 
 
