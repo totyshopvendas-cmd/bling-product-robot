@@ -70,8 +70,11 @@ export default function RobotPage() {
         <h1 className="font-display text-3xl font-bold tracking-tighter">Robô de Cadastro</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
           O robô faz login no JohnDrop, abre o catálogo "Publicar Catálogo / Todos que eu não cadastrei",
-          limpa o título, busca o preço na tabela e cadastra o produto. Use <strong>Dry-Run</strong> para
-          simular sem submeter.
+          limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>.
+        </p>
+        <p className="text-xs text-amber-700 mt-2 max-w-3xl">
+          ⚠️ Por padrão começa em <strong>MODO TESTE (Dry-Run)</strong> — só simula sem cadastrar.
+          Desmarque a caixa para cadastrar de verdade.
         </p>
       </div>
 
@@ -135,15 +138,28 @@ export default function RobotPage() {
               className="w-full text-sm border border-border rounded-sm px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
             />
           </div>
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <label
+            className={`flex items-start gap-2 text-sm cursor-pointer p-3 rounded-sm border ${
+              dryRun ? "bg-amber-50 border-amber-300" : "bg-emerald-50 border-emerald-300"
+            }`}
+          >
             <input
               data-testid="dry-run-toggle"
               type="checkbox"
               checked={dryRun}
               onChange={(e) => setDryRun(e.target.checked)}
-              className="h-4 w-4"
+              className="h-4 w-4 mt-0.5"
             />
-            <span>Dry-Run (não submeter)</span>
+            <div className="flex-1">
+              <div className="font-semibold">
+                {dryRun ? "🟡 MODO TESTE (Dry-Run)" : "🟢 MODO REAL"}
+              </div>
+              <div className="text-xs mt-1 text-zinc-700">
+                {dryRun
+                  ? "Robô SIMULA o cadastro sem clicar 'Criar Produto' — NADA será salvo no JohnDrop."
+                  : "Robô CADASTRA de verdade no JohnDrop. Produtos aparecerão em 'Meus Produtos'."}
+              </div>
+            </div>
           </label>
 
           <div className="flex flex-col gap-2 pt-2">
@@ -151,10 +167,14 @@ export default function RobotPage() {
               data-testid="start-robot-btn"
               onClick={start}
               disabled={status?.state === "running"}
-              className="w-full bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center justify-center gap-2"
+              className={`w-full text-white text-sm font-medium px-4 py-2.5 rounded-sm disabled:opacity-50 inline-flex items-center justify-center gap-2 ${
+                dryRun
+                  ? "bg-[#EE7B22] hover:bg-[#C9651A]"
+                  : "bg-emerald-600 hover:bg-emerald-700"
+              }`}
             >
               <Play className="h-4 w-4" />
-              Iniciar Robô
+              {dryRun ? "Iniciar Robô (Teste)" : "Iniciar Robô (REAL)"}
             </button>
             <button
               data-testid="stop-robot-btn"
