@@ -35,7 +35,7 @@ api = APIRouter(prefix="/api")
 
 
 @app.on_event("startup")
-async def _startup():
+async def _startup() -> None:
     try:
         await init_indexes()
     except Exception as e:
@@ -43,13 +43,13 @@ async def _startup():
 
 
 @api.get("/")
-async def root():
+async def root() -> dict:
     return {"app": "TotyShop Automation", "version": "0.1"}
 
 
 # ---------- Title cleaner ----------
 @api.post("/titles/clean", response_model=TitleCleanResponse)
-async def clean_title_endpoint(payload: TitleCleanRequest):
+async def clean_title_endpoint(payload: TitleCleanRequest) -> TitleCleanResponse:
     result = clean_title(payload.raw_title, preferred_code=payload.sku)
     if payload.use_llm_fallback:
         try:
@@ -67,7 +67,7 @@ class BatchTitleRequest(BaseModel):
 
 
 @api.post("/titles/clean/batch")
-async def clean_titles_batch(payload: BatchTitleRequest):
+async def clean_titles_batch(payload: BatchTitleRequest) -> dict:
     out = []
     for item in payload.items:
         result = clean_title(item.raw_title, preferred_code=item.sku)
@@ -77,7 +77,7 @@ async def clean_titles_batch(payload: BatchTitleRequest):
 
 # ---------- Pricing ----------
 @api.post("/pricing/upload")
-async def upload_pricing(file: UploadFile = File(...)):
+async def upload_pricing(file: UploadFile = File(...)) -> dict:
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "Arquivo muito grande (>50MB)")
@@ -86,23 +86,25 @@ async def upload_pricing(file: UploadFile = File(...)):
 
 
 @api.get("/pricing/lookup", response_model=PriceLookupResponse)
-async def lookup_price_endpoint(cost: float = Query(...)):
+async def lookup_price_endpoint(cost: float = Query(...)) -> PriceLookupResponse:
     return await pricing_service.lookup_price(cost)
 
 
 @api.get("/pricing/stats")
-async def pricing_stats():
+async def pricing_stats() -> dict:
     return await pricing_service.stats()
 
 
 # ---------- Bling OAuth ----------
 @api.get("/bling/authorize-url")
-async def bling_authorize_url(next: str = "/configuracoes"):
+async def bling_authorize_url(next: str = "/configuracoes") -> dict:
     return {"url": bling_service.build_authorize_url(next)}
 
 
 @api.get("/bling/callback")
-async def bling_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+async def bling_callback(
+    code: str | None = None, state: str | None = None, error: str | None = None
+) -> RedirectResponse:
     app_base = os.environ["APP_BASE_URL"]
     if error:
         return RedirectResponse(f"{app_base}/configuracoes?bling_error={error}")
@@ -121,18 +123,18 @@ async def bling_callback(code: str | None = None, state: str | None = None, erro
 
 
 @api.get("/bling/status")
-async def bling_status():
+async def bling_status() -> dict:
     return await bling_service.status()
 
 
 @api.post("/bling/disconnect")
-async def bling_disconnect_ep():
+async def bling_disconnect_ep() -> dict:
     await bling_service.disconnect()
     return {"ok": True}
 
 
 @api.get("/bling/products")
-async def bling_list_products(pagina: int = 1, limite: int = 20):
+async def bling_list_products(pagina: int = 1, limite: int = 20) -> dict:
     resp = await bling_service.bling_request("GET", "/produtos", params={"pagina": pagina, "limite": limite})
     if resp.status_code >= 400:
         raise HTTPException(resp.status_code, resp.text)
@@ -140,7 +142,7 @@ async def bling_list_products(pagina: int = 1, limite: int = 20):
 
 
 @api.get("/bling/categories")
-async def bling_categories():
+async def bling_categories() -> dict:
     resp = await bling_service.bling_request("GET", "/categorias/produtos")
     if resp.status_code >= 400:
         raise HTTPException(resp.status_code, resp.text)
@@ -149,13 +151,13 @@ async def bling_categories():
 
 # ---------- Settings ----------
 @api.post("/settings/johndrop")
-async def set_johndrop_creds(creds: JohnDropCreds):
+async def set_johndrop_creds(creds: JohnDropCreds) -> dict:
     await johndrop_bot.save_johndrop_credentials(creds.username, creds.password)
     return {"ok": True}
 
 
 @api.get("/settings/johndrop")
-async def get_johndrop_creds_status():
+async def get_johndrop_creds_status() -> dict:
     creds = await johndrop_bot.get_johndrop_credentials()
     if not creds:
         return {"configured": False}
@@ -164,7 +166,7 @@ async def get_johndrop_creds_status():
 
 # ---------- Robot ----------
 @api.post("/robot/start", response_model=RobotStatusResponse)
-async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)):
+async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
     if robot_service.robot.state == "running":
         raise HTTPException(400, "Robô já está em execução")
     await johndrop_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
@@ -172,30 +174,30 @@ async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)
 
 
 @api.post("/robot/stop")
-async def robot_stop():
+async def robot_stop() -> dict:
     await johndrop_bot.stop_bot()
     return {"ok": True}
 
 
 @api.get("/robot/status", response_model=RobotStatusResponse)
-async def robot_status():
+async def robot_status() -> RobotStatusResponse:
     return RobotStatusResponse(**robot_service.robot.to_dict())
 
 
 @api.get("/robot/logs")
-async def robot_logs(limit: int = 100):
+async def robot_logs(limit: int = 100) -> list:
     return await robot_service.get_logs(limit)
 
 
 @api.post("/robot/logs/clear")
-async def robot_logs_clear():
+async def robot_logs_clear() -> dict:
     await robot_service.clear_logs()
     return {"ok": True}
 
 
 # ---------- Dashboard ----------
 @api.get("/dashboard/stats", response_model=DashboardStats)
-async def dashboard_stats():
+async def dashboard_stats() -> DashboardStats:
     pricing_count = await db.pricing.count_documents({})
     bling = await bling_service.status()
     jd = await johndrop_bot.get_johndrop_credentials()

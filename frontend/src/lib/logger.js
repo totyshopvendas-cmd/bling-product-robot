@@ -1,4 +1,7 @@
-/* Tiny logger — silent in production, verbose in dev. */
+/* Tiny logger — silent in production, verbose in dev.
+ * Console statements are intentional here (this IS the logging implementation).
+ */
+/* eslint-disable no-console */
 const isDev = process.env.NODE_ENV !== "production";
 
 export const logger = {

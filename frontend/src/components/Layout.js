@@ -42,7 +42,6 @@ export default function Layout({ children }) {
     const timer = setInterval(fetchStatus, 4000);
     return () => clearInterval(timer);
   }, [fetchStatus]);
-
   const meta = STATE_LABEL[robotState] || STATE_LABEL.idle;
 
   return (
