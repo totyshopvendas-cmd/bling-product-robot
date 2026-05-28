@@ -7,6 +7,7 @@ Designed to fail gracefully if Playwright/Chromium is not installed.
 """
 import asyncio
 import os
+import re
 
 # Use shared browser cache if container has one (Emergent provides /pw-browsers)
 if os.path.isdir("/pw-browsers") and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
@@ -22,7 +23,10 @@ from db import db
 
 
 JOHNDROP_LOGIN_URL = "https://app.jonhdrop.com.br/login"
-JOHNDROP_CATALOG_URL = "https://app.jonhdrop.com.br/dashboard/catalog?integration_filter=without_integration"
+JOHNDROP_CATALOG_BASE_URL = "https://app.jonhdrop.com.br/dashboard/catalog"
+JOHNDROP_CATALOG_URL = f"{JOHNDROP_CATALOG_BASE_URL}?integration_filter=without_integration"
+INTEGRATION_NAME = "TotyShop-Bling"
+SKU_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\-]")
 
 
 async def _save_credentials(username: str, password: str):
@@ -160,9 +164,47 @@ async def _login_johndrop(page, username: str, password: str) -> bool:
 
 
 async def _open_catalog(page) -> None:
-    """Open catalog page and wait for product cards. Logs debug info if missing."""
-    await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
-    await add_log("info", "Acessando catálogo (não cadastrados)...")
+    """Open catalog page, apply filter 'Todos que eu não cadastrei' via dropdown + search button.
+    Falls back to URL query parameter if the dropdown is not found."""
+    await page.goto(JOHNDROP_CATALOG_BASE_URL, wait_until="networkidle", timeout=60000)
+    await add_log("info", "Acessando Publicar Catálogo...")
+
+    # Try explicit dropdown flow: select "Todos que eu não cadastrei" + click search
+    applied_via_ui = False
+    try:
+        # The integration filter <select> usually has options like
+        # "Todos", "Todos que eu cadastrei", "Todos que eu não cadastrei"
+        selects = await page.query_selector_all("select")
+        for sel in selects:
+            options_text = await sel.evaluate(
+                "el => Array.from(el.options).map(o => o.textContent).join('||')"
+            )
+            if options_text and "não cadastrei" in options_text.lower():
+                # Select option matching "não cadastrei" (case-insensitive)
+                opt_value = await sel.evaluate(
+                    "el => { const o = Array.from(el.options).find(x => x.textContent.toLowerCase().includes('não cadastrei')); return o ? o.value : null; }"
+                )
+                if opt_value is not None:
+                    await sel.select_option(value=opt_value)
+                    await add_log("info", "Filtro 'Todos que eu não cadastrei' selecionado")
+                    applied_via_ui = True
+                break
+        if applied_via_ui:
+            # Click the blue magnifying glass search button (submit form)
+            search_btn = await page.query_selector(
+                'button[type="submit"], button:has(i.fa-search), button:has(svg.lucide-search)'
+            )
+            if search_btn:
+                await search_btn.click()
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await add_log("info", "Botão de busca (lupa) clicado")
+    except Exception as e:
+        await add_log("warning", f"Falha ao aplicar filtro via UI ({str(e)[:120]}). Usando URL.")
+
+    if not applied_via_ui:
+        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
+
+    # Wait for product cards to render
     try:
         await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
     except Exception:
@@ -175,6 +217,110 @@ async def _open_catalog(page) -> None:
                 await add_log("info", f"Página: {snippet[:400]}")
         except Exception:
             pass
+
+
+async def _select_integration(page) -> bool:
+    """Click the TotyShop-Bling integration card on the product create page."""
+    try:
+        # Strategy 1: click by visible text 'TotyShop-Bling'
+        loc = page.locator(f'text="{INTEGRATION_NAME}"').first
+        if await loc.count() > 0:
+            # Click the parent card (avoid clicking just the label text)
+            await loc.click()
+            await page.wait_for_timeout(500)
+            return True
+    except Exception:
+        pass
+
+    try:
+        # Strategy 2: click any element whose innerText contains the integration name
+        clicked = await page.evaluate(
+            f"""
+            () => {{
+                const els = Array.from(document.querySelectorAll('div, label, button, span'));
+                const target = els.find(e =>
+                    (e.innerText || '').trim() === '{INTEGRATION_NAME}'
+                );
+                if (target) {{
+                    (target.closest('label') || target).click();
+                    return true;
+                }}
+                return false;
+            }}
+            """
+        )
+        if clicked:
+            await page.wait_for_timeout(500)
+            return True
+    except Exception:
+        pass
+
+    await add_log("warning", f"Não encontrei o botão da integração '{INTEGRATION_NAME}'")
+    return False
+
+
+async def _clean_sku_field(page) -> Optional[str]:
+    """Read SKU field, strip non-alphanumeric (except hyphen), write back. Returns cleaned sku."""
+    sku_input = await page.query_selector('input[name="sku"], input#sku, input[placeholder*="Sku"], input[placeholder*="SKU"]')
+    if not sku_input:
+        return None
+    current = (await sku_input.input_value() or "").strip()
+    cleaned = SKU_ALLOWED_RE.sub("", current)
+    if cleaned and cleaned != current:
+        await sku_input.fill(cleaned)
+        await add_log("info", f"SKU limpo: '{current}' → '{cleaned}'")
+    return cleaned or None
+
+
+async def _fill_sale_price(page, sale_price: int) -> bool:
+    """Fill the 'Preço de Venda' field in the integration values section.
+
+    Tries several strategies because JohnDrop's HTML for this field varies."""
+    value_str = str(sale_price)
+    selectors = [
+        'input[placeholder*="Preço de Venda"]',
+        'input[name*="sale_price"]',
+        'input[name*="price"]',
+    ]
+    for sel in selectors:
+        el = await page.query_selector(sel)
+        if el:
+            try:
+                await el.fill(value_str)
+                return True
+            except Exception:
+                continue
+
+    # Fallback: find the input that sits in the same row as the "TotyShop-Bling" label
+    try:
+        filled = await page.evaluate(
+            """
+            (priceStr) => {
+                const rows = Array.from(document.querySelectorAll('div, tr, li'));
+                for (const row of rows) {
+                    const text = (row.innerText || '').trim();
+                    if (text.includes('Preço de Venda') || text.includes('TotyShop-Bling')) {
+                        const inputs = row.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+                        for (const inp of inputs) {
+                            const placeholder = (inp.placeholder || '').toLowerCase();
+                            const name = (inp.name || '').toLowerCase();
+                            if (placeholder.includes('custo') || name.includes('cost')) continue;
+                            inp.focus();
+                            inp.value = priceStr;
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+            """,
+            value_str,
+        )
+        return bool(filled)
+    except Exception:
+        return False
 
 
 async def _read_product_fields(page) -> Tuple[str, float]:
@@ -206,9 +352,24 @@ def _parse_brl_number(text: str) -> float:
 
 
 async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: str) -> bool:
-    """Click 'Criar Produto' and wait for completion. Returns True on success."""
+    """Click the green 'Criar Produto' button and wait for navigation."""
     try:
-        await page.click('button:has-text("Criar Produto")')
+        # Multiple strategies for the green submit button at bottom-right of the form
+        clicked = False
+        for sel in [
+            'button:has-text("Criar Produto")',
+            'button.btn-success:has-text("Criar")',
+            'button[type="submit"]:has-text("Criar")',
+        ]:
+            btn = await page.query_selector(sel)
+            if btn:
+                await btn.scroll_into_view_if_needed()
+                await btn.click()
+                clicked = True
+                break
+        if not clicked:
+            await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
+            return False
         await page.wait_for_load_state("networkidle", timeout=60000)
         await add_log(
             "success",
@@ -239,11 +400,18 @@ async def _process_one_product(page, dry_run: bool) -> bool:
         robot.processed += 1
         return True
 
+    # 1. Select the TotyShop-Bling integration
+    await _select_integration(page)
+
+    # 2. Read raw title + cost
     raw_title, cost = await _read_product_fields(page)
     robot.current_product = raw_title[:60]
-    cleaned = clean_title(raw_title)
-    price = await lookup_price(cost)
 
+    # 3. Clean SKU (only letters, digits, hyphen)
+    sku = await _clean_sku_field(page)
+
+    # 4. Lookup sale price
+    price = await lookup_price(cost)
     if not price.found:
         await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw_title)
         robot.failed += 1
@@ -251,13 +419,24 @@ async def _process_one_product(page, dry_run: bool) -> bool:
         await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
         return True
 
+    # 5. Clean title and fill (use the cleaned SKU as preferred code if present)
+    cleaned = clean_title(raw_title, preferred_code=sku)
     await page.fill('input[name="name"], input#name', cleaned["cleaned"])
-    await page.fill('input[placeholder*="Preço de Venda"], input[name*="price"]', str(price.sale_price_int))
 
+    # 6. Fill sale price
+    price_ok = await _fill_sale_price(page, price.sale_price_int)
+    if not price_ok:
+        await add_log("error", "Não foi possível preencher o campo 'Preço de Venda'", raw_title=raw_title)
+        robot.failed += 1
+        robot.processed += 1
+        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
+        return True
+
+    # 7. Submit (or just log if dry-run)
     if dry_run:
         await add_log(
             "info",
-            f"[DRY-RUN] Pronto: {cleaned['cleaned']} | Preço: {price.sale_price_int}",
+            f"[DRY-RUN] Pronto: {cleaned['cleaned']} | SKU: {sku} | Preço: {price.sale_price_int}",
             raw_title=raw_title,
             cleaned_title=cleaned["cleaned"],
             sale_price=price.sale_price_int,
