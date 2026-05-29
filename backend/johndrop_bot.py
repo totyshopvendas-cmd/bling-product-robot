@@ -27,6 +27,7 @@ JOHNDROP_CATALOG_BASE_URL = "https://app.jonhdrop.com.br/dashboard/catalog"
 JOHNDROP_CATALOG_URL = f"{JOHNDROP_CATALOG_BASE_URL}?integration_filter=without_integration"
 INTEGRATION_NAME = "TotyShop-Bling"
 SKU_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\-]")
+DELAY_BETWEEN_PRODUCTS_S = 15  # pause após cadastrar com sucesso (evita rate-limit do JohnDrop)
 
 
 async def _save_credentials(username: str, password: str):
@@ -524,6 +525,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         return True
 
     # 7. Submit (or just log if dry-run)
+    submitted_ok = False
     if dry_run:
         await add_log(
             "info",
@@ -533,12 +535,21 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
             sale_price=price.sale_price_int,
         )
         robot.success += 1
+        submitted_ok = True
     elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
         robot.success += 1
+        submitted_ok = True
     else:
         robot.failed += 1
 
     robot.processed += 1
+
+    # Pause after a real successful cadastro to give JohnDrop time to settle
+    if submitted_ok and not dry_run:
+        robot.current_product = f"⏸ Aguardando {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo..."
+        await add_log("info", f"Pausa de {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo cadastro")
+        await asyncio.sleep(DELAY_BETWEEN_PRODUCTS_S)
+
     # Always re-apply the filter via dropdown + search button so cadastered products
     # are removed from the list. Just navigating via URL is NOT enough.
     await _open_catalog(page)
