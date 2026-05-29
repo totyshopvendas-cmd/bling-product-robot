@@ -165,8 +165,24 @@ async def _login_johndrop(page, username: str, password: str) -> bool:
 
 async def _open_catalog(page) -> None:
     """Open catalog page, apply filter 'Todos que eu não cadastrei' via dropdown + search button.
-    Falls back to URL query parameter if the dropdown is not found."""
-    await page.goto(JOHNDROP_CATALOG_BASE_URL, wait_until="networkidle", timeout=60000)
+    Resilient against ERR_ABORTED (page redirects still in flight)."""
+    last_err = None
+    for attempt in range(3):
+        try:
+            await page.goto(JOHNDROP_CATALOG_BASE_URL, wait_until="domcontentloaded", timeout=60000)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if "ERR_ABORTED" in msg or "ERR_TIMED_OUT" in msg:
+                await add_log("info", f"Catálogo: nav aborted, retry {attempt + 1}/3")
+                await page.wait_for_timeout(2500)
+                continue
+            raise
+    if last_err:
+        raise last_err
+
     await add_log("info", "Acessando Publicar Catálogo...")
 
     # Try explicit dropdown flow: select "Todos que eu não cadastrei" + click search
@@ -393,9 +409,8 @@ def _parse_brl_number(text: str) -> float:
 
 
 async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: str) -> bool:
-    """Click the green 'Criar Produto' button and wait for navigation."""
+    """Click the green 'Criar Produto' button and wait for the post-submit redirect to settle."""
     try:
-        # Multiple strategies for the green submit button at bottom-right of the form
         clicked = False
         for sel in [
             'button:has-text("Criar Produto")',
@@ -411,7 +426,21 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
         if not clicked:
             await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
             return False
-        await page.wait_for_load_state("networkidle", timeout=60000)
+
+        # Wait for the redirect away from /createv2 to settle (avoids ERR_ABORTED on next goto)
+        try:
+            await page.wait_for_function(
+                "() => !window.location.pathname.includes('createv2')",
+                timeout=45000,
+            )
+        except Exception:
+            pass
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=20000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1500)
+
         await add_log(
             "success",
             f"Cadastrado: {cleaned_title}",
@@ -435,7 +464,6 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     # Pick the first card whose target URL (createv2/<id>) hasn't been processed yet
     chosen = None
-    chosen_href = None
     for btn in buttons:
         try:
             href = await btn.get_attribute("href") or ""
@@ -444,7 +472,6 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         if href and href in seen_skus:
             continue
         chosen = btn
-        chosen_href = href
         if href:
             seen_skus.add(href)
         break
