@@ -211,6 +211,10 @@ def clean_title(raw: str, preferred_code: Optional[str] = None) -> dict:
     cleaned = _smart_truncate(words, MAX_LEN, suffix)
     if len(cleaned) > MAX_LEN:
         cleaned = cleaned[:MAX_LEN].rstrip()
+    # Polish: trim leading/trailing hyphens/spaces and collapse double hyphens
+    cleaned = re.sub(r"^[\s\-]+|[\s\-]+$", "", cleaned)
+    cleaned = re.sub(r"\s+-+\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
     return {
         "raw": original,

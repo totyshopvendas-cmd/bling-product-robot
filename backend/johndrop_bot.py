@@ -427,7 +427,7 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
 
 async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     """Process the next pending product card. Returns True if a card was found and handled.
-    In dry-run, skips cards whose href/sku matches an already-processed product."""
+    Tracks already-processed cards (by href) so dry-run doesn't revisit same product."""
     buttons = await page.query_selector_all(CARD_SELECTOR)
     if not buttons:
         await add_log("info", "Nenhum produto pendente encontrado nesta página")
@@ -435,6 +435,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     # Pick the first card whose target URL (createv2/<id>) hasn't been processed yet
     chosen = None
+    chosen_href = None
     for btn in buttons:
         try:
             href = await btn.get_attribute("href") or ""
@@ -443,12 +444,13 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         if href and href in seen_skus:
             continue
         chosen = btn
+        chosen_href = href
         if href:
             seen_skus.add(href)
         break
 
     if chosen is None:
-        await add_log("info", "Não há mais produtos NOVOS nesta página (dry-run já processou todos)")
+        await add_log("info", "Não há mais produtos NOVOS nesta página")
         return False
 
     try:
@@ -478,7 +480,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw_title)
         robot.failed += 1
         robot.processed += 1
-        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
+        await _open_catalog(page)
         return True
 
     # 5. Clean title and fill (use the cleaned SKU as preferred code if present)
@@ -491,7 +493,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await add_log("error", "Não foi possível preencher o campo 'Preço de Venda'", raw_title=raw_title)
         robot.failed += 1
         robot.processed += 1
-        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
+        await _open_catalog(page)
         return True
 
     # 7. Submit (or just log if dry-run)
@@ -510,8 +512,10 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         robot.failed += 1
 
     robot.processed += 1
-    await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle")
-    await asyncio.sleep(1.5)
+    # Always re-apply the filter via dropdown + search button so cadastered products
+    # are removed from the list. Just navigating via URL is NOT enough.
+    await _open_catalog(page)
+    await asyncio.sleep(1.0)
     return True
 
 
