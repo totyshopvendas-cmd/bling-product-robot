@@ -445,10 +445,13 @@ async def enrich_product_by_sku(
         await _save_log(sku, "error", f"LLM: {e}")
         return {"ok": False, "reason": str(e)}
 
-    complementar = "\n".join(bullets)
+    complementar_text = "\n".join(bullets)
+    # Bling renders HTML in description fields — convert newlines to <br>
+    short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>")
+    complementar_html = "<br>".join(bullets)
     payload: dict = {
-        "descricaoCurta": short_desc,
-        "descricaoComplementar": complementar,
+        "descricaoCurta": short_desc_html,
+        "descricaoComplementar": complementar_html,
     }
     if category_id:
         payload["categoria"] = {"id": category_id}
