@@ -125,7 +125,63 @@ def _strip_emojis_and_special(text: str) -> str:
     return text
 
 
-_SUPPLIER_CACHE: dict = {"id": None, "name": "JONH VARIEDADES"}
+# Abbreviation map for common Portuguese color/size names → 2-letter code
+VARIATION_ABBR = {
+    "rosa": "RS", "azul": "AZ", "verde": "VD", "amarelo": "AM", "preto": "PR",
+    "branco": "BR", "vermelho": "VM", "cinza": "CZ", "roxo": "RX", "laranja": "LR",
+    "marrom": "MR", "bege": "BG", "dourado": "DR", "prata": "PT", "vinho": "VH",
+    "azul claro": "AC", "azul escuro": "AE", "rosa claro": "RC", "verde claro": "VC",
+    "pequeno": "PQ", "medio": "MD", "grande": "GD", "extra grande": "XG",
+    "p": "P", "m": "M", "g": "G", "gg": "GG", "pp": "PP", "xg": "XG", "xs": "XS",
+}
+
+
+def _abbreviate_variation(name: str) -> str:
+    """Generate 2-letter abbreviation for a variation name."""
+    key = name.lower().strip()
+    if key in VARIATION_ABBR:
+        return VARIATION_ABBR[key]
+    # Fallback: take first 2 consonants/letters uppercase
+    letters = re.sub(r"[^A-Za-zÀ-ÿ]", "", name).upper()
+    if len(letters) >= 2:
+        return letters[0] + letters[-1] if len(letters) > 3 else letters[:2]
+    return letters or "VA"
+
+
+def _parse_variations(raw_description: str) -> List[str]:
+    """Extract variation names from descriptions like 'Disponível nas cores: -Rosa -Verde -Azul'.
+    Returns list of variation names in original case."""
+    if not raw_description:
+        return []
+    # Look for "Disponível nas cores:" or "Disponivel nos tamanhos:" patterns
+    pattern = re.compile(
+        r"dispon[ií]ve[il]\s+(?:nas?|nos?)\s+(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+)",
+        re.IGNORECASE,
+    )
+    m = pattern.search(raw_description)
+    if not m:
+        return []
+    body = m.group(1)
+    # Split by hyphen-prefixed items or commas
+    parts = re.split(r"\s*[-,;]\s*", body)
+    out: List[str] = []
+    for p in parts:
+        p = p.strip(" -")
+        if not p or len(p) > 30:
+            continue
+        # Skip generic words
+        if p.lower() in {"e", "ou", "etc", "...", ""}:
+            continue
+        out.append(p)
+    # Dedupe preserving order
+    seen = set()
+    deduped = []
+    for v in out:
+        kl = v.lower()
+        if kl not in seen:
+            seen.add(kl)
+            deduped.append(v)
+    return deduped[:10]  # cap at 10 variations
 
 
 async def _find_jonh_supplier_id() -> Optional[int]:
@@ -329,43 +385,49 @@ async def find_bling_product_by_sku(sku: str) -> Optional[dict]:
     return None
 
 
+_SUPPLIER_CACHE: dict = {"id": None, "name": "JONH VARIEDADES"}
+
+
 async def update_bling_product(
     product_id: int,
     current: dict,
     payload: dict,
     johndrop_id: Optional[str] = None,
     cost: Optional[float] = None,
+    variations: Optional[List[str]] = None,
 ) -> bool:
-    """Bling v3 requires a FULL product on PUT. Merge new fields into existing product
-    (only sending fields Bling accepts) then submit."""
+    """Bling v3 requires a FULL product on PUT. Merge new fields + optional variations."""
+    parent_sku = current.get("codigo") or ""
+    parent_name = current.get("nome") or ""
+    parent_price = current.get("preco") or 0
+    has_variations = bool(variations)
+
     merged = {
-        "nome": current.get("nome"),
-        "codigo": current.get("codigo"),
-        "preco": current.get("preco"),
+        "nome": parent_name,
+        "codigo": parent_sku,
+        "preco": parent_price,
         "tipo": current.get("tipo") or "P",
         "situacao": current.get("situacao") or "A",
-        "formato": current.get("formato") or "S",
+        "formato": "V" if has_variations else (current.get("formato") or "S"),
         "descricaoCurta": payload.get("descricaoCurta", current.get("descricaoCurta", "")),
         "descricaoComplementar": payload.get(
             "descricaoComplementar", current.get("descricaoComplementar", "")
         ),
-        # User-defined fixed values (orientation screenshots)
         "marca": "Generica",
-        "condicao": 1,           # 1 = Novo
-        "gtin": "",              # excluir EAN
-        "gtinEmbalagem": "",     # excluir EAN tributário
+        "condicao": 1,
+        "gtin": "",
+        "gtinEmbalagem": "",
     }
     if payload.get("categoria"):
         merged["categoria"] = payload["categoria"]
     elif current.get("categoria"):
         merged["categoria"] = current["categoria"]
 
-    # Add Jonh Variedades supplier if we can find it
     supplier_id = await _find_jonh_supplier_id()
     if supplier_id:
         fornecedor_entry: dict = {
             "fornecedor": {"id": supplier_id},
-            "descricao": current.get("nome") or merged["nome"],  # repete o título no Bling
+            "descricao": parent_name,
             "padrao": True,
         }
         if johndrop_id:
@@ -375,12 +437,63 @@ async def update_bling_product(
             fornecedor_entry["precoCompra"] = round(float(cost), 2)
         merged["fornecedores"] = [fornecedor_entry]
 
-    # Strip None values
-    merged = {k: v for k, v in merged.items() if v is not None}
+    # If parent already has variations registered, skip variation insertion to avoid duplicates
+    existing_var_codes = set()
+    for v in (current.get("variacoes") or []):
+        code = (v.get("codigo") or "").strip().upper()
+        if code:
+            existing_var_codes.add(code)
 
+    new_variations = []
+    if has_variations:
+        for v in variations:
+            code = f"{parent_sku}-{_abbreviate_variation(v)}".upper()
+            if code in existing_var_codes:
+                continue
+            new_variations.append({
+                "codigo": code,
+                "preco": float(parent_price) if parent_price else 0.0,
+                "situacao": "A",
+                "variacao": {
+                    "nome": v,
+                    "produtoPai": {"cloneInfo": True},
+                },
+            })
+
+    if new_variations:
+        merged["formato"] = "V"
+        # Preserve existing variations + add new ones
+        existing_payload = []
+        for v in (current.get("variacoes") or []):
+            existing_payload.append({
+                "id": v.get("id"),
+                "codigo": v.get("codigo"),
+                "preco": v.get("preco") or float(parent_price) if parent_price else 0.0,
+                "situacao": v.get("situacao") or "A",
+                "variacao": v.get("variacao") or {},
+            })
+        merged["variacoes"] = existing_payload + new_variations
+    elif existing_var_codes:
+        # Product already has variations — re-send them as-is so Bling validates
+        merged["formato"] = "V"
+        merged["variacoes"] = [
+            {
+                "id": v.get("id"),
+                "codigo": v.get("codigo"),
+                "preco": v.get("preco") or float(parent_price) if parent_price else 0.0,
+                "situacao": v.get("situacao") or "A",
+                "variacao": v.get("variacao") or {},
+            }
+            for v in (current.get("variacoes") or [])
+        ]
+    else:
+        merged["formato"] = current.get("formato") or "S"
+        merged.pop("variacoes", None)
+
+    merged = {k: v for k, v in merged.items() if v is not None}
     resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
     if resp.status_code >= 400:
-        await add_log("warning", f"Bling PUT {product_id}: HTTP {resp.status_code} — {resp.text[:200]}")
+        await add_log("warning", f"Bling PUT {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
         return False
     return True
 
@@ -445,7 +558,6 @@ async def enrich_product_by_sku(
         await _save_log(sku, "error", f"LLM: {e}")
         return {"ok": False, "reason": str(e)}
 
-    complementar_text = "\n".join(bullets)
     # Bling renders HTML in description fields — convert newlines to <br>
     short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>")
     complementar_html = "<br>".join(bullets)
@@ -458,14 +570,20 @@ async def enrich_product_by_sku(
 
     try:
         full = await _fetch_bling_product_full(product_id) or product
-        ok = await update_bling_product(product_id, full, payload, johndrop_id=johndrop_id, cost=cost)
+        variations = _parse_variations(raw_description)
+        if variations:
+            await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
+        ok = await update_bling_product(
+            product_id, full, payload,
+            johndrop_id=johndrop_id, cost=cost, variations=variations or None
+        )
     except Exception as e:
         await add_log("error", f"Bling: PUT falhou para {sku}: {e}")
         await _save_log(sku, "error", f"PUT: {e}", product_id=product_id)
         return {"ok": False, "reason": str(e)}
 
     if ok:
-        await add_log("success", f"Bling enriquecido: {sku} (cat={category_id})")
+        await add_log("success", f"Bling enriquecido: {sku} (cat={category_id}, variações={len(variations) if variations else 0})")
         await _save_log(
             sku, "success", "enriquecido",
             product_id=product_id,
@@ -474,8 +592,9 @@ async def enrich_product_by_sku(
             category_id=category_id,
             johndrop_id=johndrop_id,
             cost=cost,
+            variations=variations,
         )
-        return {"ok": True, "product_id": product_id, "category_id": category_id}
+        return {"ok": True, "product_id": product_id, "category_id": category_id, "variations_count": len(variations) if variations else 0}
 
     await add_log("warning", f"Bling: PUT retornou erro para {sku}")
     await _save_log(sku, "error", "PUT retornou status >= 400", product_id=product_id)

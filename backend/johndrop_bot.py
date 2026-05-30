@@ -45,11 +45,40 @@ async def _get_credentials():
     return doc.get("value")
 
 
+async def _ensure_chromium_installed() -> bool:
+    """Block until chromium binary exists. Installs it (sync) if missing."""
+    import shutil
+    chromium_path = "/pw-browsers/chromium_headless_shell-1223/chrome-linux/headless_shell"
+    if os.path.isfile(chromium_path):
+        return True
+    await add_log("warning", "Chromium ausente. Instalando agora (~109 MB, pode levar 30-60s)...")
+    python_bin = shutil.which("python") or "/root/.venv/bin/python"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            python_bin, "-m", "playwright", "install", "chromium",
+            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=240)
+    except Exception as e:
+        await add_log("error", f"Falha ao instalar Chromium: {e}")
+        return False
+    if os.path.isfile(chromium_path):
+        await add_log("success", "Chromium instalado com sucesso, retomando...")
+        return True
+    await add_log("error", "Chromium não encontrado após tentativa de instalação")
+    return False
+
+
 async def _playwright_available() -> bool:
     """Verify both the python package AND the chromium binary are usable."""
     try:
         from playwright.async_api import async_playwright
     except Exception:
+        return False
+    # Ensure chromium is installed (will install if missing — blocks until ready)
+    if not await _ensure_chromium_installed():
         return False
     # Probe: try a quick launch+close. If it fails, fall back to mock.
     try:
@@ -61,7 +90,6 @@ async def _playwright_available() -> bool:
             await browser.close()
         return True
     except Exception as e:
-        # Log to robot logs so the user sees why
         await add_log("warning", f"Playwright indisponível — modo MOCKED ativo. ({str(e)[:120]})")
         return False
 
