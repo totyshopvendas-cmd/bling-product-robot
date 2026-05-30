@@ -238,17 +238,19 @@ async def _create_bling_category(name: str) -> Optional[int]:
 async def pick_or_create_category(raw_title: str, raw_description: str) -> Optional[int]:
     """Use LLM to pick best Bling category; fallback to keyword match; create new one if needed."""
     cats = await _list_bling_categories()
-    cat_list = "\n".join(f"- id={c['id']}: {c['descricao']}" for c in cats[:80])
+    cat_list = "\n".join(f"- id={c['id']}: {c['descricao']}" for c in cats[:150])
     user = (
         f"Produto: {raw_title}\n"
         f"Descrição: {(raw_description or '')[:300]}\n\n"
         f"Categorias disponíveis no Bling:\n{cat_list or '(nenhuma)'}"
     )
     raw = await _llm_call(CATEGORY_SYSTEM, user)
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
     cid = None
+    # Try to extract JSON object even if there's prose around it
+    m = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
+    json_str = m.group(0) if m else raw
     try:
-        data = json.loads(raw)
+        data = json.loads(json_str)
         cid = data.get("category_id")
         new_name = data.get("category_name")
         if cid:
@@ -258,21 +260,53 @@ async def pick_or_create_category(raw_title: str, raw_description: str) -> Optio
             if created:
                 return created
     except Exception:
-        await add_log("warning", f"Categoria: LLM retornou inválido — fallback keyword. Raw: {raw[:80]}")
+        await add_log("warning", f"Categoria: LLM retornou inválido — fallback keyword. Raw: {raw[:120]}")
 
-    # Fallback keyword match against existing categories by title tokens
+    # Fallback keyword match against existing categories — covers the user's 132 categories
     title_lower = (raw_title or "").lower()
-    keyword_map = {
-        "Eletrônicos": ["bluetooth", "wifi", "wireless", "led", "lcd", "usb", "adaptador", "controle", "câmera", "camera", "fone", "som", "soundbar", "carregador", "cabo"],
-        "Beleza": ["peeling", "ultrassônico", "cravos", "acne", "cabelo", "depilador", "máquina"],
-        "Casa e Decoração": ["lixa", "casa", "cozinha", "organizador"],
-        "Acessorios para Celular": ["caneta", "stylus", "celular", "tablet"],
-    }
-    for cat_name, kws in keyword_map.items():
+    keyword_map = [
+        ("Pendrive", ["pendrive", "flash drive", "chaveiro 64gb", "chaveiro 32gb"]),
+        ("Smartwatches", ["smartwatch", "smart watch"]),
+        ("Relógios Digitais", ["relógio digital", "relogio digital"]),
+        ("Câmeras de Segurança", ["câmera segurança", "camera seguranca", "babá eletrônica", "wifi 360"]),
+        ("Soundbar Bluetooth", ["soundbar", "sound bar"]),
+        ("Caixas de Som Bluetooth", ["caixa som", "caixa de som", "speaker bluetooth"]),
+        ("Fones Bluetooth e TWS", ["fone bluetooth", "tws", "fone tws", "earbuds"]),
+        ("Fones de Ouvido com Fio", ["fone ouvido", "fone intra"]),
+        ("Headphone e Headset Bluetooth", ["headphone", "headset"]),
+        ("Cabos USB-C (Tipo-C)", ["usb-c", "tipo-c", "type-c"]),
+        ("Cabos V8 / Micro USB", ["micro usb", "v8", "cabo v8"]),
+        ("Cabos Lightning / iOS", ["lightning", "ios cable"]),
+        ("Carregadores de Parede Turbo", ["carregador parede", "carregador turbo"]),
+        ("Carregadores Veiculares", ["carregador veicular", "carregador carro"]),
+        ("Power Banks", ["power bank", "powerbank", "carregador portatil"]),
+        ("Suportes Veiculares para Celular", ["suporte veicular", "suporte carro"]),
+        ("Suportes para Celular", ["suporte celular", "suporte tablet"]),
+        ("Controles Remotos Universais", ["controle remoto", "controle universal"]),
+        ("Controles e Gamepads", ["gamepad", "controle gamer", "joystick"]),
+        ("Mouse Sem Fio e Gamer", ["mouse"]),
+        ("Teclados Bluetooth e Gamer", ["teclado"]),
+        ("Antenas Digitais", ["antena"]),
+        ("Drones e Acessórios", ["drone"]),
+        ("Lanternas Táticas e Portáteis", ["lanterna"]),
+        ("Caneca Copos e Garrafas", ["caneca", "copo térmico", "garrafa térmica"]),
+        ("Camiseta", ["camiseta"]),
+        ("Aparadores de Pelos", ["aparador", "depilador"]),
+        ("Máquinas de Cortar Cabelo e Barba", ["maquina cortar", "máquina cortar", "barbeador", "cortador cabelo"]),
+        ("Calculadoras e Papelaria", ["calculadora", "papelaria"]),
+        ("Acessórios para Bicicleta e Ciclismo", ["bicicleta", "ciclismo"]),
+        ("Eletrônicos", ["bluetooth", "wifi", "wireless", "led", "lcd", "adaptador", "stylus", "caneta touch"]),
+        ("Casa e Decoração", ["organizador", "caixa porta"]),
+        ("Beleza e Cuidado Pessoal", ["peeling", "ultrassônico", "cravos", "acne", "cabelo"]),
+    ]
+    for cat_name, kws in keyword_map:
         if any(k in title_lower for k in kws):
+            existing = next((c for c in cats if (c.get("descricao") or "").lower() == cat_name.lower()), None)
+            if existing:
+                await add_log("info", f"Categoria (fallback): {existing['descricao']} (id={existing['id']})")
+                return existing["id"]
             existing = next((c for c in cats if cat_name.lower() in (c.get("descricao") or "").lower()), None)
             if existing:
-                await add_log("info", f"Categoria (fallback keyword): {existing['descricao']} (id={existing['id']})")
                 return existing["id"]
             created = await _create_bling_category(cat_name)
             if created:
