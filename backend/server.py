@@ -42,6 +42,22 @@ async def _startup() -> None:
         await init_indexes()
     except Exception as e:
         logger.warning(f"index init: {e}")
+    # Auto-install Chromium if missing (container may be reset between deploys)
+    try:
+        import subprocess
+        import shutil
+        chromium_path = "/pw-browsers/chromium_headless_shell-1223/chrome-linux/headless_shell"
+        if not os.path.isfile(chromium_path):
+            logger.warning("Chromium ausente — instalando em background...")
+            python_bin = shutil.which("python") or "/root/.venv/bin/python"
+            subprocess.Popen(
+                [python_bin, "-m", "playwright", "install", "chromium"],
+                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception as e:
+        logger.warning(f"chromium auto-install skipped: {e}")
 
 
 @api.get("/")
