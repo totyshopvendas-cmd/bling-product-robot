@@ -66,6 +66,18 @@ async def _playwright_available() -> bool:
         return False
 
 
+async def _safe_enrich_bling(sku: str, cleaned_title: str, raw_description: str,
+                              johndrop_id: Optional[str] = None, cost: Optional[float] = None) -> None:
+    """Run Bling enrichment in background — never raises, just logs."""
+    try:
+        import bling_enrichment
+        await bling_enrichment.enrich_product_by_sku(
+            sku, cleaned_title, raw_description, johndrop_id=johndrop_id, cost=cost
+        )
+    except Exception as e:
+        await add_log("error", f"Bling enrichment background falhou para {sku}: {e}")
+
+
 async def run_bot(max_products: int = 10, dry_run: bool = True):
     """Main bot loop. Set robot.state during execution."""
     robot.reset()
@@ -394,6 +406,48 @@ async def _read_product_fields(page) -> Tuple[str, float]:
     return raw_title, cost
 
 
+async def _read_product_description(page) -> str:
+    """Read the raw product description from JohnDrop (textarea or contenteditable)."""
+    try:
+        desc = await page.evaluate(
+            """
+            () => {
+                // Try common selectors for the description
+                const selectors = [
+                    'textarea[name="description"]',
+                    'textarea[name="descricao"]',
+                    'textarea#description',
+                    'textarea[placeholder*="Descrição"]',
+                    'textarea[placeholder*="descricao"]',
+                    '[contenteditable="true"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        const val = el.value || el.innerText || '';
+                        if (val.trim().length > 20) return val.trim();
+                    }
+                }
+                // Find the section labelled "DESCRIÇÃO DO PRODUTO" and grab nearby textarea
+                const headers = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,label,div'));
+                const header = headers.find(h => (h.innerText || '').toUpperCase().includes('DESCRIÇÃO DO PRODUTO') || (h.innerText || '').toUpperCase().includes('DESCRICAO'));
+                if (header) {
+                    let p = header.parentElement;
+                    for (let i = 0; i < 4 && p; i++) {
+                        const ta = p.querySelector('textarea, [contenteditable="true"]');
+                        if (ta) return (ta.value || ta.innerText || '').trim();
+                        p = p.parentElement;
+                    }
+                }
+                return '';
+            }
+            """
+        )
+        return desc or ""
+    except Exception:
+        return ""
+
+
 def _parse_brl_number(text: str) -> float:
     """Parse a price string handling both BR ('21,99' or '1.234,56') and EN ('21.99') formats."""
     if not text:
@@ -497,6 +551,9 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     raw_title, cost = await _read_product_fields(page)
     robot.current_product = raw_title[:60]
 
+    # 2b. Read raw description (used later for Bling enrichment)
+    raw_description = await _read_product_description(page)
+
     # 3. Clean SKU (only letters, digits, hyphen)
     sku = await _clean_sku_field(page)
     if sku:
@@ -539,6 +596,20 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
         robot.success += 1
         submitted_ok = True
+        # Extract JohnDrop product ID from the URL (.../createv2/<id>) BEFORE leaving the page
+        johndrop_id = None
+        try:
+            m = re.search(r"/createv2/(\d+)", page.url or "")
+            if m:
+                johndrop_id = m.group(1)
+        except Exception:
+            johndrop_id = None
+        # Fire-and-forget Bling enrichment (does NOT block the JohnDrop loop)
+        if sku:
+            asyncio.create_task(
+                _safe_enrich_bling(sku, cleaned["cleaned"], raw_description,
+                                   johndrop_id=johndrop_id, cost=cost)
+            )
     else:
         robot.failed += 1
 

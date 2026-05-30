@@ -9,6 +9,7 @@ import Pricing from "@/pages/Pricing";
 import Robot from "@/pages/Robot";
 import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
+import BlingEnrichment from "@/pages/BlingEnrichment";
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
           <Route path="/precos" element={<Pricing />} />
           <Route path="/robo" element={<Robot />} />
           <Route path="/logs" element={<Logs />} />
+          <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>

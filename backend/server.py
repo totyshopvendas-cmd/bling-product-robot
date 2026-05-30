@@ -1,5 +1,6 @@
 """FastAPI server for TotyShop Automation."""
 import os
+from typing import Optional
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ import bling_service
 import robot_service
 import johndrop_bot
 from llm_cleaner import llm_clean_title
+import bling_enrichment
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -193,6 +195,34 @@ async def robot_logs(limit: int = 100) -> list:
 async def robot_logs_clear() -> dict:
     await robot_service.clear_logs()
     return {"ok": True}
+
+
+# ---------- Bling Enrichment ----------
+class EnrichRequest(BaseModel):
+    sku: str
+    raw_title: str
+    raw_description: str = ""
+    johndrop_id: Optional[str] = None
+    cost: Optional[float] = None
+
+
+@api.post("/bling/enrich")
+async def bling_enrich_endpoint(payload: EnrichRequest) -> dict:
+    """Manually trigger enrichment for a SKU."""
+    return await bling_enrichment.enrich_product_by_sku(
+        payload.sku, payload.raw_title, payload.raw_description,
+        johndrop_id=payload.johndrop_id, cost=payload.cost,
+    )
+
+
+@api.get("/bling/enrichment/logs")
+async def bling_enrichment_logs(limit: int = 100) -> list:
+    return await bling_enrichment.get_enrichment_logs(limit)
+
+
+@api.get("/bling/enrichment/stats")
+async def bling_enrichment_stats() -> dict:
+    return await bling_enrichment.get_enrichment_stats()
 
 
 # ---------- Dashboard ----------
