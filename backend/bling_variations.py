@@ -48,10 +48,14 @@ async def create_variations(
     parent_current: Optional[dict],
     variations: List[str],
     total_stock: int = 0,
+    parent_images: Optional[List[str]] = None,
 ) -> dict:
     """Create variations on a Bling parent. Single PATCH call.
 
     Returns {created, per_child_stock}.
+
+    If `parent_images` is given (URLs from JohnDrop), each child variation will
+    receive a copy of those images via a follow-up PATCH using `imagensURL`.
     """
     if not variations:
         return {"created": 0, "per_child_stock": 0}
@@ -146,6 +150,12 @@ async def create_variations(
         if per_child > 0:
             await _set_children_stock(saved_ids, per_child)
 
+    # Copy parent images onto each child variation so the Bling listing shows
+    # a thumbnail for each variation (cloneInfo alone does NOT do this visually —
+    # we have to disable cloneInfo to trigger Bling to materialize parent images).
+    if saved_ids:
+        await _copy_images_to_children(saved_ids, parent_images or [])
+
     flat = ", ".join(variations[:6]) + ("…" if len(variations) > 6 else "")
     await add_log(
         "success",
@@ -169,54 +179,66 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
             continue
 
 
+async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
+    """No-op when image_urls is empty (Bling auto-clones via cloneInfo=true).
+
+    When image_urls is provided (real PUBLIC URLs from JohnDrop, NOT Bling S3),
+    sends them via `midia.imagens.imagensURL` to each child. Bling downloads
+    and stores them as the child's own images.
+
+    NOTE: We discovered that disabling `cloneInfo=true` BREAKS the parent-child
+    link in Bling. We MUST keep cloneInfo=true and only push images via the
+    writeOnly `imagensURL` field — Bling stores them as own images when it
+    accepts them. If the URLs are pre-signed S3 (with `?Signature=...`), Bling
+    silently rejects them.
+    """
+    clean_urls = [u for u in (image_urls or []) if u and not u.startswith("data:")]
+    clean_urls = [u for u in clean_urls if "AWSAccessKeyId=" not in u and "X-Amz-Signature=" not in u]
+    if not clean_urls or not child_ids:
+        return 0
+    payload_imgs = [{"link": u} for u in clean_urls[:12]]
+    ok = 0
+    for cid in child_ids:
+        try:
+            r = await bling_service.bling_request(
+                "PATCH", f"/produtos/{cid}",
+                json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
+            )
+            if r.status_code < 400:
+                ok += 1
+        except Exception:
+            continue
+    if ok:
+        await add_log(
+            "info",
+            f"Imagens copiadas para {ok}/{len(child_ids)} variações ({len(payload_imgs)} cada)",
+        )
+    return ok
+
+
 async def fix_existing_variations(parent_id: int) -> dict:
-    """Enable cloneInfo=true and situacao=A on ALL existing child variations of a parent.
-    Each PATCH preserves variacao.nome (read from the child itself) to avoid breaking
-    the parent-child link."""
+    """Push parent's PUBLIC image URLs (if any) to each child variation.
+    Safe operation: never disables cloneInfo (which would break parent-child link).
+    """
     r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
     if r.status_code >= 400:
         return {"ok": False, "reason": "produto não encontrado"}
     parent = (r.json() or {}).get("data") or {}
     children = parent.get("variacoes") or []
-    fixed = 0
-    failed = 0
-    for v in children:
-        cid = v.get("id")
-        if not cid:
-            continue
-        # IMPORTANT: re-fetch the child itself to get the REAL variacao.nome
-        # (the parent's variacoes[].variacao is usually empty in the list view).
-        child_resp = await bling_service.bling_request("GET", f"/produtos/{cid}")
-        if child_resp.status_code >= 400:
-            failed += 1
-            continue
-        child_data = (child_resp.json() or {}).get("data") or {}
-        child_var = child_data.get("variacao") or {}
-        var_name = child_var.get("nome") or ""
-        if not var_name:
-            # Without a variation name we can't safely PATCH; skip to avoid breaking link.
-            failed += 1
-            continue
-        payload = {
-            "situacao": "A",
-            "variacao": {
-                "nome": var_name,
-                "produtoPai": {"cloneInfo": True},
-            },
-        }
-        resp = await bling_service.bling_request("PATCH", f"/produtos/{cid}", json=payload)
-        if resp.status_code < 400:
-            fixed += 1
-        else:
-            failed += 1
-    await add_log(
-        "success" if fixed and not failed else "info",
-        f"Variações pid={parent_id} corrigidas (cloneInfo+ativo): {fixed} ok, {failed} falhas",
-    )
-    return {"ok": True, "fixed": fixed, "failed": failed, "total": len(children)}
+    child_ids = [v.get("id") for v in children if v.get("id")]
+    if not child_ids:
+        return {"ok": True, "fixed": 0, "failed": 0, "total": 0,
+                "note": "Produto sem variações"}
+    # Bling stores parent images as pre-signed S3 (with ?Signature=...) which
+    # cannot be re-sent via API. Only PUBLIC URLs (e.g. originals from JohnDrop)
+    # work. So we can't auto-copy from a Bling parent — need URL source.
+    return {
+        "ok": True, "fixed": 0, "failed": 0, "total": len(child_ids),
+        "note": "Imagens do pai estão em S3 com expiração — só funcionam se vierem do JohnDrop. Use o robô para um produto novo.",
+    }
 
 
-async def find_and_create(parent_sku: str, variations: List[str], total_stock: int = 0) -> dict:
+async def find_and_create(parent_sku: str, variations: List[str], total_stock: int = 0, parent_images: Optional[List[str]] = None) -> dict:
     """Convenience wrapper: fetch parent by SKU, then run full flow."""
     if not parent_sku or not variations:
         return {"ok": False, "reason": "sku ou variações vazios"}
@@ -239,5 +261,5 @@ async def find_and_create(parent_sku: str, variations: List[str], total_stock: i
     # Fetch full for variacoes list
     full_resp = await bling_service.bling_request("GET", f"/produtos/{target['id']}")
     full = (full_resp.json() or {}).get("data") if full_resp.status_code < 400 else target
-    result = await create_variations(target["id"], full, variations, total_stock)
+    result = await create_variations(target["id"], full, variations, total_stock, parent_images=parent_images)
     return {"ok": True, **result}

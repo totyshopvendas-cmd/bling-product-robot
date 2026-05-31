@@ -623,11 +623,8 @@ async def enrich_product_by_sku(
                 import bling_variations
                 # Re-fetch product to get latest state (after the PUT just done)
                 latest = await _fetch_bling_product_full(product_id) or full
-                # Total stock from JohnDrop is not passed today — distribution starts at 0
-                # and admin can adjust manually. Pass 0 here so we don't accidentally
-                # overwrite stock the user may have already set.
                 result = await bling_variations.create_variations(
-                    product_id, latest, variations, total_stock=0,
+                    product_id, latest, variations, total_stock=0, parent_images=images,
                 )
                 variations_created = result.get("created", 0)
             except Exception as e:

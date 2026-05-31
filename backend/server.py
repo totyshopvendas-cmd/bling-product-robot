@@ -273,16 +273,21 @@ class VariationsRequest(BaseModel):
     sku: str
     variations: list[str]
     total_stock: int = 0
+    image_urls: Optional[list[str]] = None
 
 
 @api.post("/bling/variations")
 async def bling_create_variations(payload: VariationsRequest) -> dict:
     """Manually create color/size variations on an existing Bling parent product.
-    Distributes total_stock equally between children (Regra de Distribuição Balanceada)."""
+    Distributes total_stock equally between children (Regra de Distribuição Balanceada).
+    If image_urls is given, each child variation receives a copy of those images."""
     import bling_variations as bv
     if not payload.sku or not payload.variations:
         raise HTTPException(400, "Informe sku e lista de variações")
-    result = await bv.find_and_create(payload.sku, payload.variations, payload.total_stock)
+    result = await bv.find_and_create(
+        payload.sku, payload.variations, payload.total_stock,
+        parent_images=payload.image_urls,
+    )
     if not result.get("ok"):
         raise HTTPException(400, result.get("reason", "falhou"))
     return result
