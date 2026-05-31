@@ -43,12 +43,12 @@ async def _startup() -> None:
         await init_indexes()
     except Exception as e:
         logger.warning(f"index init: {e}")
-    # Auto-install Chromium if missing (container may be reset between deploys)
+    # Auto-install Chromium if missing (container may be reset between deploys).
+    # Uses dynamic version detection — works with any playwright version.
     try:
         import subprocess
         import shutil
-        chromium_path = "/pw-browsers/chromium_headless_shell-1223/chrome-linux/headless_shell"
-        if not os.path.isfile(chromium_path):
+        if not johndrop_bot._find_chromium_binary():
             logger.warning("Chromium ausente — instalando em background...")
             python_bin = shutil.which("python") or "/root/.venv/bin/python"
             subprocess.Popen(
@@ -57,6 +57,8 @@ async def _startup() -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+        else:
+            logger.info(f"Chromium pronto: {johndrop_bot._find_chromium_binary()}")
     except Exception as e:
         logger.warning(f"chromium auto-install skipped: {e}")
 
@@ -64,6 +66,31 @@ async def _startup() -> None:
 @api.get("/")
 async def root() -> dict:
     return {"app": "TotyShop Automation", "version": "0.1"}
+
+
+@api.get("/system/chromium-status")
+async def system_chromium_status() -> dict:
+    """Returns whether Playwright Chromium is installed & ready. Used by the UI
+    to disable the 'Iniciar Robô (REAL)' button when the browser isn't ready."""
+    return johndrop_bot.chromium_status()
+
+
+@api.post("/system/install-chromium")
+async def system_install_chromium() -> dict:
+    """Trigger a background Chromium install. Idempotent — returns immediately."""
+    import subprocess
+    import shutil
+    status = johndrop_bot.chromium_status()
+    if status["installed"]:
+        return {"ok": True, "already_installed": True, "path": status["path"]}
+    python_bin = shutil.which("python") or "/root/.venv/bin/python"
+    subprocess.Popen(
+        [python_bin, "-m", "playwright", "install", "chromium"],
+        env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"ok": True, "installing": True}
 
 
 # ---------- Title cleaner ----------

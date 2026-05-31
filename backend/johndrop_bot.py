@@ -45,11 +45,30 @@ async def _get_credentials():
     return doc.get("value")
 
 
+def _find_chromium_binary() -> Optional[str]:
+    """Locate the playwright chromium headless_shell binary regardless of its version dir.
+    Returns the full path if found, else None."""
+    import glob
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers")
+    # Newer playwright uses headless_shell, older used chrome. Accept either.
+    patterns = [
+        os.path.join(base, "chromium_headless_shell-*/chrome-linux/headless_shell"),
+        os.path.join(base, "chromium-*/chrome-linux/headless_shell"),
+        os.path.join(base, "chromium-*/chrome-linux/chrome"),
+    ]
+    for pat in patterns:
+        matches = glob.glob(pat)
+        for m in matches:
+            if os.path.isfile(m):
+                return m
+    return None
+
+
 async def _ensure_chromium_installed() -> bool:
-    """Block until chromium binary exists. Installs it (sync) if missing."""
+    """Block until a usable chromium binary exists. Installs it (sync) if missing.
+    Detects ANY installed version under PLAYWRIGHT_BROWSERS_PATH instead of hardcoding."""
     import shutil
-    chromium_path = "/pw-browsers/chromium_headless_shell-1223/chrome-linux/headless_shell"
-    if os.path.isfile(chromium_path):
+    if _find_chromium_binary():
         return True
     await add_log("warning", "Chromium ausente. Instalando agora (~109 MB, pode levar 30-60s)...")
     python_bin = shutil.which("python") or "/root/.venv/bin/python"
@@ -64,11 +83,21 @@ async def _ensure_chromium_installed() -> bool:
     except Exception as e:
         await add_log("error", f"Falha ao instalar Chromium: {e}")
         return False
-    if os.path.isfile(chromium_path):
+    if _find_chromium_binary():
         await add_log("success", "Chromium instalado com sucesso, retomando...")
         return True
     await add_log("error", "Chromium não encontrado após tentativa de instalação")
     return False
+
+
+def chromium_status() -> dict:
+    """Public helper used by /api/system/chromium-status endpoint."""
+    path = _find_chromium_binary()
+    return {
+        "installed": bool(path),
+        "path": path,
+        "browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"),
+    }
 
 
 async def _playwright_available() -> bool:

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import { endpoints } from "@/lib/api";
+import { api, endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
-import { Play, Square, RefreshCw, Bot, AlertTriangle } from "lucide-react";
+import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const LOG_DOT_COLORS = {
@@ -25,15 +25,19 @@ export default function RobotPage() {
   const [maxProducts, setMaxProducts] = useState(5);
   const [dryRun, setDryRun] = useState(true);
   const [logs, setLogs] = useState([]);
+  const [chromium, setChromium] = useState(null);
+  const [installing, setInstalling] = useState(false);
 
   const tick = useCallback(async () => {
     try {
-      const [{ data: s }, { data: l }] = await Promise.all([
+      const [{ data: s }, { data: l }, { data: c }] = await Promise.all([
         endpoints.robotStatus(),
         endpoints.robotLogs(50),
+        api.get("/system/chromium-status"),
       ]);
       setStatus(s);
       setLogs(l);
+      setChromium(c);
     } catch (err) {
       logger.error("Failed to fetch robot status/logs:", err);
     }
@@ -45,7 +49,41 @@ export default function RobotPage() {
     return () => clearInterval(timer);
   }, [tick]);
 
+  const installChromium = async () => {
+    setInstalling(true);
+    try {
+      const { data } = await api.post("/system/install-chromium");
+      if (data.already_installed) {
+        toast.success("Chromium já está pronto");
+      } else {
+        toast.message("Instalação iniciada — aguarde 30-60s");
+      }
+      // Poll until installed
+      const startTs = Date.now();
+      const poll = setInterval(async () => {
+        try {
+          const { data: c } = await api.get("/system/chromium-status");
+          setChromium(c);
+          if (c.installed || Date.now() - startTs > 180000) {
+            clearInterval(poll);
+            setInstalling(false);
+            if (c.installed) toast.success("Chromium instalado!");
+          }
+        } catch (err) {
+          logger.error("poll chromium:", err);
+        }
+      }, 4000);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha");
+      setInstalling(false);
+    }
+  };
+
   const start = async () => {
+    if (!dryRun && chromium && !chromium.installed) {
+      toast.error("Chromium não está pronto — clique em 'Instalar Chromium' primeiro");
+      return;
+    }
     try {
       await endpoints.robotStart(parseInt(maxProducts, 10) || 5, dryRun);
       toast.success("Robô iniciado");
@@ -62,6 +100,7 @@ export default function RobotPage() {
   };
 
   const meta = STATE_META[status?.state] || STATE_META.idle;
+  const chromiumReady = chromium?.installed;
 
   return (
     <div className="space-y-6">
@@ -77,6 +116,53 @@ export default function RobotPage() {
           Desmarque a caixa para cadastrar de verdade.
         </p>
       </div>
+
+      {/* Chromium status banner */}
+      {chromium && (
+        <div
+          data-testid="chromium-status-banner"
+          className={`border p-4 flex items-center justify-between gap-4 ${
+            chromiumReady
+              ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+              : "bg-rose-50 border-rose-300 text-rose-900"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            {chromiumReady ? (
+              <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
+            ) : installing ? (
+              <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
+            ) : (
+              <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+            )}
+            <div className="text-sm">
+              <div className="font-semibold">
+                {chromiumReady
+                  ? "Chromium pronto"
+                  : installing
+                  ? "Instalando Chromium…"
+                  : "Chromium não instalado"}
+              </div>
+              <div className="text-xs opacity-80 font-mono">
+                {chromiumReady
+                  ? chromium.path
+                  : "Sem Chromium, o robô cai em modo MOCKED (não cadastra)."}
+              </div>
+            </div>
+          </div>
+          {!chromiumReady && (
+            <button
+              data-testid="install-chromium-btn"
+              onClick={installChromium}
+              disabled={installing}
+              className="text-sm font-medium px-4 py-2 rounded-sm bg-rose-700 text-white hover:bg-rose-800 disabled:opacity-60 inline-flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" />
+              {installing ? "Instalando…" : "Instalar Chromium"}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 border border-border bg-white p-6 space-y-4">
