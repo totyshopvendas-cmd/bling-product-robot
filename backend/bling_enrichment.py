@@ -412,7 +412,6 @@ async def update_bling_product(
     parent_sku = current.get("codigo") or ""
     parent_name = current.get("nome") or ""
     parent_price = current.get("preco") or 0
-    has_variations = bool(variations)
 
     merged = {
         "nome": parent_name,
@@ -420,7 +419,7 @@ async def update_bling_product(
         "preco": parent_price,
         "tipo": current.get("tipo") or "P",
         "situacao": current.get("situacao") or "A",
-        "formato": "V" if has_variations else (current.get("formato") or "S"),
+        "formato": current.get("formato") or "S",
         "descricaoCurta": payload.get("descricaoCurta", current.get("descricaoCurta", "")),
         "descricaoComplementar": payload.get(
             "descricaoComplementar", current.get("descricaoComplementar", "")
@@ -477,42 +476,25 @@ async def update_bling_product(
         if code:
             existing_var_codes.add(code)
 
-    new_variations = []
-    if has_variations:
-        for v in variations:
-            code = f"{parent_sku}-{_abbreviate_variation(v)}".upper()
-            if code in existing_var_codes:
-                continue
-            new_variations.append({
-                "codigo": code,
-                "preco": float(parent_price) if parent_price else 0.0,
-                "situacao": "A",
-                "variacao": {
-                    "nome": v,
-                    "produtoPai": {"cloneInfo": True},
-                },
-            })
-
-    # If product already has variations in Bling, DO NOT touch them — Bling has strict validation
-    # on existing variations with stock. Only add new variations to products without any.
+    # If product already has variations in Bling, keep them untouched. Otherwise we DO NOT
+    # try to create new variations here — Bling has strict validation rules (estoque,
+    # actionEstoque, código, etc.) that break the simpler enrichment flow. Variations should
+    # be created manually in Bling; enrichment only updates description/bullets/category/brand.
     if existing_var_codes:
         merged["formato"] = current.get("formato") or "V"
-        merged.pop("variacoes", None)
-        new_variations = []  # don't try to add more
-    elif new_variations:
-        merged["formato"] = "V"
-        for nv in new_variations:
-            nv["actionEstoque"] = "B"
-        merged["variacoes"] = new_variations
     else:
         merged["formato"] = current.get("formato") or "S"
-        merged.pop("variacoes", None)
+    merged.pop("variacoes", None)
 
     merged = {k: v for k, v in merged.items() if v is not None}
     for k in ("acaoEstoque", "estoque", "estoqueMinimo", "estoqueMaximo", "tributacao"):
         merged.pop(k, None)
-    # actionEstoque required ONLY for simple products. For variation parents (formato=V), Bling forbids it.
-    merged["actionEstoque"] = "E"
+    # actionEstoque required ONLY for simple products. For variation parents (formato=V), Bling
+    # rejects the field on the parent (it lives on each variation).
+    if merged.get("formato") == "V":
+        merged.pop("actionEstoque", None)
+    else:
+        merged["actionEstoque"] = "E"
     resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
     if resp.status_code >= 400:
         await add_log("warning", f"Bling PUT {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
@@ -607,7 +589,7 @@ async def enrich_product_by_sku(
         return {"ok": False, "reason": str(e)}
 
     if ok:
-        await add_log("success", f"Bling enriquecido: {sku} (cat={category_id}, variações={len(variations) if variations else 0})")
+        await add_log("success", f"Bling enriquecido: {sku} (cat={category_id})")
         await _save_log(
             sku, "success", "enriquecido",
             product_id=product_id,
