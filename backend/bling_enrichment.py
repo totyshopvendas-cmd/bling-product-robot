@@ -56,26 +56,28 @@ def _sanitize(text: str, preserve_newlines: bool = False) -> str:
 
 
 SHORT_DESC_SYSTEM = (
-    "Você é um especialista em SEO para marketplaces brasileiros. "
-    "REGRA PRINCIPAL: a descrição final deve ser uma CÓPIA MELHORADA da descrição original do fornecedor — "
-    "PRESERVE todos os detalhes técnicos (medidas, materiais, isolamento, capacidades, cores disponíveis, "
-    "tamanhos, modelos, peso, dimensões), apenas reformate em parágrafos com negrito.\n"
-    "REGRAS:\n"
-    "1. NUNCA use nomes de marca (XLS, Kapbom, Inova, Altomex, Eletromex, etc).\n"
-    "2. NUNCA inclua códigos EAN/GTIN (sequências de 8-14 dígitos).\n"
-    "3. Formatação permitida APENAS:\n"
-    "   - <b>...</b> para destaques\n"
-    "   - Hífen (-) para listas\n"
-    "   PROIBIDO: emojis, asteriscos, símbolos especiais.\n"
-    "4. ESTRUTURA EM PARÁGRAFOS separados por \\n\\n. Sugestão:\n"
-    "   - Parágrafo 1: visão geral / título descritivo do produto\n"
-    "   - Parágrafo 2: <b>Especificações técnicas:</b> material, medidas, capacidade etc\n"
-    "   - Parágrafo 3: <b>Características de uso:</b> tempo de isolamento, durabilidade, modos de uso\n"
-    "   - Parágrafo 4: <b>Disponível nas cores:</b> + lista com hífen (PRESERVE EXATAMENTE as cores que aparecem na descrição original)\n"
-    "   - Parágrafo 5 (opcional): <b>Medidas:</b> + dimensões + <b>Peso:</b>\n"
-    "5. NUNCA invente informações que não estão na descrição original.\n"
-    "6. Texto total entre 500 e 1500 caracteres.\n"
-    "Responda APENAS o texto da descrição em parágrafos. Sem comentários."
+    "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
+    "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
+    "não um redator. Apenas:\n"
+    "  (a) divide em parágrafos com \\n\\n\n"
+    "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
+    "  (c) substitui bullets/asteriscos por hífen (- )\n"
+    "PROIBIDO ALTERAR:\n"
+    "  - Vocabulário (não troque sinônimos)\n"
+    "  - Ordem das informações\n"
+    "  - Detalhes técnicos (medidas, capacidade, materiais)\n"
+    "  - Lista de cores/tamanhos/modelos disponíveis\n"
+    "ÚNICAS REMOÇÕES PERMITIDAS:\n"
+    "  1. Nomes de marca (XLS, Kapbom, Inova, Altomex, Eletromex, Aoshi, Lehmox, etc)\n"
+    "  2. Códigos EAN/GTIN (sequências de 8-14 dígitos)\n"
+    "PROIBIDO:\n"
+    "  - Emojis, asteriscos, símbolos ° ™ ® (apenas <b>...</b> e hífen)\n"
+    "  - Inventar características que não estão na descrição original\n"
+    "  - Reescrever frases (apenas reformate o texto que já existe)\n"
+    "  - Acrescentar slogans de marketing genéricos\n"
+    "Se a descrição original já estiver bem escrita, copie-a quase literalmente, "
+    "apenas dividindo em parágrafos com \\n\\n e aplicando negrito em rótulos.\n"
+    "Responda APENAS o texto reformatado. Sem comentários."
 )
 
 
@@ -149,18 +151,36 @@ def _abbreviate_variation(name: str) -> str:
 
 
 def _parse_variations(raw_description: str) -> List[str]:
-    """Extract variation names from descriptions. Supports multiple Portuguese patterns:
-       - 'Disponível nas cores: -Rosa -Verde -Azul'
-       - 'Cores disponíveis: -Branco -Pink'
-       - 'Cores: -Preto -Branco'
-       - 'Tamanhos disponíveis: -P -M -G'
-       Skips items marked as '(esgotado)' or similar."""
+    """Extract variation names from descriptions following strict TotyShop rules:
+
+    1. Must contain the trigger word "Disponível" / "Disponíveis" together with
+       "cores" / "tamanhos" / "modelos". Without "Disponível", NO variations are
+       extracted (avoids descriptive text being mistaken for variations).
+    2. If the description says "conforme disponibilidade do estoque" / "seguindo
+       a disponibilidade" / "de acordo com o estoque" anywhere, the seller doesn't
+       let the buyer choose → NO variations extracted.
+    3. Variations are STRICT: only single-word color/size/model names. Multi-word
+       phrases (> 3 words) or descriptive sentences are filtered out.
+    """
     if not raw_description:
         return []
+
+    # GATE 1: "conforme disponibilidade do estoque" → buyer doesn't choose → no variations
+    disclaimer_patterns = [
+        r"conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque",
+        r"seguindo\s+(?:a\s+)?disponibilidade",
+        r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
+        r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
+        r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
+    ]
+    for dp in disclaimer_patterns:
+        if re.search(dp, raw_description, re.IGNORECASE):
+            return []
+
+    # GATE 2: require "Disponível" + (cores|tamanhos|modelos)
     patterns = [
-        r"dispon[ií]ve[il]\s+(?:nas?|nos?)\s+(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+(?:\n[^.\n]+)*)",
-        r"(?:cores?|tamanhos?|modelos?)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*)",
-        r"(?:cores?|tamanhos?|modelos?)[:\s]+((?:\s*-\s*[A-ZÁ-Úa-zá-ú][^\n-]*)+)",
+        r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)",
+        r"(?:cores?|tamanhos?|modelos?)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)",
     ]
     body = ""
     for pat in patterns:
@@ -170,9 +190,8 @@ def _parse_variations(raw_description: str) -> List[str]:
             break
     if not body:
         return []
+
     # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
-    # ("e", "ou") — these are how JohnDrop sellers list colors in plain text:
-    # "Disponível nas cores: rosa e roxo" → ["rosa", "roxo"]
     parts = re.split(r"\s*(?:[-,;\n]|\s+(?:e|ou)\s+)\s*", body, flags=re.IGNORECASE)
     out: List[str] = []
     for p in parts:
@@ -182,12 +201,24 @@ def _parse_variations(raw_description: str) -> List[str]:
         # Skip items marked as out of stock
         if re.search(r"\(\s*esgotad", p, re.IGNORECASE) or re.search(r"\(\s*sem\s+estoque", p, re.IGNORECASE):
             continue
-        # Remove parenthetical content like "(esgotado)" if any leftover
+        # Remove parenthetical content
         p = re.sub(r"\([^)]*\)", "", p).strip()
         if not p or p.lower() in {"e", "ou", "etc", "..."}:
             continue
-        # Normalize case: first letter upper, rest lower (Rosa, Roxo, Azul-Marinho)
-        p = " ".join(w.capitalize() for w in p.split())
+        # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
+        # Real variation names are 1-2 words: Rosa, Azul Marinho, Preto Fosco
+        words = p.split()
+        if len(words) > 2:
+            continue
+        # FILTER: phrases that start with descriptive adjectives
+        descriptive_starts = {
+            "ideal", "para", "perfeito", "indicado", "recomendado", "compatível",
+            "compatíve", "com", "sem", "voltado", "destinado",
+        }
+        if words and words[0].lower() in descriptive_starts:
+            continue
+        # Normalize case
+        p = " ".join(w.capitalize() for w in words)
         out.append(p)
     seen = set()
     deduped = []
