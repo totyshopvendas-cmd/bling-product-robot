@@ -288,6 +288,33 @@ async def bling_create_variations(payload: VariationsRequest) -> dict:
     return result
 
 
+class FixVariationsRequest(BaseModel):
+    sku: Optional[str] = None
+    product_id: Optional[int] = None
+
+
+@api.post("/bling/variations/fix-existing")
+async def bling_fix_existing_variations(payload: FixVariationsRequest) -> dict:
+    """Enable cloneInfo=true and situacao=A on ALL existing child variations of a parent.
+    Use this to retroactively fix variations that were created before the cloneInfo fix."""
+    import bling_variations as bv
+    pid = payload.product_id
+    if not pid and payload.sku:
+        resp = await bling_service.bling_request(
+            "GET", "/produtos", params={"codigo": payload.sku, "limite": 5}
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(404, "produto não encontrado")
+        items = (resp.json() or {}).get("data") or []
+        for it in items:
+            if (it.get("codigo") or "").strip().upper() == payload.sku.upper():
+                pid = it.get("id")
+                break
+    if not pid:
+        raise HTTPException(400, "Informe product_id OU sku válidos")
+    return await bv.fix_existing_variations(pid)
+
+
 # ---------- Bling Bulk Enrichment ----------
 @api.get("/bling/products-with-status")
 async def bling_products_with_status(

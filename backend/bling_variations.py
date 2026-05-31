@@ -93,9 +93,14 @@ async def create_variations(
             "codigo": sub_code,
             "preco": float(parent_price) if parent_price else 0.0,
             "tipo": "P",
-            "situacao": "A",
+            "situacao": "A",  # toggle "Situação do produto" ATIVO
             "formato": "S",
-            "variacao": {"nome": f"{kind}:{clean}"},
+            "variacao": {
+                "nome": f"{kind}:{clean}",
+                # toggle "Utilizar informações do produto pai" ATIVO — herda imagens,
+                # descrição, categoria, marca, peso, dimensões do pai
+                "produtoPai": {"cloneInfo": True},
+            },
         })
 
     if not new_vars:
@@ -162,6 +167,53 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
             )
         except Exception:
             continue
+
+
+async def fix_existing_variations(parent_id: int) -> dict:
+    """Enable cloneInfo=true and situacao=A on ALL existing child variations of a parent.
+    Each PATCH preserves variacao.nome (read from the child itself) to avoid breaking
+    the parent-child link."""
+    r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
+    if r.status_code >= 400:
+        return {"ok": False, "reason": "produto não encontrado"}
+    parent = (r.json() or {}).get("data") or {}
+    children = parent.get("variacoes") or []
+    fixed = 0
+    failed = 0
+    for v in children:
+        cid = v.get("id")
+        if not cid:
+            continue
+        # IMPORTANT: re-fetch the child itself to get the REAL variacao.nome
+        # (the parent's variacoes[].variacao is usually empty in the list view).
+        child_resp = await bling_service.bling_request("GET", f"/produtos/{cid}")
+        if child_resp.status_code >= 400:
+            failed += 1
+            continue
+        child_data = (child_resp.json() or {}).get("data") or {}
+        child_var = child_data.get("variacao") or {}
+        var_name = child_var.get("nome") or ""
+        if not var_name:
+            # Without a variation name we can't safely PATCH; skip to avoid breaking link.
+            failed += 1
+            continue
+        payload = {
+            "situacao": "A",
+            "variacao": {
+                "nome": var_name,
+                "produtoPai": {"cloneInfo": True},
+            },
+        }
+        resp = await bling_service.bling_request("PATCH", f"/produtos/{cid}", json=payload)
+        if resp.status_code < 400:
+            fixed += 1
+        else:
+            failed += 1
+    await add_log(
+        "success" if fixed and not failed else "info",
+        f"Variações pid={parent_id} corrigidas (cloneInfo+ativo): {fixed} ok, {failed} falhas",
+    )
+    return {"ok": True, "fixed": fixed, "failed": failed, "total": len(children)}
 
 
 async def find_and_create(parent_sku: str, variations: List[str], total_stock: int = 0) -> dict:
