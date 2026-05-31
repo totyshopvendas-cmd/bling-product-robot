@@ -10,6 +10,7 @@ import Robot from "@/pages/Robot";
 import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
+import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
           <Route path="/robo" element={<Robot />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/bling" element={<BlingEnrichment />} />
+          <Route path="/bling-lote" element={<BlingBulkEnrich />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>

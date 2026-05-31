@@ -319,12 +319,24 @@ async def _select_integration(page) -> bool:
 
 
 async def _clean_sku_field(page) -> Optional[str]:
-    """Read SKU field, strip non-alphanumeric (except hyphen), write back. Returns cleaned sku."""
+    """Read SKU field, strip non-alphanumeric (except hyphen) AND descriptive suffixes.
+    Returns cleaned sku."""
     sku_input = await page.query_selector('input[name="sku"], input#sku, input[placeholder*="Sku"], input[placeholder*="SKU"]')
     if not sku_input:
         return None
     current = (await sku_input.input_value() or "").strip()
-    cleaned = SKU_ALLOWED_RE.sub("", current)
+    # 1. Remove descriptive suffixes BEFORE stripping special chars
+    SUFFIX_RE = re.compile(
+        r"(com\s*tampa|sem\s*tampa|com\s*tampa\.?|c/?tampa|s/?tampa|"
+        r"com\s*alça|sem\s*alça|com\s*nf|sem\s*nf|"
+        r"\bml\b|\bun\b|\bunid\b|\bpc?s?\b|\bkit\b)",
+        re.IGNORECASE,
+    )
+    cleaned_text = SUFFIX_RE.sub("", current).strip()
+    # 2. Keep only letters, digits, hyphen
+    cleaned = SKU_ALLOWED_RE.sub("", cleaned_text)
+    # 3. Trim trailing hyphens
+    cleaned = cleaned.strip("-")
     if cleaned and cleaned != current:
         await sku_input.fill(cleaned)
         await add_log("info", f"SKU limpo: '{current}' → '{cleaned}'")
@@ -538,6 +550,44 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
                 break
         if not clicked:
             await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
+            return False
+
+        # Quick check (3s) for JohnDrop's duplicate-SKU / validation error toast/banner
+        # so we can short-circuit instead of waiting 45s for a redirect that won't happen.
+        await page.wait_for_timeout(2500)
+        try:
+            dup_text = await page.evaluate(
+                """() => {
+                    const sels = ['.toast', '.alert-danger', '.swal2-popup', '.notyf__message',
+                                  '[role="alert"]', '.error-message', '.invalid-feedback'];
+                    for (const s of sels) {
+                        const els = document.querySelectorAll(s);
+                        for (const el of els) {
+                            const t = (el.innerText || '').trim();
+                            if (!t) continue;
+                            if (/sku|c[óo]digo|j[áa]\\s+(cadastrad|exist|registrad)|duplicad|conflito/i.test(t)) {
+                                return t.slice(0, 240);
+                            }
+                        }
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:
+            dup_text = None
+        if dup_text:
+            await add_log(
+                "warning",
+                f"SKU já cadastrado/duplicado no JohnDrop — pulando: {dup_text}",
+                raw_title=raw_title,
+                cleaned_title=cleaned_title,
+            )
+            # Try to navigate back to the listing so the bot can continue with next item
+            try:
+                await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=20000)
+                await page.wait_for_timeout(1500)
+            except Exception:
+                pass
             return False
 
         # Wait for the redirect away from /createv2 to settle (avoids ERR_ABORTED on next goto)

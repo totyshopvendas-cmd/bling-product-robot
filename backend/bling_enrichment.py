@@ -56,26 +56,26 @@ def _sanitize(text: str, preserve_newlines: bool = False) -> str:
 
 
 SHORT_DESC_SYSTEM = (
-    "Você é um especialista em SEO para marketplaces brasileiros (Mercado Livre, Shopee, Amazon BR). "
-    "Reescreva descrições de produtos seguindo regras estritas. "
-    "REGRAS OBRIGATÓRIAS:\n"
+    "Você é um especialista em SEO para marketplaces brasileiros. "
+    "REGRA PRINCIPAL: a descrição final deve ser uma CÓPIA MELHORADA da descrição original do fornecedor — "
+    "PRESERVE todos os detalhes técnicos (medidas, materiais, isolamento, capacidades, cores disponíveis, "
+    "tamanhos, modelos, peso, dimensões), apenas reformate em parágrafos com negrito.\n"
+    "REGRAS:\n"
     "1. NUNCA use nomes de marca (XLS, Kapbom, Inova, Altomex, Eletromex, etc).\n"
     "2. NUNCA inclua códigos EAN/GTIN (sequências de 8-14 dígitos).\n"
-    "3. Use APENAS estes recursos de formatação:\n"
-    "   - Negrito via tags HTML <b>...</b>\n"
-    "   - Hífen (-)\n"
-    "   PROIBIDO usar: emojis, asteriscos, listas com bullets/números/símbolos, caracteres especiais.\n"
-    "4. ESTRUTURA EM PARÁGRAFOS: divida o texto em 3 a 5 parágrafos curtos.\n"
-    "   Separe os parágrafos com DUAS quebras de linha (\\n\\n).\n"
-    "   Cada parágrafo deve ter um foco diferente:\n"
-    "   - Parágrafo 1: visão geral / proposta de valor do produto\n"
-    "   - Parágrafo 2: características técnicas principais\n"
-    "   - Parágrafo 3: benefícios para o uso diário / situações de uso\n"
-    "   - Parágrafo 4: VARIAÇÕES (se houver — cores, tamanhos, modelos — destaque em <b>...</b>)\n"
-    "   - Parágrafo 5 (opcional): garantia de qualidade / chamado para ação\n"
-    "5. Foco SEO: use palavras-chave que compradores buscam (ex: 'portátil', 'recarregável', 'sem fio').\n"
-    "6. Texto total entre 400 e 900 caracteres. Linguagem persuasiva mas natural.\n"
-    "Responda APENAS com o texto da descrição em parágrafos. Sem aspas, sem comentários, sem prefixos."
+    "3. Formatação permitida APENAS:\n"
+    "   - <b>...</b> para destaques\n"
+    "   - Hífen (-) para listas\n"
+    "   PROIBIDO: emojis, asteriscos, símbolos especiais.\n"
+    "4. ESTRUTURA EM PARÁGRAFOS separados por \\n\\n. Sugestão:\n"
+    "   - Parágrafo 1: visão geral / título descritivo do produto\n"
+    "   - Parágrafo 2: <b>Especificações técnicas:</b> material, medidas, capacidade etc\n"
+    "   - Parágrafo 3: <b>Características de uso:</b> tempo de isolamento, durabilidade, modos de uso\n"
+    "   - Parágrafo 4: <b>Disponível nas cores:</b> + lista com hífen (PRESERVE EXATAMENTE as cores que aparecem na descrição original)\n"
+    "   - Parágrafo 5 (opcional): <b>Medidas:</b> + dimensões + <b>Peso:</b>\n"
+    "5. NUNCA invente informações que não estão na descrição original.\n"
+    "6. Texto total entre 500 e 1500 caracteres.\n"
+    "Responda APENAS o texto da descrição em parágrafos. Sem comentários."
 )
 
 
@@ -149,31 +149,41 @@ def _abbreviate_variation(name: str) -> str:
 
 
 def _parse_variations(raw_description: str) -> List[str]:
-    """Extract variation names from descriptions like 'Disponível nas cores: -Rosa -Verde -Azul'.
-    Returns list of variation names in original case."""
+    """Extract variation names from descriptions. Supports multiple Portuguese patterns:
+       - 'Disponível nas cores: -Rosa -Verde -Azul'
+       - 'Cores disponíveis: -Branco -Pink'
+       - 'Cores: -Preto -Branco'
+       - 'Tamanhos disponíveis: -P -M -G'
+       Skips items marked as '(esgotado)' or similar."""
     if not raw_description:
         return []
-    # Look for "Disponível nas cores:" or "Disponivel nos tamanhos:" patterns
-    pattern = re.compile(
-        r"dispon[ií]ve[il]\s+(?:nas?|nos?)\s+(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+)",
-        re.IGNORECASE,
-    )
-    m = pattern.search(raw_description)
-    if not m:
+    patterns = [
+        r"dispon[ií]ve[il]\s+(?:nas?|nos?)\s+(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+(?:\n[^.\n]+)*)",
+        r"(?:cores?|tamanhos?|modelos?)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*)",
+        r"(?:cores?|tamanhos?|modelos?)[:\s]+((?:\s*-\s*[A-ZÁ-Úa-zá-ú][^\n-]*)+)",
+    ]
+    body = ""
+    for pat in patterns:
+        m = re.search(pat, raw_description, re.IGNORECASE)
+        if m:
+            body = m.group(1)
+            break
+    if not body:
         return []
-    body = m.group(1)
-    # Split by hyphen-prefixed items or commas
-    parts = re.split(r"\s*[-,;]\s*", body)
+    parts = re.split(r"\s*[-,;\n]\s*", body)
     out: List[str] = []
     for p in parts:
         p = p.strip(" -")
         if not p or len(p) > 30:
             continue
-        # Skip generic words
-        if p.lower() in {"e", "ou", "etc", "...", ""}:
+        # Skip items marked as out of stock
+        if re.search(r"\(\s*esgotad", p, re.IGNORECASE) or re.search(r"\(\s*sem\s+estoque", p, re.IGNORECASE):
+            continue
+        # Remove parenthetical content like "(esgotado)" if any leftover
+        p = re.sub(r"\([^)]*\)", "", p).strip()
+        if not p or p.lower() in {"e", "ou", "etc", "..."}:
             continue
         out.append(p)
-    # Dedupe preserving order
     seen = set()
     deduped = []
     for v in out:
@@ -181,7 +191,7 @@ def _parse_variations(raw_description: str) -> List[str]:
         if kl not in seen:
             seen.add(kl)
             deduped.append(v)
-    return deduped[:10]  # cap at 10 variations
+    return deduped[:10]
 
 
 async def _find_jonh_supplier_id() -> Optional[int]:
@@ -422,8 +432,17 @@ async def update_bling_product(
         "unidade": "UN",
     }
 
-    # Images — preserve existing + append new ones (dedupe by URL)
-    existing_imgs = current.get("imagemURL") or current.get("midia", {}).get("imagens", {}).get("externas") or []
+    # Images — read from multiple possible Bling fields (imagemURL, midia.imagens.externas/internas)
+    existing_imgs: list = []
+    if isinstance(current.get("imagemURL"), list):
+        existing_imgs.extend(current["imagemURL"])
+    midia = current.get("midia") or {}
+    imgs_section = midia.get("imagens") or {}
+    for key in ("externas", "internas"):
+        for it in (imgs_section.get(key) or []):
+            link = it.get("link") or it.get("url") or it.get("src")
+            if link:
+                existing_imgs.append({"link": link})
     existing_urls = {(i.get("link") or "").strip() for i in existing_imgs if i.get("link")}
     image_list = list(existing_imgs)
     for url in (images or []):
@@ -474,37 +493,26 @@ async def update_bling_product(
                 },
             })
 
-    if new_variations:
+    # If product already has variations in Bling, DO NOT touch them — Bling has strict validation
+    # on existing variations with stock. Only add new variations to products without any.
+    if existing_var_codes:
+        merged["formato"] = current.get("formato") or "V"
+        merged.pop("variacoes", None)
+        new_variations = []  # don't try to add more
+    elif new_variations:
         merged["formato"] = "V"
-        # Preserve existing variations + add new ones
-        existing_payload = []
-        for v in (current.get("variacoes") or []):
-            existing_payload.append({
-                "id": v.get("id"),
-                "codigo": v.get("codigo"),
-                "preco": v.get("preco") or float(parent_price) if parent_price else 0.0,
-                "situacao": v.get("situacao") or "A",
-                "variacao": v.get("variacao") or {},
-            })
-        merged["variacoes"] = existing_payload + new_variations
-    elif existing_var_codes:
-        # Product already has variations — re-send them as-is so Bling validates
-        merged["formato"] = "V"
-        merged["variacoes"] = [
-            {
-                "id": v.get("id"),
-                "codigo": v.get("codigo"),
-                "preco": v.get("preco") or float(parent_price) if parent_price else 0.0,
-                "situacao": v.get("situacao") or "A",
-                "variacao": v.get("variacao") or {},
-            }
-            for v in (current.get("variacoes") or [])
-        ]
+        for nv in new_variations:
+            nv["actionEstoque"] = "B"
+        merged["variacoes"] = new_variations
     else:
         merged["formato"] = current.get("formato") or "S"
         merged.pop("variacoes", None)
 
     merged = {k: v for k, v in merged.items() if v is not None}
+    for k in ("acaoEstoque", "estoque", "estoqueMinimo", "estoqueMaximo", "tributacao"):
+        merged.pop(k, None)
+    # actionEstoque required ONLY for simple products. For variation parents (formato=V), Bling forbids it.
+    merged["actionEstoque"] = "E"
     resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
     if resp.status_code >= 400:
         await add_log("warning", f"Bling PUT {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")

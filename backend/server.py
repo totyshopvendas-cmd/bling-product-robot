@@ -26,6 +26,7 @@ import robot_service
 import johndrop_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
+import bulk_enrichment
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -240,6 +241,58 @@ async def bling_enrichment_logs(limit: int = 100) -> list:
 @api.get("/bling/enrichment/stats")
 async def bling_enrichment_stats() -> dict:
     return await bling_enrichment.get_enrichment_stats()
+
+
+# ---------- Bling Bulk Enrichment ----------
+@api.get("/bling/products-with-status")
+async def bling_products_with_status(
+    pagina: int = 1, limite: int = 50, filtro: str = "all", busca: str = ""
+) -> dict:
+    """Paginated Bling product list tagged as enriched / not enriched.
+    filtro = 'all' | 'enriched' | 'not_enriched'."""
+    return await bulk_enrichment.list_products_with_status(pagina, limite, filtro, busca)
+
+
+class BulkEnrichRequest(BaseModel):
+    product_ids: Optional[list[int]] = None
+    enrich_all_not_enriched: bool = False
+    max_items: int = 500
+
+
+@api.post("/bling/enrich-bulk")
+async def bling_enrich_bulk(payload: BulkEnrichRequest) -> dict:
+    """Start a background bulk enrichment job.
+
+    Either pass `product_ids` directly OR set `enrich_all_not_enriched=true` to
+    scan the Bling catalog and queue every non-enriched product (up to `max_items`).
+    """
+    ids = payload.product_ids or []
+    if payload.enrich_all_not_enriched:
+        scanned = await bulk_enrichment.collect_not_enriched_ids(max_items=payload.max_items)
+        # Merge with explicit IDs (de-dup, preserve order)
+        seen = set()
+        merged: list[int] = []
+        for i in list(ids) + scanned:
+            if i not in seen:
+                merged.append(i)
+                seen.add(i)
+        ids = merged
+    if not ids:
+        raise HTTPException(400, "Nenhum produto selecionado")
+    result = await bulk_enrichment.start(ids)
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("reason", "falha"))
+    return result
+
+
+@api.get("/bling/bulk-job")
+async def bling_bulk_job_status() -> dict:
+    return bulk_enrichment.job.to_dict()
+
+
+@api.post("/bling/bulk-job/stop")
+async def bling_bulk_job_stop() -> dict:
+    return await bulk_enrichment.stop()
 
 
 # ---------- Dashboard ----------

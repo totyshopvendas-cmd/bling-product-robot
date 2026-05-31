@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Sparkles, Tags, Bot, ScrollText, Settings as SettingsIcon,
-  CircleDot, Power, Menu, X, Layers,
+  CircleDot, Power, Menu, X, Layers, ListChecks,
 } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
@@ -13,6 +13,7 @@ const NAV = [
   { to: "/precos", icon: Tags, label: "Tabela de Preços" },
   { to: "/robo", icon: Bot, label: "Robô JohnDrop" },
   { to: "/bling", icon: Layers, label: "Enriquecimento Bling" },
+  { to: "/bling-lote", icon: ListChecks, label: "Enriquecer em Lote" },
   { to: "/logs", icon: ScrollText, label: "Logs" },
   { to: "/configuracoes", icon: SettingsIcon, label: "Configurações" },
 ];
