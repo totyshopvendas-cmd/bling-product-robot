@@ -2,12 +2,17 @@
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Tuple, Optional
+import asyncio
 import base64
 import httpx
 from fastapi import HTTPException
 from itsdangerous import URLSafeSerializer, BadSignature
 
 from db import db
+
+
+# Global semaphore to serialize Bling API calls (Bling rate limit = 3 req/sec)
+_bling_rate_limit = asyncio.Semaphore(1)
 
 
 BLING_CLIENT_ID = os.environ["BLING_CLIENT_ID"]
@@ -146,17 +151,32 @@ async def get_valid_access_token() -> Tuple[str, str]:
 
 
 async def bling_request(method: str, path: str, params=None, json=None) -> httpx.Response:
-    access_token, token_type = await get_valid_access_token()
-    url = f"{BLING_API_BASE_URL}{path}"
-    headers = {
-        "Authorization": f"{token_type} {access_token}",
-        "Accept": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
-        resp = await client.request(method, url, params=params, json=json, headers=headers)
+    """Throttled Bling request — caps at 2 requests/second to stay under Bling's 3 req/sec limit."""
+    async with _bling_rate_limit:
+        access_token, token_type = await get_valid_access_token()
+        url = f"{BLING_API_BASE_URL}{path}"
+        headers = {
+            "Authorization": f"{token_type} {access_token}",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+            resp = await client.request(method, url, params=params, json=json, headers=headers)
+        # Enforce ~500ms between Bling requests
+        await asyncio.sleep(0.5)
     if resp.status_code == 401:
         await disconnect()
         raise HTTPException(status_code=401, detail="Bling 401 — reconecte")
+    # Bling sometimes returns 429 even with our throttle — retry once after 2s
+    if resp.status_code == 429:
+        await asyncio.sleep(2.0)
+        async with _bling_rate_limit:
+            access_token, token_type = await get_valid_access_token()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+                resp = await client.request(method, url, params=params, json=json, headers={
+                    "Authorization": f"{token_type} {access_token}",
+                    "Accept": "application/json",
+                })
+            await asyncio.sleep(0.5)
     return resp
 
 
