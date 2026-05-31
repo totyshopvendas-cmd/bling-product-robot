@@ -441,61 +441,65 @@ async def _fill_sale_price(page, sale_price: int) -> bool:
     and typing the digits via keyboard so currency masks/React handlers fire."""
     value_str = str(sale_price)
 
-    # Find the actual input element by walking the DOM around the "Preço de Venda" text
+    # Find ALL candidate inputs first, then prefer visible ones.
     handle = await page.evaluate_handle(
         """
         () => {
             const norm = s => (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
             const target = 'preco de venda';
-
-            // 1. Direct match: input with placeholder containing the text
-            const phMatch = Array.from(document.querySelectorAll('input')).find(
-                i => norm(i.placeholder).includes(target)
-            );
-            if (phMatch) return phMatch;
-
-            // 2. Find element whose text is "Preço de Venda" then locate input around it
-            const all = Array.from(document.querySelectorAll('label, span, div, td, th, p'));
-            const labelEl = all.find(el => {
-                const t = norm(el.innerText || el.textContent || '');
-                return t === target || (t.includes(target) && t.length < 60);
-            });
-            if (!labelEl) return null;
-
-            // Look at siblings first, then walk up
-            const findInput = (el) => {
-                if (!el) return null;
-                if (el.tagName === 'INPUT') {
-                    const ph = norm(el.placeholder);
-                    if (!ph.includes('custo')) return el;
-                }
-                const ins = el.querySelectorAll
-                    ? el.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')
-                    : [];
-                for (const inp of ins) {
-                    const ph = norm(inp.placeholder);
-                    const nm = norm(inp.name);
-                    if (ph.includes('custo') || nm.includes('cost')) continue;
-                    return inp;
-                }
-                return null;
+            const isVisible = (el) => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return false;
+                const st = window.getComputedStyle(el);
+                if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+                return true;
             };
 
-            // Try next siblings of the label
-            let sib = labelEl.nextElementSibling;
-            for (let i = 0; i < 4 && sib; i++) {
-                const inp = findInput(sib);
-                if (inp) return inp;
-                sib = sib.nextElementSibling;
+            const candidates = [];
+
+            // 1. Inputs by placeholder
+            for (const inp of document.querySelectorAll('input')) {
+                if (norm(inp.placeholder).includes(target)) candidates.push(inp);
             }
-            // Walk up
-            let parent = labelEl.parentElement;
-            for (let i = 0; i < 5 && parent; i++) {
-                const inp = findInput(parent);
-                if (inp) return inp;
-                parent = parent.parentElement;
-            }
-            return null;
+
+            // 2. Labels/spans/divs whose text equals "Preço de Venda" → find nearby input
+            const labels = Array.from(document.querySelectorAll('label, span, div, td, th, p'))
+                .filter(el => {
+                    const t = norm(el.innerText || el.textContent || '');
+                    return t === target || (t.includes(target) && t.length < 60);
+                });
+            const findInputNear = (el) => {
+                const found = [];
+                let sib = el.nextElementSibling;
+                for (let i = 0; i < 4 && sib; i++) {
+                    for (const inp of sib.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')) {
+                        const ph = norm(inp.placeholder), nm = norm(inp.name);
+                        if (!ph.includes('custo') && !nm.includes('cost')) found.push(inp);
+                    }
+                    if (sib.tagName === 'INPUT') {
+                        const ph = norm(sib.placeholder);
+                        if (!ph.includes('custo')) found.push(sib);
+                    }
+                    sib = sib.nextElementSibling;
+                }
+                let parent = el.parentElement;
+                for (let i = 0; i < 5 && parent; i++) {
+                    for (const inp of parent.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')) {
+                        const ph = norm(inp.placeholder), nm = norm(inp.name);
+                        if (!ph.includes('custo') && !nm.includes('cost')) found.push(inp);
+                    }
+                    parent = parent.parentElement;
+                }
+                return found;
+            };
+            for (const lbl of labels) candidates.push(...findInputNear(lbl));
+
+            // De-dup + prefer VISIBLE candidates first
+            const seen = new Set();
+            const unique = candidates.filter(c => !seen.has(c) && seen.add(c));
+            const visible = unique.find(isVisible);
+            return visible || unique[0] || null;
         }
         """
     )
@@ -505,19 +509,71 @@ async def _fill_sale_price(page, sale_price: int) -> bool:
         return False
 
     try:
-        await elem.scroll_into_view_if_needed()
-        await elem.click(click_count=3)  # triple-click to select existing content
+        # Try to scroll/focus — if not visible, fall back to JS-based focus + value injection
+        is_visible = False
+        try:
+            is_visible = await elem.is_visible()
+        except Exception:
+            is_visible = False
+
+        if not is_visible:
+            await add_log("warning", "Campo 'Preço de Venda' está oculto — tentando expandir/scroll via JS")
+            # Try to force scroll + remove hidden styles via JS
+            await page.evaluate(
+                """el => {
+                    el.scrollIntoView({block: 'center'});
+                    // Remove hidden ancestors if any
+                    let cur = el;
+                    for (let i = 0; i < 6 && cur; i++) {
+                        const s = window.getComputedStyle(cur);
+                        if (s.display === 'none') cur.style.display = 'block';
+                        if (s.visibility === 'hidden') cur.style.visibility = 'visible';
+                        cur = cur.parentElement;
+                    }
+                    el.focus();
+                }""",
+                elem,
+            )
+            await page.wait_for_timeout(400)
+
+        # Now try scroll_into_view with shorter timeout
+        try:
+            await elem.scroll_into_view_if_needed(timeout=5000)
+        except Exception:
+            pass  # already tried via JS
+
+        # Try click; if it fails, dispatch keyboard events directly
+        try:
+            await elem.click(click_count=3, timeout=5000)
+        except Exception:
+            await elem.focus()
+
         await page.keyboard.press("Backspace")
-        # Type digits one by one — triggers currency masks / React onChange
         for ch in value_str:
             await page.keyboard.type(ch, delay=40)
-        await page.keyboard.press("Tab")  # blur to apply mask
+        await page.keyboard.press("Tab")
 
-        # Verify the value was written
         try:
             final_value = await elem.input_value()
         except Exception:
             final_value = ""
+        if not final_value:
+            # Last-resort: set value via JS + fire input event
+            try:
+                await page.evaluate(
+                    """([el, v]) => {
+                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(el, v);
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                        el.dispatchEvent(new Event('change', {bubbles: true}));
+                        el.dispatchEvent(new Event('blur', {bubbles: true}));
+                    }""",
+                    [elem, value_str],
+                )
+                await page.wait_for_timeout(300)
+                final_value = await elem.input_value()
+            except Exception:
+                pass
         if not final_value:
             await add_log("warning", f"Preço de Venda parece vazio após digitar ({value_str})")
             return False
