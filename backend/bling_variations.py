@@ -74,6 +74,23 @@ async def create_variations(
     if not parent_sku:
         return {"created": 0, "per_child_stock": 0}
 
+    # READ parent's CURRENT stock so we can redistribute when total_stock isn't given.
+    # Bling stores stock in `estoque.saldoVirtualTotal` (or sometimes `saldoFisicoTotal`).
+    # Important: when converting formato S→V we MUST use actionEstoque="Z" which
+    # zeroes the old simple stock — so we capture it here BEFORE the PATCH and
+    # redistribute to children in step 3.
+    if not total_stock or total_stock <= 0:
+        est = parent_current.get("estoque") or {}
+        captured = (
+            est.get("saldoVirtualTotal")
+            or est.get("saldoFisicoTotal")
+            or 0
+        )
+        try:
+            total_stock = int(captured)
+        except (TypeError, ValueError):
+            total_stock = 0
+
     # Build variation list
     existing_codes = set()
     for v in (parent_current.get("variacoes") or []):
@@ -164,19 +181,60 @@ async def create_variations(
     return {"created": created, "per_child_stock": per_child, "skipped": skipped}
 
 
+_DEPOSITO_CACHE: dict = {"id": None, "checked": False}
+
+
+async def _get_default_deposito_id() -> Optional[int]:
+    """Cache the default warehouse (depósito padrão) id from Bling."""
+    if _DEPOSITO_CACHE["checked"]:
+        return _DEPOSITO_CACHE["id"]
+    try:
+        r = await bling_service.bling_request("GET", "/depositos")
+        items = (r.json() or {}).get("data") or []
+        for d in items:
+            if d.get("padrao"):
+                _DEPOSITO_CACHE["id"] = d.get("id")
+                break
+        if not _DEPOSITO_CACHE["id"] and items:
+            _DEPOSITO_CACHE["id"] = items[0].get("id")
+    except Exception:
+        pass
+    _DEPOSITO_CACHE["checked"] = True
+    return _DEPOSITO_CACHE["id"]
+
+
 async def _set_children_stock(child_ids: List[int], qty: int) -> None:
-    """Update each child variation's stock to `qty` using PATCH /produtos/{id}."""
+    """Set each child variation's stock to absolute `qty` via POST /estoques.
+
+    The PATCH /produtos/{id} endpoint silently ignores stock updates on variations
+    (Bling returns 200 but doesn't persist). Must use the dedicated /estoques
+    endpoint with operacao="B" (Balanço = define saldo absoluto).
+    """
+    if not child_ids or qty <= 0:
+        return
+    dep_id = await _get_default_deposito_id()
+    if not dep_id:
+        await add_log("warning", "Estoque não distribuído: depósito padrão não encontrado")
+        return
+    ok = 0
     for cid in child_ids:
         try:
-            await bling_service.bling_request(
-                "PATCH", f"/produtos/{cid}",
+            r = await bling_service.bling_request(
+                "POST", "/estoques",
                 json={
-                    "estoque": {"minimo": 0, "maximo": 0, "crossdocking": 0, "saldoVirtualTotal": qty},
-                    "actionEstoque": "E",
+                    "produto": {"id": cid},
+                    "deposito": {"id": dep_id},
+                    "operacao": "B",
+                    "quantidade": qty,
+                    "observacoes": "Distribuição balanceada (Regra TotyShop)",
                 },
             )
+            if r.status_code < 400:
+                ok += 1
         except Exception:
             continue
+    if ok:
+        await add_log("info", f"Estoque distribuído: {ok}/{len(child_ids)} variações × {qty} unidades")
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
