@@ -45,46 +45,99 @@ async def _get_credentials():
     return doc.get("value")
 
 
+_EXPECTED_VERSION_CACHE: dict = {"version": None, "checked": False}
+
+
+def _expected_chromium_version() -> Optional[str]:
+    """Run `playwright install chromium --dry-run` and parse the version Playwright expects.
+    Uses sys.executable (the SAME python the backend is running under) to avoid version
+    mismatch between /usr/local/bin/python and the venv python."""
+    if _EXPECTED_VERSION_CACHE["checked"]:
+        return _EXPECTED_VERSION_CACHE["version"]
+    import subprocess
+    import sys
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"],
+            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+            capture_output=True, text=True, timeout=20,
+        )
+        for line in (r.stdout or "").splitlines():
+            m = re.search(r"playwright chromium v(\d+)", line)
+            if m:
+                _EXPECTED_VERSION_CACHE["version"] = m.group(1)
+                _EXPECTED_VERSION_CACHE["checked"] = True
+                return m.group(1)
+    except Exception:
+        pass
+    _EXPECTED_VERSION_CACHE["checked"] = True
+    return None
+
+
+def _expected_chromium_path() -> Optional[str]:
+    """Return the exact headless_shell path the current Playwright version expects."""
+    version = _expected_chromium_version()
+    if not version:
+        return None
+    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers")
+    return os.path.join(base, f"chromium_headless_shell-{version}", "chrome-linux", "headless_shell")
+
+
 def _find_chromium_binary() -> Optional[str]:
-    """Locate the playwright chromium headless_shell binary regardless of its version dir.
-    Returns the full path if found, else None."""
+    """Locate a usable chromium binary. Preference order:
+       1. The EXACT path the current Playwright version expects (ground truth).
+       2. Glob fallback for any installed version (covers edge cases)."""
+    expected = _expected_chromium_path()
+    if expected and os.path.isfile(expected):
+        return expected
     import glob
     base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers")
-    # Newer playwright uses headless_shell, older used chrome. Accept either.
     patterns = [
         os.path.join(base, "chromium_headless_shell-*/chrome-linux/headless_shell"),
         os.path.join(base, "chromium-*/chrome-linux/headless_shell"),
         os.path.join(base, "chromium-*/chrome-linux/chrome"),
     ]
     for pat in patterns:
-        matches = glob.glob(pat)
-        for m in matches:
+        for m in glob.glob(pat):
             if os.path.isfile(m):
                 return m
     return None
 
 
 async def _ensure_chromium_installed() -> bool:
-    """Block until a usable chromium binary exists. Installs it (sync) if missing.
-    Detects ANY installed version under PLAYWRIGHT_BROWSERS_PATH instead of hardcoding."""
-    import shutil
-    if _find_chromium_binary():
+    """Block until a chromium binary matching the CURRENT Playwright version exists.
+    If the installed version mismatches what Playwright expects, reinstalls."""
+    import sys
+    expected = _expected_chromium_path()
+    if expected and os.path.isfile(expected):
         return True
-    await add_log("warning", "Chromium ausente. Instalando agora (~109 MB, pode levar 30-60s)...")
-    python_bin = shutil.which("python") or "/root/.venv/bin/python"
+    if expected:
+        await add_log(
+            "warning",
+            f"Chromium ausente em {expected} (Playwright atualizado). Instalando agora (~109 MB)...",
+        )
+    else:
+        await add_log("warning", "Chromium ausente. Instalando agora (~109 MB)...")
     try:
         proc = await asyncio.create_subprocess_exec(
-            python_bin, "-m", "playwright", "install", "chromium",
+            sys.executable, "-m", "playwright", "install", "chromium",
             env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.wait(), timeout=240)
+        await asyncio.wait_for(proc.wait(), timeout=300)
     except Exception as e:
         await add_log("error", f"Falha ao instalar Chromium: {e}")
         return False
-    if _find_chromium_binary():
+    # Invalidate cache so we re-read the expected version
+    _EXPECTED_VERSION_CACHE["checked"] = False
+    _EXPECTED_VERSION_CACHE["version"] = None
+    expected = _expected_chromium_path()
+    if expected and os.path.isfile(expected):
         await add_log("success", "Chromium instalado com sucesso, retomando...")
+        return True
+    if _find_chromium_binary():
+        await add_log("success", "Chromium detectado (via fallback), retomando...")
         return True
     await add_log("error", "Chromium não encontrado após tentativa de instalação")
     return False
@@ -92,10 +145,13 @@ async def _ensure_chromium_installed() -> bool:
 
 def chromium_status() -> dict:
     """Public helper used by /api/system/chromium-status endpoint."""
-    path = _find_chromium_binary()
+    expected = _expected_chromium_path()
+    found = _find_chromium_binary()
     return {
-        "installed": bool(path),
-        "path": path,
+        "installed": bool(found) and (expected is None or os.path.isfile(expected)),
+        "path": found,
+        "expected": expected,
+        "matches_expected": bool(expected) and bool(found) and (found == expected),
         "browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"),
     }
 

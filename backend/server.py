@@ -47,12 +47,11 @@ async def _startup() -> None:
     # Uses dynamic version detection — works with any playwright version.
     try:
         import subprocess
-        import shutil
+        import sys
         if not johndrop_bot._find_chromium_binary():
             logger.warning("Chromium ausente — instalando em background...")
-            python_bin = shutil.which("python") or "/root/.venv/bin/python"
             subprocess.Popen(
-                [python_bin, "-m", "playwright", "install", "chromium"],
+                [sys.executable, "-m", "playwright", "install", "chromium"],
                 env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -79,13 +78,12 @@ async def system_chromium_status() -> dict:
 async def system_install_chromium() -> dict:
     """Trigger a background Chromium install. Idempotent — returns immediately."""
     import subprocess
-    import shutil
+    import sys
     status = johndrop_bot.chromium_status()
     if status["installed"]:
         return {"ok": True, "already_installed": True, "path": status["path"]}
-    python_bin = shutil.which("python") or "/root/.venv/bin/python"
     subprocess.Popen(
-        [python_bin, "-m", "playwright", "install", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
         env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
