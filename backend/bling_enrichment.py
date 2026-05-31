@@ -170,7 +170,10 @@ def _parse_variations(raw_description: str) -> List[str]:
             break
     if not body:
         return []
-    parts = re.split(r"\s*[-,;\n]\s*", body)
+    # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
+    # ("e", "ou") — these are how JohnDrop sellers list colors in plain text:
+    # "Disponível nas cores: rosa e roxo" → ["rosa", "roxo"]
+    parts = re.split(r"\s*(?:[-,;\n]|\s+(?:e|ou)\s+)\s*", body, flags=re.IGNORECASE)
     out: List[str] = []
     for p in parts:
         p = p.strip(" -")
@@ -183,6 +186,8 @@ def _parse_variations(raw_description: str) -> List[str]:
         p = re.sub(r"\([^)]*\)", "", p).strip()
         if not p or p.lower() in {"e", "ou", "etc", "..."}:
             continue
+        # Normalize case: first letter upper, rest lower (Rosa, Roxo, Azul-Marinho)
+        p = " ".join(w.capitalize() for w in p.split())
         out.append(p)
     seen = set()
     deduped = []
@@ -407,58 +412,40 @@ async def update_bling_product(
     variations: Optional[List[str]] = None,
     images: Optional[list] = None,
 ) -> bool:
-    """Bling v3 requires a FULL product on PUT. Merge new fields + optional variations + images."""
-    parent_sku = current.get("codigo") or ""
-    parent_name = current.get("nome") or ""
-    parent_price = current.get("preco") or 0
+    """PATCH the Bling product, sending ONLY the 7 fields the TotyShop manual asks
+    us to change. Every other field (nome, código, preço, peso, dimensões, imagens,
+    estoque, etc.) stays EXACTLY as it came from JohnDrop — no defaults, no zeroing.
 
-    merged = {
-        "nome": parent_name,
-        "codigo": parent_sku,
-        "preco": parent_price,
-        "tipo": current.get("tipo") or "P",
-        "situacao": current.get("situacao") or "A",
-        "formato": current.get("formato") or "S",
-        "descricaoCurta": payload.get("descricaoCurta", current.get("descricaoCurta", "")),
-        "descricaoComplementar": payload.get(
-            "descricaoComplementar", current.get("descricaoComplementar", "")
-        ),
-        # Per TotyShop manual: marca = "Generico" (masc.), condicao = Novo, Produção = Terceiros
+    Fields we touch:
+      1. descricaoCurta (sanitized + bullets)
+      2. descricaoComplementar (8 bullets)
+      3. marca = "Generico"
+      4. condicao = 1 (Novo)
+      5. tipoProducao = "T" (Terceiros)
+      6. gtin = ""
+      7. gtinEmbalagem = ""
+      (+ categoria when LLM matched one, + fornecedor via separate endpoint)
+    """
+    parent_name = current.get("nome") or ""
+
+    # Build a STRICTLY MINIMAL PATCH — never include nome, código, preço, peso,
+    # dimensões, imagens, estoque, formato, etc.
+    patch_payload: dict = {
         "marca": "Generico",
         "condicao": 1,
-        "tipoProducao": "T",  # T = Terceiros
+        "tipoProducao": "T",
         "gtin": "",
         "gtinEmbalagem": "",
-        "unidade": current.get("unidade") or "UN",
     }
-
-    # Images — read from multiple possible Bling fields (imagemURL, midia.imagens.externas/internas)
-    existing_imgs: list = []
-    if isinstance(current.get("imagemURL"), list):
-        existing_imgs.extend(current["imagemURL"])
-    midia = current.get("midia") or {}
-    imgs_section = midia.get("imagens") or {}
-    for key in ("externas", "internas"):
-        for it in (imgs_section.get(key) or []):
-            link = it.get("link") or it.get("url") or it.get("src")
-            if link:
-                existing_imgs.append({"link": link})
-    existing_urls = {(i.get("link") or "").strip() for i in existing_imgs if i.get("link")}
-    image_list = list(existing_imgs)
-    for url in (images or []):
-        if url and url not in existing_urls:
-            image_list.append({"link": url})
-            existing_urls.add(url)
-    if image_list:
-        merged["imagemURL"] = image_list
+    if payload.get("descricaoCurta"):
+        patch_payload["descricaoCurta"] = payload["descricaoCurta"]
+    if payload.get("descricaoComplementar"):
+        patch_payload["descricaoComplementar"] = payload["descricaoComplementar"]
     if payload.get("categoria"):
-        merged["categoria"] = payload["categoria"]
-    elif current.get("categoria"):
-        merged["categoria"] = current["categoria"]
+        patch_payload["categoria"] = payload["categoria"]
 
+    # Supplier collected here, applied AFTER the patch succeeds (separate endpoint)
     supplier_id = await _find_jonh_supplier_id()
-    # Supplier is linked via a SEPARATE endpoint (POST /produtos/fornecedores).
-    # We collect the entry here but apply it AFTER the main PUT/PATCH succeeds.
     supplier_entry: Optional[dict] = None
     if supplier_id:
         supplier_entry = {
@@ -474,54 +461,21 @@ async def update_bling_product(
             supplier_entry["precoCusto"] = round(float(cost), 2)
             supplier_entry["precoCompra"] = round(float(cost), 2)
 
-    # If parent already has variations registered, skip variation insertion to avoid duplicates
-    existing_var_codes = set()
-    for v in (current.get("variacoes") or []):
-        code = (v.get("codigo") or "").strip().upper()
-        if code:
-            existing_var_codes.add(code)
-
-    # If product already has variations in Bling, keep them untouched. Variations are managed
-    # by bling_variations.py (a separate post-enrichment step).
-    if existing_var_codes:
-        merged["formato"] = current.get("formato") or "V"
-    else:
-        merged["formato"] = current.get("formato") or "S"
-    merged.pop("variacoes", None)
-
-    merged = {k: v for k, v in merged.items() if v is not None}
-    for k in ("acaoEstoque", "estoque", "estoqueMinimo", "estoqueMaximo", "tributacao"):
-        merged.pop(k, None)
-    # For variation parents (formato=V) Bling rejects actionEstoque entirely; for simple
-    # products it's required. PATCH is more permissive than PUT for already-V products,
-    # so use PATCH when the product is already a variation parent.
-    if merged.get("formato") == "V":
-        merged.pop("actionEstoque", None)
-        # PATCH only the enrichment-relevant fields, leaving structure intact
-        patch_keys = {
-            "descricaoCurta", "descricaoComplementar", "marca", "condicao", "tipoProducao",
-            "gtin", "gtinEmbalagem", "imagemURL", "categoria",
-        }
-        patch_payload = {k: v for k, v in merged.items() if k in patch_keys}
-        resp = await bling_service.bling_request(
-            "PATCH", f"/produtos/{product_id}", json=patch_payload,
-        )
-    else:
-        merged["actionEstoque"] = "E"
-        resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
+    # Send PATCH — this is parcial, never overwrites unspecified fields
+    resp = await bling_service.bling_request(
+        "PATCH", f"/produtos/{product_id}", json=patch_payload,
+    )
     if resp.status_code >= 400:
         await add_log("warning", f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
         return False
 
-    # AFTER successful product update: link supplier (JONH VARIEDADES) via dedicated endpoint.
-    # Uses POST /produtos/fornecedores. Idempotent — Bling rejects duplicate links gracefully.
+    # AFTER successful PATCH: link supplier (JONH VARIEDADES) via dedicated endpoint.
     if supplier_entry:
         try:
             sr = await bling_service.bling_request(
                 "POST", "/produtos/fornecedores", json=supplier_entry,
             )
             if sr.status_code >= 400 and "j\u00e1" not in sr.text.lower():
-                # Log only if it's NOT the "já cadastrado" duplicate case
                 await add_log(
                     "info",
                     f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
