@@ -19,11 +19,11 @@ from robot_service import add_log
 
 def _is_enriched(product: dict) -> bool:
     """A product is considered 'already enriched' when it has both a short
-    description and a complementary description AND its brand is 'Generica'."""
+    description and a complementary description AND its brand is Generico/Generica."""
     short = (product.get("descricaoCurta") or "").strip()
     comp = (product.get("descricaoComplementar") or "").strip()
     brand = (product.get("marca") or "").strip().lower()
-    return bool(short) and bool(comp) and brand == "generica"
+    return bool(short) and bool(comp) and brand in ("generico", "generica")
 
 
 async def _fetch_full(product_id: int) -> Optional[dict]:

@@ -1,57 +1,63 @@
 # TotyShop Automation — PRD
 
 ## Problema Original
-Sistema para empresa TotyShop automatizando cadastro de produtos no fornecedor JohnDrop (https://app.jonhdrop.com.br) e sincronização com ERP Bling via API v3 (OAuth 2.0).
+Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento conforme manual TotyShop.
 
-### Regras de Limpeza de Título
-1. Remover marcas (XLS, Kapbom, Inova, Altomex, Eletromex, etc)
-2. Remover EANs (sequências 8-14 dígitos)
-3. Código do produto no FINAL (ex: KA-6070, JZ-USBD)
-4. Sem caracteres especiais — apenas hífen permitido
-5. Máximo 60 caracteres
+## Fluxo de Trabalho (alinhado ao manual)
 
-### Regra de Preço
-- Custo do JohnDrop → lookup na tabela CSV (col 1 = Custo Catálogo) → col 3 (Preço de Venda inteiro, sem pontuação, ex: 21,99 → 5050) → colar em "Preço de Venda" no JohnDrop
+### FASE 1: Robô JohnDrop
+- Login automático, navega para "Produtos não cadastrados"
+- Para cada produto: limpa SKU/título, busca preço na CSV, cadastra
+- Bling recebe via sync passivo (TRAVA DE CONCORRÊNCIA: nada é editado via API até sync completar)
 
-### Regras de Enriquecimento Bling
-- Descrição curta SEO em parágrafos com `<b>...</b>` e hífen (sem marcas/EAN)
-- 8 bullets técnicos (≤150 chars cada)
-- Marca = "Generica", Condição = 1 (Novo), GTIN limpo
-- Fornecedor = JONH VARIEDADES (com Título + ID JohnDrop + Custo)
-- Categoria mapeada via LLM + keyword fallback; **cria nova categoria automaticamente se não existir**
+### FASE 2: Enriquecimento (após produto chegar ao Bling)
+- **Descrição curta** SEO em parágrafos com `<b>negrito</b>`, sem marcas/EAN
+- **Descrição complementar**: 8 bullets ≤150 chars, com negrito
+- **Marca**: "Generico" (masculino — manual TotyShop)
+- **Tipo Produção**: "T" (Terceiros)
+- **Condição**: 1 (Novo)
+- **GTIN** + **GTIN tributário**: zerados
+- **Categoria**: SÓ existentes — manual proíbe criação de novas categorias pela IA
+- **Fornecedor**: vinculado via POST `/produtos/fornecedores` com JONH VARIEDADES + ID JohnDrop + Custo
+- **Variações** (cores/tamanhos): PATCH `/produtos/{id}` com `formato=V`, `actionEstoque=Z`, `variacoes=[]` → Bling cria automaticamente. Estoque distribuído igualmente (Regra Balanceada).
+- **Imagens**: chegam pelo sync nativo JohnDrop→Bling (não precisamos extrair)
 
 ## Arquitetura
-- **Backend**: FastAPI + MongoDB (motor) + httpx + Playwright + emergentintegrations
-- **Frontend**: React + Shadcn UI + Tailwind (tema TotyShop, laranja #EE7B22)
-- **LLM**: Claude Haiku 4.5 (Emergent LLM key)
-- **Automação JohnDrop**: Playwright/Chromium headless
+- **Backend**: FastAPI + MongoDB + Playwright + emergentintegrations
+- **Frontend**: React + Shadcn + Tailwind (tema TotyShop laranja)
+- **LLM**: Claude Haiku 4.5 via Emergent LLM Key
+- **Bling API v3** OAuth 2.0
 
-## Implementado
-- [x] Engine de limpeza de título (regex determinístico + LLM fallback)
-- [x] Importação CSV de preços + lookup por custo
-- [x] Bling OAuth v3 (authorize, callback, refresh, disconnect)
-- [x] Storage de credenciais JohnDrop em MongoDB
-- [x] Robô Playwright completo (login, navegação, limpeza SKU, preço, submit)
-- [x] Auto-instalação Chromium no boot
-- [x] Enriquecimento Bling pós-cadastro (descrição, 8 bullets, categoria)
-- [x] Categoria: cria automaticamente no Bling se não existir
-- [x] Sistema de logs em tempo real + Dashboard
-- [x] **(31/05/2026) Detecção de SKU duplicado no JohnDrop** — bot loga "warning" e pula em vez de travar 45s
-- [x] **(31/05/2026) Página "Enriquecer em Lote"** — lista produtos Bling com status enriched/pendente, seleção em massa, varredura "todos não enriquecidos", job em background com progresso ao vivo
+## Endpoints principais
+- `POST /api/robot/start` — inicia bot Playwright
+- `POST /api/bling/enrich` — enriquecimento manual de 1 SKU
+- `POST /api/bling/enrich-bulk` — fila em lote
+- `POST /api/bling/variations` — cria variações manualmente
+- `GET /api/bling/products-with-status` — lista produtos com flag enriched
+- `GET /api/system/chromium-status` — diagnóstico Chromium
 
-## Endpoints novos
-- `GET /api/bling/products-with-status?pagina=&limite=&filtro=&busca=` — produtos com flag `enriched`
-- `POST /api/bling/enrich-bulk` — inicia job em lote (lista de IDs OU `enrich_all_not_enriched: true`)
-- `GET /api/bling/bulk-job` — estado do job em execução
-- `POST /api/bling/bulk-job/stop` — interrompe job
+## Funcionalidades validadas (31/05/2026)
+- [x] Robô Playwright completo (login → catálogo → cadastro)
+- [x] Auto-instalação Chromium dinâmica (qualquer versão)
+- [x] Banner visual de status Chromium
+- [x] Detecção e skip de SKU duplicado no JohnDrop
+- [x] Descrição SEO + 8 bullets via LLM
+- [x] Marca "Generico" + Tipo Produção "T" via PATCH
+- [x] Categoria SÓ existentes (manual proibe criar novas)
+- [x] Fornecedor JONH VARIEDADES vinculado via POST /produtos/fornecedores
+- [x] Variações via PATCH com formato=V/actionEstoque=Z (fluxo único que Bling aceita)
+- [x] Distribuição balanceada de estoque entre variações
+- [x] Enriquecimento em lote com seleção + "todos não enriquecidos"
+- [x] Job background com progresso ao vivo
 
-## Backlog (P1)
-- Conta JohnDrop com mensalidade atrasada bloqueia catálogo (depende do usuário pagar)
-- Adicionar criptografia Fernet das credenciais JohnDrop em DB
-- Migrar @app.on_event para FastAPI lifespan
+## Validado em produção (KA-966 e Copo-260ComTampa)
+- Marca: ✅ Generico
+- Tipo Produção: ✅ T
+- Fornecedor: ✅ JONH VARIEDADES com código JohnDrop 119689 e custo R$ 9,99
+- Variações: ✅ 3 criadas (Cor:Rosa/Azul/Verde), estoque 10 cada (30 total ÷ 3)
 
 ## Backlog (P2)
-- Importação não-destrutiva do CSV (temp collection + swap)
-- Webhook/cron para sync periódico Bling↔JohnDrop
-- Multi-tenant (atualmente single-account)
-- Limpeza de hooks React (lint warnings)
+- Conta JohnDrop com mensalidade atrasada (depende do user)
+- Criptografia Fernet das credenciais
+- Migrar @app.on_event → FastAPI lifespan
+- Limpeza de warnings de hooks React

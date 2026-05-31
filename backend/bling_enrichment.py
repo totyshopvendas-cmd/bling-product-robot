@@ -195,12 +195,14 @@ def _parse_variations(raw_description: str) -> List[str]:
 
 
 async def _find_jonh_supplier_id() -> Optional[int]:
-    """Find Bling supplier (contato) named JONH VARIEDADES. Cached after first lookup."""
+    """Find Bling supplier (contato) named JONH VARIEDADES. Cached after first lookup.
+    Note: Bling's `pesquisa` param does NOT match multi-word queries verbatim, so we search
+    by the unique single word "JONH" and filter the results client-side."""
     if _SUPPLIER_CACHE["id"]:
         return _SUPPLIER_CACHE["id"]
     try:
         resp = await bling_service.bling_request(
-            "GET", "/contatos", params={"pesquisa": "JONH VARIEDADES", "limite": 10}
+            "GET", "/contatos", params={"pesquisa": "JONH", "limite": 20}
         )
         if resp.status_code >= 400:
             return None
@@ -302,33 +304,32 @@ async def _create_bling_category(name: str) -> Optional[int]:
 
 
 async def pick_or_create_category(raw_title: str, raw_description: str) -> Optional[int]:
-    """Use LLM to pick best Bling category; fallback to keyword match; create new one if needed."""
+    """Use LLM to pick best Bling category from EXISTING ones; never create new categories.
+
+    Per TotyShop manual: "É proibida a criação desordenada de novas categorias pela IA.
+    O robô deve buscar termos correspondentes que já existam criados no Bling."
+    """
     cats = await _list_bling_categories()
     cat_list = "\n".join(f"- id={c['id']}: {c['descricao']}" for c in cats[:150])
     user = (
         f"Produto: {raw_title}\n"
         f"Descrição: {(raw_description or '')[:300]}\n\n"
-        f"Categorias disponíveis no Bling:\n{cat_list or '(nenhuma)'}"
+        f"Categorias disponíveis no Bling:\n{cat_list or '(nenhuma)'}\n\n"
+        f"IMPORTANTE: você só pode escolher entre as categorias listadas acima. "
+        f"NUNCA invente uma nova. Se nenhuma servir, responda category_id=null."
     )
     raw = await _llm_call(CATEGORY_SYSTEM, user)
-    cid = None
-    # Try to extract JSON object even if there's prose around it
     m = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
     json_str = m.group(0) if m else raw
     try:
         data = json.loads(json_str)
         cid = data.get("category_id")
-        new_name = data.get("category_name")
         if cid:
             return int(cid)
-        if new_name:
-            created = await _create_bling_category(new_name)
-            if created:
-                return created
     except Exception:
         await add_log("warning", f"Categoria: LLM retornou inválido — fallback keyword. Raw: {raw[:120]}")
 
-    # Fallback keyword match against existing categories — covers the user's 132 categories
+    # Fallback keyword match against EXISTING categories only
     title_lower = (raw_title or "").lower()
     keyword_map = [
         ("Acessorios para Celular", ["controle gamer celular", "joystick celular", "gamepad celular", "manete celular"]),
@@ -375,9 +376,7 @@ async def pick_or_create_category(raw_title: str, raw_description: str) -> Optio
             existing = next((c for c in cats if cat_name.lower() in (c.get("descricao") or "").lower()), None)
             if existing:
                 return existing["id"]
-            created = await _create_bling_category(cat_name)
-            if created:
-                return created
+    await add_log("info", "Nenhuma categoria existente combinou — produto ficará sem categoria (regra do manual).")
     return None
 
 
@@ -424,11 +423,13 @@ async def update_bling_product(
         "descricaoComplementar": payload.get(
             "descricaoComplementar", current.get("descricaoComplementar", "")
         ),
-        "marca": "Generica",
+        # Per TotyShop manual: marca = "Generico" (masc.), condicao = Novo, Produção = Terceiros
+        "marca": "Generico",
         "condicao": 1,
+        "tipoProducao": "T",  # T = Terceiros
         "gtin": "",
         "gtinEmbalagem": "",
-        "unidade": "UN",
+        "unidade": current.get("unidade") or "UN",
     }
 
     # Images — read from multiple possible Bling fields (imagemURL, midia.imagens.externas/internas)
@@ -456,18 +457,22 @@ async def update_bling_product(
         merged["categoria"] = current["categoria"]
 
     supplier_id = await _find_jonh_supplier_id()
+    # Supplier is linked via a SEPARATE endpoint (POST /produtos/fornecedores).
+    # We collect the entry here but apply it AFTER the main PUT/PATCH succeeds.
+    supplier_entry: Optional[dict] = None
     if supplier_id:
-        fornecedor_entry: dict = {
+        supplier_entry = {
+            "produto": {"id": product_id},
             "fornecedor": {"id": supplier_id},
-            "descricao": parent_name,
+            "descricao": parent_name[:120],
             "padrao": True,
+            "garantia": 0,
         }
         if johndrop_id:
-            fornecedor_entry["codigo"] = str(johndrop_id)
+            supplier_entry["codigo"] = str(johndrop_id)
         if cost and cost > 0:
-            fornecedor_entry["precoCusto"] = round(float(cost), 2)
-            fornecedor_entry["precoCompra"] = round(float(cost), 2)
-        merged["fornecedores"] = [fornecedor_entry]
+            supplier_entry["precoCusto"] = round(float(cost), 2)
+            supplier_entry["precoCompra"] = round(float(cost), 2)
 
     # If parent already has variations registered, skip variation insertion to avoid duplicates
     existing_var_codes = set()
@@ -476,10 +481,8 @@ async def update_bling_product(
         if code:
             existing_var_codes.add(code)
 
-    # If product already has variations in Bling, keep them untouched. Otherwise we DO NOT
-    # try to create new variations here — Bling has strict validation rules (estoque,
-    # actionEstoque, código, etc.) that break the simpler enrichment flow. Variations should
-    # be created manually in Bling; enrichment only updates description/bullets/category/brand.
+    # If product already has variations in Bling, keep them untouched. Variations are managed
+    # by bling_variations.py (a separate post-enrichment step).
     if existing_var_codes:
         merged["formato"] = current.get("formato") or "V"
     else:
@@ -489,16 +492,43 @@ async def update_bling_product(
     merged = {k: v for k, v in merged.items() if v is not None}
     for k in ("acaoEstoque", "estoque", "estoqueMinimo", "estoqueMaximo", "tributacao"):
         merged.pop(k, None)
-    # actionEstoque required ONLY for simple products. For variation parents (formato=V), Bling
-    # rejects the field on the parent (it lives on each variation).
+    # For variation parents (formato=V) Bling rejects actionEstoque entirely; for simple
+    # products it's required. PATCH is more permissive than PUT for already-V products,
+    # so use PATCH when the product is already a variation parent.
     if merged.get("formato") == "V":
         merged.pop("actionEstoque", None)
+        # PATCH only the enrichment-relevant fields, leaving structure intact
+        patch_keys = {
+            "descricaoCurta", "descricaoComplementar", "marca", "condicao", "tipoProducao",
+            "gtin", "gtinEmbalagem", "imagemURL", "categoria",
+        }
+        patch_payload = {k: v for k, v in merged.items() if k in patch_keys}
+        resp = await bling_service.bling_request(
+            "PATCH", f"/produtos/{product_id}", json=patch_payload,
+        )
     else:
         merged["actionEstoque"] = "E"
-    resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
+        resp = await bling_service.bling_request("PUT", f"/produtos/{product_id}", json=merged)
     if resp.status_code >= 400:
-        await add_log("warning", f"Bling PUT {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
+        await add_log("warning", f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
         return False
+
+    # AFTER successful product update: link supplier (JONH VARIEDADES) via dedicated endpoint.
+    # Uses POST /produtos/fornecedores. Idempotent — Bling rejects duplicate links gracefully.
+    if supplier_entry:
+        try:
+            sr = await bling_service.bling_request(
+                "POST", "/produtos/fornecedores", json=supplier_entry,
+            )
+            if sr.status_code >= 400 and "j\u00e1" not in sr.text.lower():
+                # Log only if it's NOT the "já cadastrado" duplicate case
+                await add_log(
+                    "info",
+                    f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
+                )
+        except Exception as e:
+            await add_log("info", f"Bling fornecedor {product_id}: {e}")
+
     return True
 
 
@@ -600,7 +630,30 @@ async def enrich_product_by_sku(
             cost=cost,
             variations=variations,
         )
-        return {"ok": True, "product_id": product_id, "category_id": category_id, "variations_count": len(variations) if variations else 0}
+        # AFTER successful enrichment: try to create variations (color/size).
+        # This NEVER raises — if Bling rejects, only a warning is logged.
+        variations_created = 0
+        if variations:
+            try:
+                import bling_variations
+                # Re-fetch product to get latest state (after the PUT just done)
+                latest = await _fetch_bling_product_full(product_id) or full
+                # Total stock from JohnDrop is not passed today — distribution starts at 0
+                # and admin can adjust manually. Pass 0 here so we don't accidentally
+                # overwrite stock the user may have already set.
+                result = await bling_variations.create_variations(
+                    product_id, latest, variations, total_stock=0,
+                )
+                variations_created = result.get("created", 0)
+            except Exception as e:
+                await add_log("warning", f"Variações pós-enrich falharam para {sku}: {e}")
+        return {
+            "ok": True,
+            "product_id": product_id,
+            "category_id": category_id,
+            "variations_detected": len(variations) if variations else 0,
+            "variations_created": variations_created,
+        }
 
     await add_log("warning", f"Bling: PUT retornou erro para {sku}")
     await _save_log(sku, "error", "PUT retornou status >= 400", product_id=product_id)

@@ -268,6 +268,26 @@ async def bling_enrichment_stats() -> dict:
     return await bling_enrichment.get_enrichment_stats()
 
 
+# ---------- Bling Variations ----------
+class VariationsRequest(BaseModel):
+    sku: str
+    variations: list[str]
+    total_stock: int = 0
+
+
+@api.post("/bling/variations")
+async def bling_create_variations(payload: VariationsRequest) -> dict:
+    """Manually create color/size variations on an existing Bling parent product.
+    Distributes total_stock equally between children (Regra de Distribuição Balanceada)."""
+    import bling_variations as bv
+    if not payload.sku or not payload.variations:
+        raise HTTPException(400, "Informe sku e lista de variações")
+    result = await bv.find_and_create(payload.sku, payload.variations, payload.total_stock)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("reason", "falhou"))
+    return result
+
+
 # ---------- Bling Bulk Enrichment ----------
 @api.get("/bling/products-with-status")
 async def bling_products_with_status(
