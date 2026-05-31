@@ -31,8 +31,8 @@ LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-haiku-4-5-20251001"
 
 # Bling product sync may take a few seconds — retry finding the product
-FIND_PRODUCT_MAX_ATTEMPTS = 6
-FIND_PRODUCT_DELAY_S = 10
+FIND_PRODUCT_MAX_ATTEMPTS = 18
+FIND_PRODUCT_DELAY_S = 15
 
 BLOCKED_BRAND_RE = re.compile(
     r"\b(XLS|Kapbom|Inova|Altomex|Eletromex|Hayamax|JONHDROP|Jonh Variedades|Variedades)\b",
