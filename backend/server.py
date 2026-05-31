@@ -220,6 +220,7 @@ class EnrichRequest(BaseModel):
     raw_description: str = ""
     johndrop_id: Optional[str] = None
     cost: Optional[float] = None
+    images: Optional[list] = None
 
 
 @api.post("/bling/enrich")
@@ -227,7 +228,7 @@ async def bling_enrich_endpoint(payload: EnrichRequest) -> dict:
     """Manually trigger enrichment for a SKU."""
     return await bling_enrichment.enrich_product_by_sku(
         payload.sku, payload.raw_title, payload.raw_description,
-        johndrop_id=payload.johndrop_id, cost=payload.cost,
+        johndrop_id=payload.johndrop_id, cost=payload.cost, images=payload.images,
     )
 
 

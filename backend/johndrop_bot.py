@@ -95,12 +95,14 @@ async def _playwright_available() -> bool:
 
 
 async def _safe_enrich_bling(sku: str, cleaned_title: str, raw_description: str,
-                              johndrop_id: Optional[str] = None, cost: Optional[float] = None) -> None:
+                              johndrop_id: Optional[str] = None, cost: Optional[float] = None,
+                              images: Optional[list] = None) -> None:
     """Run Bling enrichment in background — never raises, just logs."""
     try:
         import bling_enrichment
         await bling_enrichment.enrich_product_by_sku(
-            sku, cleaned_title, raw_description, johndrop_id=johndrop_id, cost=cost
+            sku, cleaned_title, raw_description,
+            johndrop_id=johndrop_id, cost=cost, images=images,
         )
     except Exception as e:
         await add_log("error", f"Bling enrichment background falhou para {sku}: {e}")
@@ -434,6 +436,34 @@ async def _read_product_fields(page) -> Tuple[str, float]:
     return raw_title, cost
 
 
+async def _read_product_images(page) -> list:
+    """Extract all image URLs from JohnDrop product creation form (IMAGES section)."""
+    try:
+        urls = await page.evaluate(
+            """
+            () => {
+                const imgs = Array.from(document.querySelectorAll('img'));
+                const urls = [];
+                for (const img of imgs) {
+                    const src = img.src || '';
+                    // Heuristic: only product images (skip logos, icons, avatars)
+                    if (!src) continue;
+                    if (src.includes('logo') || src.includes('avatar') || src.includes('icon')) continue;
+                    if (src.startsWith('data:')) continue;
+                    // Bling/JohnDrop product images are usually .jpg/.jpeg/.png/.webp
+                    if (!/\\.(jpe?g|png|webp)(\\?|$)/i.test(src)) continue;
+                    if (img.naturalWidth > 0 && img.naturalWidth < 80) continue;
+                    if (!urls.includes(src)) urls.push(src);
+                }
+                return urls;
+            }
+            """
+        )
+        return [u for u in (urls or []) if u][:12]  # cap at 12 images
+    except Exception:
+        return []
+
+
 async def _read_product_description(page) -> str:
     """Read the raw product description from JohnDrop (textarea or contenteditable)."""
     try:
@@ -581,6 +611,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     # 2b. Read raw description (used later for Bling enrichment)
     raw_description = await _read_product_description(page)
+    raw_images = await _read_product_images(page)
 
     # 3. Clean SKU (only letters, digits, hyphen)
     sku = await _clean_sku_field(page)
@@ -636,7 +667,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         if sku:
             asyncio.create_task(
                 _safe_enrich_bling(sku, cleaned["cleaned"], raw_description,
-                                   johndrop_id=johndrop_id, cost=cost)
+                                   johndrop_id=johndrop_id, cost=cost, images=raw_images)
             )
     else:
         robot.failed += 1

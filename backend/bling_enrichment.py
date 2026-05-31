@@ -321,6 +321,7 @@ async def pick_or_create_category(raw_title: str, raw_description: str) -> Optio
     # Fallback keyword match against existing categories — covers the user's 132 categories
     title_lower = (raw_title or "").lower()
     keyword_map = [
+        ("Acessorios para Celular", ["controle gamer celular", "joystick celular", "gamepad celular", "manete celular"]),
         ("Pendrive", ["pendrive", "flash drive", "chaveiro 64gb", "chaveiro 32gb"]),
         ("Smartwatches", ["smartwatch", "smart watch"]),
         ("Relógios Digitais", ["relógio digital", "relogio digital"]),
@@ -395,8 +396,9 @@ async def update_bling_product(
     johndrop_id: Optional[str] = None,
     cost: Optional[float] = None,
     variations: Optional[List[str]] = None,
+    images: Optional[list] = None,
 ) -> bool:
-    """Bling v3 requires a FULL product on PUT. Merge new fields + optional variations."""
+    """Bling v3 requires a FULL product on PUT. Merge new fields + optional variations + images."""
     parent_sku = current.get("codigo") or ""
     parent_name = current.get("nome") or ""
     parent_price = current.get("preco") or 0
@@ -417,7 +419,19 @@ async def update_bling_product(
         "condicao": 1,
         "gtin": "",
         "gtinEmbalagem": "",
+        "unidade": "UN",
     }
+
+    # Images — preserve existing + append new ones (dedupe by URL)
+    existing_imgs = current.get("imagemURL") or current.get("midia", {}).get("imagens", {}).get("externas") or []
+    existing_urls = {(i.get("link") or "").strip() for i in existing_imgs if i.get("link")}
+    image_list = list(existing_imgs)
+    for url in (images or []):
+        if url and url not in existing_urls:
+            image_list.append({"link": url})
+            existing_urls.add(url)
+    if image_list:
+        merged["imagemURL"] = image_list
     if payload.get("categoria"):
         merged["categoria"] = payload["categoria"]
     elif current.get("categoria"):
@@ -524,6 +538,7 @@ async def enrich_product_by_sku(
     raw_description: str = "",
     johndrop_id: Optional[str] = None,
     cost: Optional[float] = None,
+    images: Optional[list] = None,
 ) -> dict:
     """Main enrichment flow. Idempotent — finds product, enriches it, logs result."""
     sku = (sku or "").strip()
@@ -575,7 +590,8 @@ async def enrich_product_by_sku(
             await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
         ok = await update_bling_product(
             product_id, full, payload,
-            johndrop_id=johndrop_id, cost=cost, variations=variations or None
+            johndrop_id=johndrop_id, cost=cost, variations=variations or None,
+            images=images,
         )
     except Exception as e:
         await add_log("error", f"Bling: PUT falhou para {sku}: {e}")
