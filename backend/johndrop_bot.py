@@ -27,7 +27,7 @@ JOHNDROP_CATALOG_BASE_URL = "https://app.jonhdrop.com.br/dashboard/catalog"
 JOHNDROP_CATALOG_URL = f"{JOHNDROP_CATALOG_BASE_URL}?integration_filter=without_integration"
 INTEGRATION_NAME = "TotyShop-Bling"
 SKU_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\-]")
-DELAY_BETWEEN_PRODUCTS_S = 15  # pause após cadastrar com sucesso (evita rate-limit do JohnDrop)
+DELAY_BETWEEN_PRODUCTS_S = 25  # pause após cadastrar com sucesso (evita rate-limit do JohnDrop)
 
 
 async def _save_credentials(username: str, password: str):
@@ -182,7 +182,8 @@ async def _playwright_available() -> bool:
 async def _safe_enrich_bling(sku: str, cleaned_title: str, raw_description: str,
                               johndrop_id: Optional[str] = None, cost: Optional[float] = None,
                               images: Optional[list] = None) -> None:
-    """Run Bling enrichment in background — never raises, just logs."""
+    """Run Bling enrichment in background — never raises, just logs.
+    If the LLM budget is exhausted, flips a flag so the main loop stops queueing more work."""
     try:
         import bling_enrichment
         await bling_enrichment.enrich_product_by_sku(
@@ -190,7 +191,14 @@ async def _safe_enrich_bling(sku: str, cleaned_title: str, raw_description: str,
             johndrop_id=johndrop_id, cost=cost, images=images,
         )
     except Exception as e:
-        await add_log("error", f"Bling enrichment background falhou para {sku}: {e}")
+        msg = str(e)
+        await add_log("error", f"Bling enrichment background falhou para {sku}: {msg}")
+        if "Budget has been exceeded" in msg or "budget" in msg.lower():
+            robot.message = (
+                "Saldo da Universal Key esgotado. Recarregue em "
+                "Profile → Universal Key → Add Balance e use 'Enriquecer em Lote' para reprocessar."
+            )
+            robot.llm_budget_exhausted = True
 
 
 async def run_bot(max_products: int = 10, dry_run: bool = True):
@@ -844,6 +852,13 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
             while processed_count < max_products:
                 if robot.stop_flag:
                     await add_log("warning", "Robô interrompido")
+                    break
+                if robot.llm_budget_exhausted:
+                    await add_log(
+                        "warning",
+                        "🛑 Saldo da Universal Key esgotado — robô parado para evitar gastos extras. "
+                        "Recarregue em Profile → Universal Key e use 'Enriquecer em Lote' para reprocessar.",
+                    )
                     break
                 if not await _process_one_product(page, dry_run, seen_skus):
                     break

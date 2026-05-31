@@ -19,6 +19,7 @@ class RobotState:
         self.message: Optional[str] = None
         self.task: Optional[asyncio.Task] = None
         self.stop_flag = False
+        self.llm_budget_exhausted = False
 
     def reset(self):
         self.current_product = None
@@ -29,6 +30,7 @@ class RobotState:
         self.finished_at = None
         self.message = None
         self.stop_flag = False
+        self.llm_budget_exhausted = False
 
     def to_dict(self):
         return {
