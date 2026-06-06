@@ -18,6 +18,7 @@ export default function SocialSettingsPage() {
   const [showSecret, setShowSecret] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [exchanging, setExchanging] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -35,10 +36,27 @@ export default function SocialSettingsPage() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/social/meta/credentials");
+        if (cancelled) return;
+        setConfigured(Boolean(data.configured));
+        setInfo(data);
+        if (data.configured) setForm((f) => ({ ...f, app_id: data.app_id || "" }));
+      } catch (e) {
+        logger.error("load meta creds:", e);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const save = async () => {
-    if (!form.app_id || !form.app_secret || !form.page_access_token) {
+    const missing = !form.app_id || !form.app_secret || !form.page_access_token;
+    if (missing) {
       toast.error("Preencha App ID, Chave Secreta e Token");
       return;
     }
@@ -71,6 +89,21 @@ export default function SocialSettingsPage() {
       toast.error(e?.response?.data?.detail || "Falha ao testar");
     } finally {
       setTesting(false);
+    }
+  };
+
+  const exchangeToken = async () => {
+    setExchanging(true);
+    setTestResult(null);
+    try {
+      const { data } = await api.post("/social/meta/exchange-token");
+      toast.success("Token convertido para vitalício!");
+      setTestResult({ ok: true, ...data });
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha ao converter token");
+    } finally {
+      setExchanging(false);
     }
   };
 
@@ -190,7 +223,7 @@ export default function SocialSettingsPage() {
           </span>
         </div>
 
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-2 flex-wrap">
           <button
             data-testid="save-meta-creds"
             onClick={save}
@@ -209,6 +242,23 @@ export default function SocialSettingsPage() {
             {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
             Testar conexão
           </button>
+          <button
+            data-testid="exchange-meta-token"
+            onClick={exchangeToken}
+            disabled={exchanging || !configured}
+            title="Converte seu token de 1 hora em um Page Access Token que NUNCA expira"
+            className="bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-sm hover:bg-emerald-800 disabled:opacity-40 inline-flex items-center gap-2"
+          >
+            {exchanging ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+            Tornar Token Vitalício
+          </button>
+        </div>
+
+        <div className="text-xs text-zinc-600 bg-zinc-50 border border-zinc-200 p-3 rounded-sm leading-relaxed">
+          <strong>💡 Dica:</strong> Tokens gerados no Graph API Explorer duram apenas <strong>1 hora</strong>.
+          Depois de salvar, clique em <strong>Tornar Token Vitalício</strong> para que o sistema troque
+          automaticamente por um Page Access Token que <strong>nunca expira</strong> (usando seu App ID + Secret).
+          Após isso, também detectamos o Instagram Business linkado à sua página.
         </div>
       </div>
 
