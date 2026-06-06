@@ -150,6 +150,54 @@ def _abbreviate_variation(name: str) -> str:
     return letters or "VA"
 
 
+def _parse_variation_quantities(raw_description: str, variations: List[str]) -> dict:
+    """Detect explicit per-variation quantities AND out-of-stock markers in the description.
+
+    Supported formats (case-insensitive):
+      - "Rosa: 5"     /  "Rosa - 5"
+      - "Rosa (5)"    /  "Rosa (5 unidades)"
+      - "5 Rosa"      /  "5 unidades de Rosa"
+      - "Rosa (esgotado)" / "Rosa (sem estoque)" → returns 0
+      - "Rosa - Esgotado"                        → returns 0
+
+    Returns {variation_name: qty} only for the variations explicitly quantified
+    or marked as out-of-stock. Variations NOT present in the dict should get the
+    equal split of remaining stock.
+    """
+    out: dict = {}
+    if not raw_description or not variations:
+        return out
+    text = raw_description
+    for v in variations:
+        v_re = re.escape(v)
+        # Out-of-stock markers FIRST (force 0)
+        oos_patterns = [
+            rf"{v_re}\s*[\(\-:]?\s*esgotad[oa]?",
+            rf"{v_re}\s*[\(\-:]?\s*sem\s+estoque",
+            rf"{v_re}\s*[\(\-:]?\s*indispon[ií]ve[il]",
+            rf"{v_re}\s*[\(\-:]?\s*0\s*(?:un|unidad|peças?)?\s*\)?",
+        ]
+        is_oos = any(re.search(p, text, re.IGNORECASE) for p in oos_patterns)
+        if is_oos:
+            out[v] = 0
+            continue
+
+        patterns = [
+            rf"{v_re}\s*[:\-–]\s*(\d{{1,4}})",
+            rf"{v_re}\s*\(\s*(\d{{1,4}})\s*(?:un|unidad|pcs|peças?)?\s*\)",
+            rf"(\d{{1,4}})\s+(?:un|unidade?s?|pcs)?\s*(?:de\s+)?{v_re}\b",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                try:
+                    out[v] = int(m.group(1))
+                    break
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
 def _parse_variations(raw_description: str) -> List[str]:
     """Extract variation names from descriptions following strict TotyShop rules:
 
@@ -198,16 +246,15 @@ def _parse_variations(raw_description: str) -> List[str]:
         p = p.strip(" -")
         if not p or len(p) > 30:
             continue
-        # Skip items marked as out of stock
-        if re.search(r"\(\s*esgotad", p, re.IGNORECASE) or re.search(r"\(\s*sem\s+estoque", p, re.IGNORECASE):
-            continue
-        # Remove parenthetical content
-        p = re.sub(r"\([^)]*\)", "", p).strip()
-        if not p or p.lower() in {"e", "ou", "etc", "..."}:
+        # NOTE: we KEEP items marked as "(esgotado)" — variations with 0 stock should be
+        # created in Bling with quantity=0 (per TotyShop manual). The status info is
+        # extracted later by _parse_variation_quantities.
+        # Remove parenthetical content (e.g. "(esgotado)" or "(5)") for the name itself
+        p_clean = re.sub(r"\([^)]*\)", "", p).strip()
+        if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
             continue
         # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
-        # Real variation names are 1-2 words: Rosa, Azul Marinho, Preto Fosco
-        words = p.split()
+        words = p_clean.split()
         if len(words) > 2:
             continue
         # FILTER: phrases that start with descriptive adjectives
@@ -218,8 +265,8 @@ def _parse_variations(raw_description: str) -> List[str]:
         if words and words[0].lower() in descriptive_starts:
             continue
         # Normalize case
-        p = " ".join(w.capitalize() for w in words)
-        out.append(p)
+        p_clean = " ".join(w.capitalize() for w in words)
+        out.append(p_clean)
     seen = set()
     deduped = []
     for v in out:
@@ -623,8 +670,16 @@ async def enrich_product_by_sku(
                 import bling_variations
                 # Re-fetch product to get latest state (after the PUT just done)
                 latest = await _fetch_bling_product_full(product_id) or full
+                # Parse explicit per-variation quantities from description (e.g. "Rosa: 5")
+                explicit_qty = _parse_variation_quantities(raw_description, variations)
+                if explicit_qty:
+                    await add_log(
+                        "info",
+                        f"Quantidades específicas detectadas: {explicit_qty}",
+                    )
                 result = await bling_variations.create_variations(
-                    product_id, latest, variations, total_stock=0, parent_images=images,
+                    product_id, latest, variations, total_stock=0,
+                    parent_images=images, explicit_quantities=explicit_qty or None,
                 )
                 variations_created = result.get("created", 0)
             except Exception as e:

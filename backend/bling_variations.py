@@ -49,6 +49,7 @@ async def create_variations(
     variations: List[str],
     total_stock: int = 0,
     parent_images: Optional[List[str]] = None,
+    explicit_quantities: Optional[dict] = None,
 ) -> dict:
     """Create variations on a Bling parent. Single PATCH call.
 
@@ -56,6 +57,10 @@ async def create_variations(
 
     If `parent_images` is given (URLs from JohnDrop), each child variation will
     receive a copy of those images via a follow-up PATCH using `imagensURL`.
+
+    If `explicit_quantities` is given (e.g. {"Rosa": 5, "Azul": 3}), each variation
+    receives its specified amount. Variations not in the dict receive the equal
+    split of remaining stock (Regra de Distribuição Balanceada).
     """
     if not variations:
         return {"created": 0, "per_child_stock": 0}
@@ -87,16 +92,36 @@ async def create_variations(
             or 0
         )
         try:
-            total_stock = int(captured)
+            total_stock = int(captured) if captured else 0
         except (TypeError, ValueError):
             total_stock = 0
+        # Fallback: dedicated stock endpoint (sometimes /produtos doesn't include stock)
+        if total_stock <= 0:
+            try:
+                sr = await bling_service.bling_request(
+                    "GET", "/estoques/saldos",
+                    params={"idsProdutos[]": parent_id},
+                )
+                if sr.status_code < 400:
+                    rows = (sr.json() or {}).get("data") or []
+                    if rows:
+                        v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
+                        total_stock = int(v) if v else 0
+            except Exception:
+                pass
+        await add_log(
+            "info",
+            f"Variações pid={parent_id}: estoque capturado do pai = {total_stock} (para distribuição balanceada)",
+        )
 
-    # Build variation list
-    existing_codes = set()
+    # Build variation list — NO codigo (SKU): user explicitly requested to skip SKU
+    # generation. Bling will keep variations identified only by `variacao.nome`
+    # ("Cor:Rosa", "Tamanho:M" etc).
+    existing_names = set()
     for v in (parent_current.get("variacoes") or []):
-        c = (v.get("codigo") or "").strip().upper()
-        if c:
-            existing_codes.add(c)
+        nome_var = (v.get("variacao") or {}).get("nome") or ""
+        if nome_var:
+            existing_names.add(nome_var.strip().lower())
 
     new_vars: List[dict] = []
     skipped = 0
@@ -105,19 +130,18 @@ async def create_variations(
         if not clean:
             continue
         kind = _attribute_kind(clean)
-        sub_code = f"{parent_sku}-{_abbr(clean)}".upper()
-        if sub_code in existing_codes:
+        var_label = f"{kind}:{clean}"
+        if var_label.lower() in existing_names:
             skipped += 1
             continue
         new_vars.append({
             "nome": f"{parent_name} {clean}"[:120],
-            "codigo": sub_code,
             "preco": float(parent_price) if parent_price else 0.0,
             "tipo": "P",
             "situacao": "A",  # toggle "Situação do produto" ATIVO
             "formato": "S",
             "variacao": {
-                "nome": f"{kind}:{clean}",
+                "nome": var_label,
                 # toggle "Utilizar informações do produto pai" ATIVO — herda imagens,
                 # descrição, categoria, marca, peso, dimensões do pai
                 "produtoPai": {"cloneInfo": True},
@@ -160,12 +184,40 @@ async def create_variations(
     except Exception:
         created = len(new_vars)
 
-    # Distribute total stock equally
+    # Build map: saved variation id → its name (Rosa, Azul, P, M etc) from the response
+    name_to_id: dict = {}
+    try:
+        body_data = (resp.json() or {}).get("data") or {}
+        for s in (body_data.get("variations") or {}).get("saved") or []:
+            sid = s.get("id")
+            nome_var = s.get("nomeVariacao") or ""
+            # nomeVariacao format: "Cor:Rosa" → take after the colon
+            label = nome_var.split(":", 1)[-1].strip() if ":" in nome_var else nome_var.strip()
+            if sid and label:
+                name_to_id[label] = sid
+    except Exception:
+        pass
+
+    # Distribute stock — explicit quantities first (including ZEROS for out-of-stock),
+    # then equal split for the remaining ones.
     per_child = 0
-    if total_stock and total_stock > 0 and saved_ids:
-        per_child = total_stock // len(saved_ids)
-        if per_child > 0:
-            await _set_children_stock(saved_ids, per_child)
+    if saved_ids:
+        explicit_map = explicit_quantities or {}
+        remaining_ids = list(saved_ids)
+        for var_name, qty in explicit_map.items():
+            sid = name_to_id.get(var_name)
+            if not sid:
+                continue
+            qty_int = max(0, int(qty))
+            # Apply absolute (including 0 to ensure out-of-stock variations show 0)
+            await _set_children_stock([sid], qty_int)
+            if sid in remaining_ids:
+                remaining_ids.remove(sid)
+        # Equal split between the ones NOT explicitly quantified
+        if total_stock and total_stock > 0 and remaining_ids:
+            per_child = total_stock // len(remaining_ids)
+            if per_child > 0:
+                await _set_children_stock(remaining_ids, per_child)
 
     # Copy parent images onto each child variation so the Bling listing shows
     # a thumbnail for each variation (cloneInfo alone does NOT do this visually —
@@ -206,11 +258,14 @@ async def _get_default_deposito_id() -> Optional[int]:
 async def _set_children_stock(child_ids: List[int], qty: int) -> None:
     """Set each child variation's stock to absolute `qty` via POST /estoques.
 
+    Accepts qty=0 to explicitly mark out-of-stock variations (per TotyShop manual:
+    variações esgotadas devem ser criadas com saldo zero).
+
     The PATCH /produtos/{id} endpoint silently ignores stock updates on variations
     (Bling returns 200 but doesn't persist). Must use the dedicated /estoques
     endpoint with operacao="B" (Balanço = define saldo absoluto).
     """
-    if not child_ids or qty <= 0:
+    if not child_ids or qty < 0:
         return
     dep_id = await _get_default_deposito_id()
     if not dep_id:
@@ -234,7 +289,7 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
         except Exception:
             continue
     if ok:
-        await add_log("info", f"Estoque distribuído: {ok}/{len(child_ids)} variações × {qty} unidades")
+        await add_log("info", f"Estoque definido: {ok}/{len(child_ids)} variações × {qty} unidades")
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
