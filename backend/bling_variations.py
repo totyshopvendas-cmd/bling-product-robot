@@ -337,17 +337,16 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
-    """No-op when image_urls is empty (Bling auto-clones via cloneInfo=true).
+    """No-op when image_urls is empty.
 
-    When image_urls is provided (real PUBLIC URLs from JohnDrop, NOT Bling S3),
-    sends them via `midia.imagens.imagensURL` to each child. Bling downloads
-    and stores them as the child's own images.
+    TESTED & CONFIRMED: the manual UI trick "disable cloneInfo, save, re-enable,
+    save" CANNOT be replicated via Bling API — it always breaks the parent-child
+    link, even when variacao.nome is preserved. The PATCH endpoint behaves
+    differently from the UI button.
 
-    NOTE: We discovered that disabling `cloneInfo=true` BREAKS the parent-child
-    link in Bling. We MUST keep cloneInfo=true and only push images via the
-    writeOnly `imagensURL` field — Bling stores them as own images when it
-    accepts them. If the URLs are pre-signed S3 (with `?Signature=...`), Bling
-    silently rejects them.
+    When `image_urls` is given (PUBLIC URLs from JohnDrop), tries to push them via
+    `imagensURL`. Bling silently ignores when cloneInfo=true on variations, but
+    it does work on simple/parent products.
     """
     clean_urls = [u for u in (image_urls or []) if u and not u.startswith("data:")]
     clean_urls = [u for u in clean_urls if "AWSAccessKeyId=" not in u and "X-Amz-Signature=" not in u]
@@ -368,30 +367,28 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
     if ok:
         await add_log(
             "info",
-            f"Imagens copiadas para {ok}/{len(child_ids)} variações ({len(payload_imgs)} cada)",
+            f"Imagens enviadas para {ok}/{len(child_ids)} variações ({len(payload_imgs)} cada)",
         )
     return ok
 
 
 async def fix_existing_variations(parent_id: int) -> dict:
-    """Push parent's PUBLIC image URLs (if any) to each child variation.
-    Safe operation: never disables cloneInfo (which would break parent-child link).
-    """
+    """⚠️ SAFE no-op. Initially designed to replicate the manual Bling UI trick
+    (toggle OFF → save → ON → save to materialize parent images), but EXTENSIVE
+    TESTING in production proved the PATCH endpoint always breaks the parent-child
+    link even when variacao.nome is preserved — UI behaves differently from API.
+
+    Variations created via API always show parent's images via cloneInfo
+    inheritance in the product detail screen. The "thumbnail per variation" in
+    the LIST view is a Bling UI-only feature with no API support."""
     r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
     if r.status_code >= 400:
         return {"ok": False, "reason": "produto não encontrado"}
     parent = (r.json() or {}).get("data") or {}
     children = parent.get("variacoes") or []
-    child_ids = [v.get("id") for v in children if v.get("id")]
-    if not child_ids:
-        return {"ok": True, "fixed": 0, "failed": 0, "total": 0,
-                "note": "Produto sem variações"}
-    # Bling stores parent images as pre-signed S3 (with ?Signature=...) which
-    # cannot be re-sent via API. Only PUBLIC URLs (e.g. originals from JohnDrop)
-    # work. So we can't auto-copy from a Bling parent — need URL source.
     return {
-        "ok": True, "fixed": 0, "failed": 0, "total": len(child_ids),
-        "note": "Imagens do pai estão em S3 com expiração — só funcionam se vierem do JohnDrop. Use o robô para um produto novo.",
+        "ok": True, "fixed": 0, "failed": 0, "total": len(children),
+        "note": "Bling API não permite materializar imagens em variações sem quebrar o vínculo. Use a UI do Bling manualmente.",
     }
 
 
