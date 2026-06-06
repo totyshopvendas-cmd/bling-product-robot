@@ -80,57 +80,15 @@ async def create_variations(
         return {"created": 0, "per_child_stock": 0}
 
     # READ parent's CURRENT stock so we can redistribute when total_stock isn't given.
-    # Bling stores stock in `estoque.saldoVirtualTotal` (or sometimes `saldoFisicoTotal`).
-    # Important: when converting formato S→V we MUST use actionEstoque="Z" which
-    # zeroes the old simple stock — so we capture it here BEFORE the PATCH and
-    # redistribute to children in step 3.
+    # Important: JohnDrop syncs the product to Bling in TWO phases — the product
+    # data first (which lets us find it), and the stock saldo a few moments later.
+    # If we PATCH formato=V before stock arrives, actionEstoque="Z" zeros it and
+    # we permanently lose the count.
+    #
+    # Solution: poll /estoques/saldos with backoff for up to ~60 seconds. Only
+    # proceed once we've captured a real number (or definitively given up).
     if not total_stock or total_stock <= 0:
-        # Primary source: dedicated /estoques/saldos endpoint (more reliable than
-        # GET /produtos which often returns estoque=None even when stock exists).
-        try:
-            sr = await bling_service.bling_request(
-                "GET", "/estoques/saldos",
-                params={"idsProdutos[]": parent_id},
-            )
-            if sr.status_code < 400:
-                rows = (sr.json() or {}).get("data") or []
-                if rows:
-                    v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
-                    total_stock = int(v) if v else 0
-        except Exception:
-            pass
-        # Fallback: read embedded estoque field from product
-        if total_stock <= 0:
-            est = parent_current.get("estoque") or {}
-            captured = (
-                est.get("saldoVirtualTotal")
-                or est.get("saldoFisicoTotal")
-                or 0
-            )
-            try:
-                total_stock = int(captured) if captured else 0
-            except (TypeError, ValueError):
-                total_stock = 0
-        # Fallback 2: wait for JohnDrop sync (8s) and retry once
-        if total_stock <= 0:
-            import asyncio as _asyncio
-            await add_log(
-                "info",
-                "Estoque ainda 0 — aguardando 8s pelo sync JohnDrop→Bling...",
-            )
-            await _asyncio.sleep(8)
-            try:
-                sr = await bling_service.bling_request(
-                    "GET", "/estoques/saldos",
-                    params={"idsProdutos[]": parent_id},
-                )
-                if sr.status_code < 400:
-                    rows = (sr.json() or {}).get("data") or []
-                    if rows:
-                        v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
-                        total_stock = int(v) if v else 0
-            except Exception:
-                pass
+        total_stock = await _read_parent_stock_with_retry(parent_id, parent_current)
         await add_log(
             "info",
             f"Variações pid={parent_id}: estoque capturado do pai = {total_stock} "
@@ -280,6 +238,71 @@ async def create_variations(
 _DEPOSITO_CACHE: dict = {"id": None, "checked": False}
 
 
+async def _read_parent_stock_with_retry(
+    parent_id: int, parent_current: Optional[dict] = None,
+    max_attempts: int = 6, delay_s: float = 10.0,
+) -> int:
+    """Read parent product's current stock from Bling with retry/backoff.
+
+    JohnDrop pushes the product to Bling, then a few moments later pushes the
+    stock saldo (separate API call inside JohnDrop). We poll
+    `/estoques/saldos` until we either capture a real positive value or exhaust
+    `max_attempts × delay_s` seconds.
+
+    Returns the captured quantity (0 if nothing arrived in time)."""
+    import asyncio as _asyncio
+
+    async def _try_saldos() -> int:
+        try:
+            sr = await bling_service.bling_request(
+                "GET", "/estoques/saldos", params={"idsProdutos[]": parent_id},
+            )
+            if sr.status_code >= 400:
+                return 0
+            rows = (sr.json() or {}).get("data") or []
+            if not rows:
+                return 0
+            v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
+            return int(v) if v else 0
+        except Exception:
+            return 0
+
+    # Quick first read — many products already have stock at this point
+    qty = await _try_saldos()
+    if qty > 0:
+        return qty
+
+    # Embedded fallback (sometimes stock comes inside GET /produtos but not saldos)
+    if parent_current:
+        est = parent_current.get("estoque") or {}
+        captured = est.get("saldoVirtualTotal") or est.get("saldoFisicoTotal") or 0
+        try:
+            qty = int(captured) if captured else 0
+        except (TypeError, ValueError):
+            qty = 0
+        if qty > 0:
+            return qty
+
+    # Poll with backoff — JohnDrop sync can lag up to ~45s after product creation
+    for attempt in range(1, max_attempts + 1):
+        await add_log(
+            "info",
+            f"Estoque ainda 0 — aguardando {delay_s:.0f}s pelo sync "
+            f"JohnDrop→Bling (tentativa {attempt}/{max_attempts})",
+        )
+        await _asyncio.sleep(delay_s)
+        qty = await _try_saldos()
+        if qty > 0:
+            await add_log("info", f"Estoque sincronizado: {qty} unidades capturadas")
+            return qty
+    await add_log(
+        "warning",
+        f"Estoque do pai pid={parent_id} permaneceu 0 após {max_attempts * delay_s:.0f}s "
+        "— variações serão criadas com 0 unidades.",
+    )
+    return 0
+
+
 async def _get_default_deposito_id() -> Optional[int]:
     """Cache the default warehouse (depósito padrão) id from Bling."""
     if _DEPOSITO_CACHE["checked"]:
@@ -337,23 +360,24 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
-    """No-op when image_urls is empty.
+    """Push parent images onto each child variation so the Bling listing shows
+    a thumbnail per variation.
 
-    TESTED & CONFIRMED: the manual UI trick "disable cloneInfo, save, re-enable,
-    save" CANNOT be replicated via Bling API — it always breaks the parent-child
-    link, even when variacao.nome is preserved. The PATCH endpoint behaves
-    differently from the UI button.
+    IMPORTANT history note: an earlier version of this function filtered out
+    "AWSAccessKeyId" / "X-Amz-Signature" URLs (S3 presigned). That was WRONG —
+    Bling downloads the image at request time, so a short-lived presigned URL is
+    fine. The filter caused JohnDrop images (which are S3 presigned) to be
+    silently dropped, leaving variations imageless. The filter is now removed.
 
-    When `image_urls` is given (PUBLIC URLs from JohnDrop), tries to push them via
-    `imagensURL`. Bling silently ignores when cloneInfo=true on variations, but
-    it does work on simple/parent products.
+    Returns the count of variations that accepted the images. We send via
+    `midia.imagens.imagensURL` which Bling does honor on variations.
     """
-    clean_urls = [u for u in (image_urls or []) if u and not u.startswith("data:")]
-    clean_urls = [u for u in clean_urls if "AWSAccessKeyId=" not in u and "X-Amz-Signature=" not in u]
+    clean_urls = [u for u in (image_urls or []) if u and not u.startswith("data:") and not u.startswith("blob:")]
     if not clean_urls or not child_ids:
         return 0
     payload_imgs = [{"link": u} for u in clean_urls[:12]]
     ok = 0
+    failures: List[str] = []
     for cid in child_ids:
         try:
             r = await bling_service.bling_request(
@@ -362,25 +386,101 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
             )
             if r.status_code < 400:
                 ok += 1
-        except Exception:
+            else:
+                failures.append(f"{cid}:{r.status_code}")
+        except Exception as e:
+            failures.append(f"{cid}:{type(e).__name__}")
             continue
     if ok:
         await add_log(
             "info",
             f"Imagens enviadas para {ok}/{len(child_ids)} variações ({len(payload_imgs)} cada)",
         )
+    if failures:
+        await add_log(
+            "warning",
+            f"Imagens em variações: {len(failures)} falhas — {', '.join(failures[:5])}",
+        )
     return ok
 
 
-async def fix_existing_variations(parent_id: int) -> dict:
-    """⚠️ SAFE no-op. Initially designed to replicate the manual Bling UI trick
-    (toggle OFF → save → ON → save to materialize parent images), but EXTENSIVE
-    TESTING in production proved the PATCH endpoint always breaks the parent-child
-    link even when variacao.nome is preserved — UI behaves differently from API.
+async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
+    """Scan Bling for variation parents (formato=V) where children have 0 stock
+    while parent has stock. Redistribute from parent to children equally.
+    Used to fix products cadastrated before the stock fix landed."""
+    import asyncio as _asyncio
+    fixed = 0
+    scanned = 0
+    pagina = 1
+    while scanned < max_items and pagina < 20:
+        r = await bling_service.bling_request("GET", "/produtos", params={"pagina": pagina, "limite": 50})
+        if r.status_code >= 400:
+            break
+        items = (r.json() or {}).get("data") or []
+        if not items:
+            break
+        for it in items:
+            scanned += 1
+            pid = it.get("id")
+            if not pid:
+                continue
+            # Read full
+            full = await bling_service.bling_request("GET", f"/produtos/{pid}")
+            if full.status_code >= 400:
+                continue
+            data = (full.json() or {}).get("data") or {}
+            if (data.get("formato") or "").upper() != "V":
+                continue
+            children = data.get("variacoes") or []
+            if not children:
+                continue
+            # Get parent stock via /saldos
+            sr = await bling_service.bling_request("GET", "/estoques/saldos", params={"idsProdutos[]": pid})
+            total = 0
+            rows = (sr.json() or {}).get("data") or [] if sr.status_code < 400 else []
+            if rows:
+                total = int(rows[0].get("saldoVirtualTotal") or 0)
+            if total <= 0:
+                continue
+            # Distribute
+            dep_id = await _get_default_deposito_id()
+            if not dep_id:
+                continue
+            per_child = total // len(children)
+            remainder = total - per_child * len(children)
+            for i, v in enumerate(children):
+                cid = v.get("id")
+                if not cid:
+                    continue
+                qty = per_child + (1 if i < remainder else 0)
+                await bling_service.bling_request("POST", "/estoques", json={
+                    "produto": {"id": cid}, "deposito": {"id": dep_id},
+                    "operacao": "B", "quantidade": qty,
+                    "observacoes": "Redistribuição em lote",
+                })
+            # Zero parent
+            await bling_service.bling_request("POST", "/estoques", json={
+                "produto": {"id": pid}, "deposito": {"id": dep_id},
+                "operacao": "B", "quantidade": 0,
+                "observacoes": "Pai zerado pós-distribuição",
+            })
+            fixed += 1
+            await _asyncio.sleep(0.3)
+        pagina += 1
+    return {"ok": True, "scanned": scanned, "fixed": fixed}
 
-    Variations created via API always show parent's images via cloneInfo
-    inheritance in the product detail screen. The "thumbnail per variation" in
-    the LIST view is a Bling UI-only feature with no API support."""
+
+async def fix_existing_variations(parent_id: int) -> dict:
+    """Read existing variations of a parent and report their state.
+
+    Note: the manual UI trick "disable cloneInfo, save, re-enable, save" to
+    materialize per-variation thumbnails CANNOT be replicated via Bling API.
+    Variations created via API still inherit parent images via cloneInfo on the
+    detail screen. For per-variation thumbnails in the LIST view, the user must
+    perform the toggle manually in the Bling UI.
+
+    This function exists so the UI can show how many children a parent has.
+    """
     r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
     if r.status_code >= 400:
         return {"ok": False, "reason": "produto não encontrado"}
@@ -388,7 +488,7 @@ async def fix_existing_variations(parent_id: int) -> dict:
     children = parent.get("variacoes") or []
     return {
         "ok": True, "fixed": 0, "failed": 0, "total": len(children),
-        "note": "Bling API não permite materializar imagens em variações sem quebrar o vínculo. Use a UI do Bling manualmente.",
+        "note": "Para materializar thumbnails de variação use a UI do Bling: desabilitar cloneInfo, salvar, reabilitar, salvar.",
     }
 
 

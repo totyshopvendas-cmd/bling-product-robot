@@ -12,6 +12,7 @@ import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
 import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
 import SocialSettings from "@/pages/SocialSettings";
+import CreateAd from "@/pages/CreateAd";
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />
           <Route path="/redes-sociais" element={<SocialSettings />} />
+          <Route path="/criar-anuncio" element={<CreateAd />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>

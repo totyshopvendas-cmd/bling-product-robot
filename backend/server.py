@@ -28,6 +28,7 @@ from llm_cleaner import llm_clean_title
 import bling_enrichment
 import bulk_enrichment
 from social_service import router as social_router
+from social_ad_service import router as social_ad_router
 from diag_service import router as diag_router
 
 
@@ -395,6 +396,7 @@ async def dashboard_stats() -> DashboardStats:
 
 
 api.include_router(social_router)
+api.include_router(social_ad_router)
 api.include_router(diag_router)
 app.include_router(api)
 
