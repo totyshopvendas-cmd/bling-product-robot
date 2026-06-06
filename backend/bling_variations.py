@@ -95,8 +95,29 @@ async def create_variations(
             total_stock = int(captured) if captured else 0
         except (TypeError, ValueError):
             total_stock = 0
-        # Fallback: dedicated stock endpoint (sometimes /produtos doesn't include stock)
+        # Fallback 1: dedicated stock endpoint (sometimes /produtos doesn't include stock)
         if total_stock <= 0:
+            try:
+                sr = await bling_service.bling_request(
+                    "GET", "/estoques/saldos",
+                    params={"idsProdutos[]": parent_id},
+                )
+                if sr.status_code < 400:
+                    rows = (sr.json() or {}).get("data") or []
+                    if rows:
+                        v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
+                        total_stock = int(v) if v else 0
+            except Exception:
+                pass
+        # Fallback 2: JohnDrop sync may still be in flight. Wait 8s and retry once.
+        # This gives Bling time to receive the stock from JohnDrop's native sync.
+        if total_stock <= 0:
+            import asyncio as _asyncio
+            await add_log(
+                "info",
+                f"Estoque ainda 0 — aguardando 8s pelo sync JohnDrop→Bling antes de distribuir...",
+            )
+            await _asyncio.sleep(8)
             try:
                 sr = await bling_service.bling_request(
                     "GET", "/estoques/saldos",
@@ -111,7 +132,8 @@ async def create_variations(
                 pass
         await add_log(
             "info",
-            f"Variações pid={parent_id}: estoque capturado do pai = {total_stock} (para distribuição balanceada)",
+            f"Variações pid={parent_id}: estoque capturado do pai = {total_stock} "
+            f"(será dividido entre {len(variations)} variações = {total_stock // max(len(variations),1)} cada)",
         )
 
     # Build variation list — NO codigo (SKU): user explicitly requested to skip SKU

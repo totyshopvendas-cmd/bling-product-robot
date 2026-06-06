@@ -28,6 +28,7 @@ from llm_cleaner import llm_clean_title
 import bling_enrichment
 import bulk_enrichment
 from social_service import router as social_router
+from diag_service import router as diag_router
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -394,6 +395,7 @@ async def dashboard_stats() -> DashboardStats:
 
 
 api.include_router(social_router)
+api.include_router(diag_router)
 app.include_router(api)
 
 app.add_middleware(

@@ -98,10 +98,11 @@ async def test_meta_connection() -> dict:
         raise HTTPException(400, "Token inválido ou corrompido")
 
     async with httpx.AsyncClient(timeout=15) as cx:
-        # 1. Validate token + get page info
+        # 1. Validate token + get page/user info. Use minimal fields to support both
+        # User Tokens and Page Tokens (the `category` field doesn't exist on user tokens).
         r = await cx.get(
             "https://graph.facebook.com/v23.0/me",
-            params={"access_token": token, "fields": "id,name,category"},
+            params={"access_token": token, "fields": "id,name"},
         )
         if r.status_code >= 400:
             return {"ok": False, "error": r.json().get("error", {}).get("message", r.text[:200])}
