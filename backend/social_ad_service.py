@@ -21,7 +21,7 @@ import httpx
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
@@ -122,9 +122,24 @@ async def _download_image_b64(url: str) -> Optional[str]:
         return None
 
 
-def _public_asset_url(asset_id: str) -> str:
-    """Build the publicly-reachable URL for a stored asset."""
-    backend = os.environ.get("PUBLIC_BACKEND_URL") or os.environ.get("REACT_APP_BACKEND_URL", "")
+def _public_asset_url(asset_id: str, request: Optional[Request] = None) -> str:
+    """Build the publicly-reachable URL for a stored asset.
+
+    Priority:
+      1. PUBLIC_BACKEND_URL env (explicit override for deploys behind a CDN)
+      2. The incoming Request.base_url (auto-derives external URL even when
+         backend doesn't know its own hostname — works on Kubernetes ingress)
+      3. REACT_APP_BACKEND_URL env (legacy fallback)
+    Always returns an ABSOLUTE https URL — Meta Graph API rejects relative paths.
+    """
+    backend = (os.environ.get("PUBLIC_BACKEND_URL") or "").strip()
+    if not backend:
+        backend = os.environ.get("APP_BASE_URL", "").strip()
+    if not backend and request is not None:
+        # request.base_url is like "https://host/" — strip trailing slash
+        backend = str(request.base_url).rstrip("/")
+    if not backend:
+        backend = os.environ.get("REACT_APP_BACKEND_URL", "").strip()
     backend = backend.rstrip("/")
     return f"{backend}/api/social/ad/asset/{asset_id}.png"
 
@@ -139,7 +154,7 @@ class GenerateAdRequest(BaseModel):
 
 
 @router.post("/ad/generate")
-async def generate_ad(payload: GenerateAdRequest) -> dict:
+async def generate_ad(payload: GenerateAdRequest, request: Request) -> dict:
     """Generate ad image (Nano Banana) + ad copy (Claude) for a Bling product.
 
     Stores the generated image in Mongo and returns its public URL plus the
@@ -261,7 +276,7 @@ async def generate_ad(payload: GenerateAdRequest) -> dict:
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
 
-    public_url = _public_asset_url(asset_id)
+    public_url = _public_asset_url(asset_id, request)
 
     # Persist ad draft so it can be re-published or audited later
     draft_id = uuid.uuid4().hex[:16]
@@ -323,7 +338,7 @@ class PublishRequest(BaseModel):
 
 
 @router.post("/ad/publish")
-async def publish_ad(payload: PublishRequest) -> dict:
+async def publish_ad(payload: PublishRequest, request: Request) -> dict:
     """Publish a generated ad to Instagram + Facebook via Meta Graph API."""
     draft = await db.social_ad_drafts.find_one({"id": payload.draft_id})
     if not draft:
@@ -339,6 +354,11 @@ async def publish_ad(payload: PublishRequest) -> dict:
     image_url = draft.get("image_url")
     if not image_url:
         raise HTTPException(400, "imagem ausente no draft")
+    # If the stored URL is relative (legacy drafts), rebuild from current request
+    if not image_url.startswith("http"):
+        asset_id = draft.get("asset_id")
+        if asset_id:
+            image_url = _public_asset_url(asset_id, request)
 
     token = creds["token"]
     page_id = creds.get("facebook_page_id")
@@ -348,41 +368,47 @@ async def publish_ad(payload: PublishRequest) -> dict:
 
     async with httpx.AsyncClient(timeout=45) as cx:
         # Instagram: 2-step (create media → publish)
-        if payload.publish_instagram and ig_id:
-            try:
-                r1 = await cx.post(
-                    f"https://graph.facebook.com/v23.0/{ig_id}/media",
-                    params={"access_token": token, "image_url": image_url, "caption": caption},
-                )
-                if r1.status_code >= 400:
-                    result["instagram"] = {"ok": False, "error": r1.json().get("error", {}).get("message", r1.text[:200])}
-                else:
-                    creation_id = r1.json().get("id")
-                    r2 = await cx.post(
-                        f"https://graph.facebook.com/v23.0/{ig_id}/media_publish",
-                        params={"access_token": token, "creation_id": creation_id},
+        if payload.publish_instagram:
+            if not ig_id:
+                result["instagram"] = {"ok": False, "error": "Instagram Business Account não configurado em Redes Sociais"}
+            else:
+                try:
+                    r1 = await cx.post(
+                        f"https://graph.facebook.com/v23.0/{ig_id}/media",
+                        params={"access_token": token, "image_url": image_url, "caption": caption},
                     )
-                    if r2.status_code >= 400:
-                        result["instagram"] = {"ok": False, "error": r2.json().get("error", {}).get("message", r2.text[:200])}
+                    if r1.status_code >= 400:
+                        result["instagram"] = {"ok": False, "error": r1.json().get("error", {}).get("message", r1.text[:200])}
                     else:
-                        result["instagram"] = {"ok": True, "post_id": r2.json().get("id")}
-            except Exception as e:
-                result["instagram"] = {"ok": False, "error": str(e)}
+                        creation_id = r1.json().get("id")
+                        r2 = await cx.post(
+                            f"https://graph.facebook.com/v23.0/{ig_id}/media_publish",
+                            params={"access_token": token, "creation_id": creation_id},
+                        )
+                        if r2.status_code >= 400:
+                            result["instagram"] = {"ok": False, "error": r2.json().get("error", {}).get("message", r2.text[:200])}
+                        else:
+                            result["instagram"] = {"ok": True, "post_id": r2.json().get("id")}
+                except Exception as e:
+                    result["instagram"] = {"ok": False, "error": str(e)}
 
         # Facebook: 1-step photo post
-        if payload.publish_facebook and page_id:
-            try:
-                rf = await cx.post(
-                    f"https://graph.facebook.com/v23.0/{page_id}/photos",
-                    params={"access_token": token, "url": image_url, "caption": caption},
-                )
-                if rf.status_code >= 400:
-                    result["facebook"] = {"ok": False, "error": rf.json().get("error", {}).get("message", rf.text[:200])}
-                else:
-                    body = rf.json()
-                    result["facebook"] = {"ok": True, "post_id": body.get("post_id") or body.get("id")}
-            except Exception as e:
-                result["facebook"] = {"ok": False, "error": str(e)}
+        if payload.publish_facebook:
+            if not page_id:
+                result["facebook"] = {"ok": False, "error": "Facebook Page ID não configurado em Redes Sociais"}
+            else:
+                try:
+                    rf = await cx.post(
+                        f"https://graph.facebook.com/v23.0/{page_id}/photos",
+                        params={"access_token": token, "url": image_url, "caption": caption},
+                    )
+                    if rf.status_code >= 400:
+                        result["facebook"] = {"ok": False, "error": rf.json().get("error", {}).get("message", rf.text[:200])}
+                    else:
+                        body = rf.json()
+                        result["facebook"] = {"ok": True, "post_id": body.get("post_id") or body.get("id")}
+                except Exception as e:
+                    result["facebook"] = {"ok": False, "error": str(e)}
 
     # Persist status on draft
     any_ok = (

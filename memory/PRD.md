@@ -56,8 +56,28 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - Fornecedor: ✅ JONH VARIEDADES com código JohnDrop 119689 e custo R$ 9,99
 - Variações: ✅ 3 criadas (Cor:Rosa/Azul/Verde), estoque 10 cada (30 total ÷ 3)
 
-## Backlog (P2)
-- Conta JohnDrop com mensalidade atrasada (depende do user)
-- Criptografia Fernet das credenciais
-- Migrar @app.on_event → FastAPI lifespan
-- Limpeza de warnings de hooks React
+## Atualizações 06/02/2026
+### Correções
+- **Estoque em produtos novos**: novo helper `_read_parent_stock_with_retry` em `bling_variations.py` faz polling do `/estoques/saldos` com até 6 tentativas × 10s (≈60s), evitando que o sync atrasado do JohnDrop→Bling resulte em variações com estoque zero.
+- **Imagens em variações**: removido filtro indevido que descartava URLs S3 presigned do JohnDrop (`AWSAccessKeyId` / `X-Amz-Signature`). Imagens agora são copiadas para cada variação filha via `PATCH /produtos/{id}` com `midia.imagens.imagensURL`.
+- Cleanup de código morto em `bling_variations.py` (função `fix_existing_variations` reescrita).
+
+### Módulo Criar Anúncio
+- Novo serviço `social_ad_service.py` (registrado em `/api/social/ad/*`)
+- `GET /ad/products`: lista produtos enriquecidos elegíveis (filtra variações filhas)
+- `POST /ad/generate`: gera imagem (Gemini Nano Banana 1080×1080) + copy (Claude Haiku 4.5) para anúncio. Retorna `draft_id`, URL absoluta da imagem, headline + caption.
+- `GET /ad/asset/{id}.png`: serve a imagem gerada (armazenada em base64 no Mongo `social_ad_assets`)
+- `POST /ad/publish`: publica simultaneamente no Instagram (2-step media + media_publish) e Facebook Page (`/photos`)
+- `GET /ad/drafts`: histórico de anúncios gerados
+- Frontend: nova página `/criar-anuncio` com fluxo seleção→briefing→preview→publicar
+
+## Backlog (P1/P2)
+- **P1**: Renovar Long-Lived Page Access Token Meta (atual expirou em 06-Jun-26)
+- **P1**: Configurar `instagram_business_id` em Redes Sociais para habilitar postagem no IG (atualmente Page Token só tem FB)
+- **P1**: Opção "Limpar e re-enriquecer" (inativar variações erradas no Bling)
+- **P2**: Botão "Materializar imagens no Bling" (UI guide para o toggle manual)
+- **P2**: Pinterest e YouTube
+- **P2**: Otimizar `/ad/products` (atualmente 1 GET por produto, ~30s/página)
+- **P2**: Conta JohnDrop com mensalidade atrasada (depende do user)
+- **P2**: Migrar `@app.on_event` → FastAPI lifespan
+- **P2**: Limpeza de warnings de hooks React em Robot.js / Settings.js
