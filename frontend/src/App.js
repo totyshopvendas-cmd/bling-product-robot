@@ -11,6 +11,7 @@ import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
 import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
+import SocialSettings from "@/pages/SocialSettings";
 
 function App() {
   return (
@@ -25,6 +26,7 @@ function App() {
           <Route path="/logs" element={<Logs />} />
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />
+          <Route path="/redes-sociais" element={<SocialSettings />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>

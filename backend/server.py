@@ -27,6 +27,7 @@ import johndrop_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
 import bulk_enrichment
+from social_service import router as social_router
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -392,6 +393,7 @@ async def dashboard_stats() -> DashboardStats:
     )
 
 
+api.include_router(social_router)
 app.include_router(api)
 
 app.add_middleware(
