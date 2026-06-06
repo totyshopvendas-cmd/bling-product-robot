@@ -85,37 +85,38 @@ async def create_variations(
     # zeroes the old simple stock — so we capture it here BEFORE the PATCH and
     # redistribute to children in step 3.
     if not total_stock or total_stock <= 0:
-        est = parent_current.get("estoque") or {}
-        captured = (
-            est.get("saldoVirtualTotal")
-            or est.get("saldoFisicoTotal")
-            or 0
-        )
+        # Primary source: dedicated /estoques/saldos endpoint (more reliable than
+        # GET /produtos which often returns estoque=None even when stock exists).
         try:
-            total_stock = int(captured) if captured else 0
-        except (TypeError, ValueError):
-            total_stock = 0
-        # Fallback 1: dedicated stock endpoint (sometimes /produtos doesn't include stock)
+            sr = await bling_service.bling_request(
+                "GET", "/estoques/saldos",
+                params={"idsProdutos[]": parent_id},
+            )
+            if sr.status_code < 400:
+                rows = (sr.json() or {}).get("data") or []
+                if rows:
+                    v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
+                    total_stock = int(v) if v else 0
+        except Exception:
+            pass
+        # Fallback: read embedded estoque field from product
         if total_stock <= 0:
+            est = parent_current.get("estoque") or {}
+            captured = (
+                est.get("saldoVirtualTotal")
+                or est.get("saldoFisicoTotal")
+                or 0
+            )
             try:
-                sr = await bling_service.bling_request(
-                    "GET", "/estoques/saldos",
-                    params={"idsProdutos[]": parent_id},
-                )
-                if sr.status_code < 400:
-                    rows = (sr.json() or {}).get("data") or []
-                    if rows:
-                        v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
-                        total_stock = int(v) if v else 0
-            except Exception:
-                pass
-        # Fallback 2: JohnDrop sync may still be in flight. Wait 8s and retry once.
-        # This gives Bling time to receive the stock from JohnDrop's native sync.
+                total_stock = int(captured) if captured else 0
+            except (TypeError, ValueError):
+                total_stock = 0
+        # Fallback 2: wait for JohnDrop sync (8s) and retry once
         if total_stock <= 0:
             import asyncio as _asyncio
             await add_log(
                 "info",
-                f"Estoque ainda 0 — aguardando 8s pelo sync JohnDrop→Bling antes de distribuir...",
+                "Estoque ainda 0 — aguardando 8s pelo sync JohnDrop→Bling...",
             )
             await _asyncio.sleep(8)
             try:
@@ -133,7 +134,7 @@ async def create_variations(
         await add_log(
             "info",
             f"Variações pid={parent_id}: estoque capturado do pai = {total_stock} "
-            f"(será dividido entre {len(variations)} variações = {total_stock // max(len(variations),1)} cada)",
+            f"(será dividido entre {len(variations)} variações)",
         )
 
     # Build variation list — NO codigo (SKU): user explicitly requested to skip SKU
@@ -238,8 +239,29 @@ async def create_variations(
         # Equal split between the ones NOT explicitly quantified
         if total_stock and total_stock > 0 and remaining_ids:
             per_child = total_stock // len(remaining_ids)
-            if per_child > 0:
-                await _set_children_stock(remaining_ids, per_child)
+            remainder = total_stock - per_child * len(remaining_ids)
+            for i, sid in enumerate(remaining_ids):
+                qty = per_child + (1 if i < remainder else 0)
+                await _set_children_stock([sid], qty)
+
+        # After distributing, ZERO the parent's stock — Bling tracks parent + children
+        # as separate totals. If we don't zero the parent, the dashboard shows DOUBLE.
+        if total_stock and total_stock > 0:
+            dep_id = await _get_default_deposito_id()
+            if dep_id:
+                try:
+                    await bling_service.bling_request(
+                        "POST", "/estoques",
+                        json={
+                            "produto": {"id": parent_id},
+                            "deposito": {"id": dep_id},
+                            "operacao": "B",
+                            "quantidade": 0,
+                            "observacoes": "Pai zerado — estoque vive nas variações",
+                        },
+                    )
+                except Exception:
+                    pass
 
     # Copy parent images onto each child variation so the Bling listing shows
     # a thumbnail for each variation (cloneInfo alone does NOT do this visually —
