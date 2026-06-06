@@ -220,15 +220,19 @@ def _parse_variations(raw_description: str) -> List[str]:
         r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
         r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
         r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
+        # "Cor única" / "Cor do produto" → produto monocromático, sem variações
+        r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b",
+        r"\b(?:tamanho|modelo)\s+(?:[úu]nico|fixo|padr[ãa]o)\b",
     ]
     for dp in disclaimer_patterns:
         if re.search(dp, raw_description, re.IGNORECASE):
             return []
 
-    # GATE 2: require "Disponível" + (cores|tamanhos|modelos)
+    # GATE 2: require PLURAL "cores"/"tamanhos"/"modelos" with "Disponível"
+    # — singular "Disponível na cor X" is descriptive, NOT a variation
     patterns = [
-        r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(?:cores?|tamanhos?|modelos?)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)",
-        r"(?:cores?|tamanhos?|modelos?)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)",
+        r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(?:cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)",
+        r"(?:cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)",
     ]
     body = ""
     for pat in patterns:
@@ -274,6 +278,9 @@ def _parse_variations(raw_description: str) -> List[str]:
         if kl not in seen:
             seen.add(kl)
             deduped.append(v)
+    # If only ONE option was extracted, it's a single-color/size product — not a variation
+    if len(deduped) <= 1:
+        return []
     return deduped[:10]
 
 

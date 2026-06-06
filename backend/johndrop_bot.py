@@ -598,30 +598,77 @@ async def _read_product_fields(page) -> Tuple[str, float]:
 
 
 async def _read_product_images(page) -> list:
-    """Extract all image URLs from JohnDrop product creation form (IMAGES section)."""
+    """Extract all image URLs from JohnDrop product creation form.
+    Handles: <img src>, <img data-src> (lazy-load), CSS background-image, and
+    product carousels. Forces a brief scroll to trigger lazy-load."""
     try:
+        # Scroll to force lazy-loaded images to render
+        try:
+            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight/2)")
+            await page.wait_for_timeout(800)
+            await page.evaluate("() => window.scrollTo(0, 0)")
+            await page.wait_for_timeout(500)
+        except Exception:
+            pass
+
         urls = await page.evaluate(
             """
             () => {
-                const imgs = Array.from(document.querySelectorAll('img'));
-                const urls = [];
-                for (const img of imgs) {
-                    const src = img.src || '';
-                    // Heuristic: only product images (skip logos, icons, avatars)
-                    if (!src) continue;
-                    if (src.includes('logo') || src.includes('avatar') || src.includes('icon')) continue;
-                    if (src.startsWith('data:')) continue;
-                    // Bling/JohnDrop product images are usually .jpg/.jpeg/.png/.webp
-                    if (!/\\.(jpe?g|png|webp)(\\?|$)/i.test(src)) continue;
-                    if (img.naturalWidth > 0 && img.naturalWidth < 80) continue;
-                    if (!urls.includes(src)) urls.push(src);
+                const out = new Set();
+                const isProductLike = (src) => {
+                    if (!src) return false;
+                    if (src.startsWith('data:') || src.startsWith('blob:')) return false;
+                    const low = src.toLowerCase();
+                    if (low.includes('/logo') || low.includes('/icon') || low.includes('favicon')) return false;
+                    if (low.includes('/avatar') || low.includes('/profile')) return false;
+                    if (low.includes('placeholder') || low.includes('default')) return false;
+                    if (low.endsWith('.svg')) return false;  // skip vector icons
+                    return true;
+                };
+
+                // 1. <img> tags — also check data-src, data-original, data-lazy
+                for (const img of document.querySelectorAll('img')) {
+                    const candidates = [
+                        img.currentSrc, img.src,
+                        img.getAttribute('data-src'),
+                        img.getAttribute('data-original'),
+                        img.getAttribute('data-lazy'),
+                        img.getAttribute('data-image'),
+                    ];
+                    for (const s of candidates) {
+                        if (s && isProductLike(s)) {
+                            // skip tiny images (icons)
+                            if (img.naturalWidth > 0 && img.naturalWidth < 80) break;
+                            out.add(s);
+                            break;
+                        }
+                    }
                 }
-                return urls;
+                // 2. CSS background-image on common containers
+                const containers = document.querySelectorAll(
+                    '.image, .img, .photo, .picture, .thumbnail, .gallery img, .carousel img, ' +
+                    '[class*="image"], [class*="img"], [class*="photo"], [class*="gallery"]'
+                );
+                for (const el of containers) {
+                    const bg = window.getComputedStyle(el).backgroundImage;
+                    const m = bg.match(/url\\(["']?(.+?)["']?\\)/);
+                    if (m && isProductLike(m[1])) out.add(m[1]);
+                }
+                return Array.from(out);
             }
             """
         )
-        return [u for u in (urls or []) if u][:12]  # cap at 12 images
-    except Exception:
+        result = [u for u in (urls or []) if u][:12]
+        try:
+            await add_log("info", f"Imagens extraídas do JohnDrop: {len(result)} (primeira: {result[0][:80] if result else '—'})")
+        except Exception:
+            pass
+        return result
+    except Exception as e:
+        try:
+            await add_log("warning", f"Falha ao ler imagens: {e}")
+        except Exception:
+            pass
         return []
 
 
