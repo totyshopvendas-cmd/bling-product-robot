@@ -14,6 +14,7 @@ import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
 import SocialSettings from "@/pages/SocialSettings";
 import CreateAd from "@/pages/CreateAd";
 import Schedule from "@/pages/Schedule";
+import Onboarding from "@/pages/Onboarding";
 
 function App() {
   return (
@@ -31,6 +32,7 @@ function App() {
           <Route path="/redes-sociais" element={<SocialSettings />} />
           <Route path="/criar-anuncio" element={<CreateAd />} />
           <Route path="/agenda" element={<Schedule />} />
+          <Route path="/setup-redes" element={<Onboarding />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>

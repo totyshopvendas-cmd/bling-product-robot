@@ -71,8 +71,22 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - `GET /ad/drafts`: histórico de anúncios gerados
 - Frontend: nova página `/criar-anuncio` com fluxo seleção→briefing→preview→publicar
 
-## Atualizações 07/02/2026
-### Enriquecimento automático COM espera inteligente (P0) ⭐
+## Atualizações 07/02/2026 (continuação)
+### Setup Wizard de Redes Sociais (P0)- Nova página `/setup-redes` com checklist visual + guia passo-a-passo
+- Backend: `GET /api/social/onboarding/status` agrega o estado de cada integração:
+  - Meta: credenciais salvas / token válido / página selecionada / Instagram vinculado
+  - Pinterest: token funcional (detecta Sandbox) / board padrão
+- UI mostra:
+  - Barra de progresso geral (X/6 prontos)
+  - Cartão "Próxima ação" destacando o próximo passo (com botão direto)
+  - Status colorido de cada item (verde/amarelo/vermelho/cinza)
+  - Guias expandíveis com instruções completas (Meta + Pinterest)
+  - Banner "Pronto para publicar!" quando token + página estão OK
+  - Links externos diretos: business.facebook.com (Instagram), developers.pinterest.com (Production)
+- Detecta token expirado e exibe mensagem específica
+- Detecta app Pinterest em Sandbox e orienta como aplicar para Produção
+
+
 - Restaurado o trigger automático de enriquecimento após cadastro JohnDrop
 - **Novo**: função `_wait_for_johndrop_sync(product_id, sku)` em `bling_enrichment.py` que aguarda o sync JohnDrop→Bling completar antes de prosseguir com a conversão formato=V
 - Critério de "sync completo": estoque saldoVirtualTotal > 0 **OU** ao menos 1 imagem em midia.imagens — qualquer dos dois sinaliza que o JohnDrop terminou de empurrar o produto
