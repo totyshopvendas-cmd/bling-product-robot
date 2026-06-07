@@ -72,13 +72,17 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - Frontend: nova página `/criar-anuncio` com fluxo seleção→briefing→preview→publicar
 
 ## Atualizações 07/02/2026
-### Robô separado do enriquecimento (P0)
-- **Robô JohnDrop agora SÓ cadastra produtos no Bling no formato bruto** (sem disparar enriquecimento automático)
-- O usuário deve rodar manualmente "Enriquecer em Lote" → filtro "Não enriquecidos" depois que o JohnDrop completar o sync de estoque + imagens (~2-3min após cadastro)
-- Isso resolve definitivamente os problemas recorrentes de:
-  - Estoque zerado em variações (sync JohnDrop chegava após a conversão formato=V)
-  - Imagens faltando (sync JohnDrop chegava após o PATCH)
-- Linhas alteradas: `johndrop_bot.py` ~912 (removido `asyncio.create_task(_safe_enrich_bling)`)
+### Enriquecimento automático COM espera inteligente (P0) ⭐
+- Restaurado o trigger automático de enriquecimento após cadastro JohnDrop
+- **Novo**: função `_wait_for_johndrop_sync(product_id, sku)` em `bling_enrichment.py` que aguarda o sync JohnDrop→Bling completar antes de prosseguir com a conversão formato=V
+- Critério de "sync completo": estoque saldoVirtualTotal > 0 **OU** ao menos 1 imagem em midia.imagens — qualquer dos dois sinaliza que o JohnDrop terminou de empurrar o produto
+- Polling: 12 tentativas × 15s = até **3 minutos** de espera, retornando imediatamente assim que detecta o sync
+- Reutiliza imagens da Bling (em vez das URLs S3 presigned do JohnDrop) quando disponíveis — URLs Bling são mais estáveis
+- **4 testes unitários** em `test_wait_sync.py` validam: stock pronto, imagens prontas, polling até chegar, timeout gracioso
+- Resultado esperado: variações criadas com estoque correto distribuído + imagens em cada variação filha, automaticamente, sem intervenção manual
+
+### Robô separado do enriquecimento — REVERTIDO
+- O usuário decidiu manter o trigger automático, mas com a espera inteligente acima
 
 ### Seleção de Página Meta (P0)
 - Novo endpoint `GET /api/social/meta/pages` lista todas as páginas que o token tem acesso, com Instagram linkado

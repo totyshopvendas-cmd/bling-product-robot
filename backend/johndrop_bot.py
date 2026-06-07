@@ -909,16 +909,17 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
                 johndrop_id = m.group(1)
         except Exception:
             johndrop_id = None
-        # NOTA: o enriquecimento AUTOMÁTICO foi desabilitado a pedido do usuário.
-        # O robô JohnDrop apenas cadastra o produto no Bling no formato bruto.
-        # Depois que o robô terminar (e o Bling tiver sincronizado estoque + imagens
-        # do JohnDrop), o usuário roda manualmente "Enriquecer em Lote" → filtro
-        # "Não enriquecidos" para aplicar SEO, variações e estoque corretos.
+        # ENRIQUECIMENTO AUTOMÁTICO COM WAIT INTELIGENTE:
+        # O robô JohnDrop terminou o cadastro, mas o sync JohnDrop→Bling
+        # acontece de forma assíncrona (estoque e imagens chegam alguns
+        # segundos/minutos depois). Antes de enriquecer, vamos esperar até
+        # que (a) o produto exista no Bling E (b) estoque > 0 OU imagens > 0
+        # — qualquer dos dois indica que o sync chegou.
+        # A função _safe_enrich_bling roda em background (não bloqueia o robô).
         if sku:
-            await add_log(
-                "info",
-                f"Produto {sku} cadastrado no Bling (formato JohnDrop bruto). "
-                "Use 'Enriquecer em Lote' depois que o JohnDrop completar o sync.",
+            asyncio.create_task(
+                _safe_enrich_bling(sku, cleaned["cleaned"], raw_description,
+                                   johndrop_id=johndrop_id, cost=cost, images=raw_images)
             )
     else:
         robot.failed += 1

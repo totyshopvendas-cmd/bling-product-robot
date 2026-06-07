@@ -642,6 +642,95 @@ async def _upsert_enriched_cache(product_id: int, sku: str) -> None:
         await add_log("info", f"Cache enriched falhou para pid={product_id}: {e}")
 
 
+async def _wait_for_johndrop_sync(
+    product_id: int, sku: str,
+    max_attempts: int = 12, delay_s: float = 15.0,
+) -> dict:
+    """Wait until JohnDrop finishes syncing the product into Bling.
+
+    "Done syncing" = the product has either:
+      • estoque saldoVirtualTotal > 0  (stock arrived), OR
+      • at least 1 image in midia.imagens.internas/externas  (images arrived)
+
+    Either signal means JohnDrop's async sync has reached this product and
+    it's safe to convert to formato=V (which zeros simple stock) and to PATCH
+    images onto variation children.
+
+    Default budget: 12 × 15s = 180s (3 minutes), enough for most syncs.
+    Returns the latest full product dict regardless of timeout.
+    """
+    import asyncio as _asyncio
+
+    async def _read_full() -> Optional[dict]:
+        try:
+            r = await bling_service.bling_request("GET", f"/produtos/{product_id}")
+            if r.status_code >= 400:
+                return None
+            return (r.json() or {}).get("data") or None
+        except Exception:
+            return None
+
+    async def _read_saldo() -> int:
+        try:
+            r = await bling_service.bling_request(
+                "GET", "/estoques/saldos", params={"idsProdutos[]": product_id},
+            )
+            if r.status_code >= 400:
+                return 0
+            rows = (r.json() or {}).get("data") or []
+            if not rows:
+                return 0
+            v = rows[0].get("saldoVirtualTotal") or rows[0].get("saldoFisicoTotal") or 0
+            return int(v) if v else 0
+        except Exception:
+            return 0
+
+    def _img_count(p: Optional[dict]) -> int:
+        if not p:
+            return 0
+        imgs = (p.get("midia") or {}).get("imagens") or {}
+        return len(imgs.get("internas") or []) + len(imgs.get("externas") or [])
+
+    # First read — many products already have both ready when we get here
+    full = await _read_full()
+    saldo = await _read_saldo()
+    imgs = _img_count(full)
+    if saldo > 0 or imgs > 0:
+        await add_log(
+            "info",
+            f"Sync JohnDrop→Bling completo para {sku}: estoque={saldo}, imagens={imgs}",
+        )
+        return full or {}
+
+    # Poll loop
+    for attempt in range(1, max_attempts + 1):
+        await add_log(
+            "info",
+            f"Aguardando sync JohnDrop→Bling de {sku} "
+            f"(tentativa {attempt}/{max_attempts}, espera {delay_s:.0f}s) — "
+            f"estoque={saldo}, imagens={imgs}",
+        )
+        await _asyncio.sleep(delay_s)
+        full = await _read_full() or full
+        saldo = await _read_saldo()
+        imgs = _img_count(full)
+        if saldo > 0 or imgs > 0:
+            await add_log(
+                "success",
+                f"Sync JohnDrop→Bling completou para {sku} após {attempt * delay_s:.0f}s: "
+                f"estoque={saldo}, imagens={imgs}",
+            )
+            return full or {}
+
+    await add_log(
+        "warning",
+        f"Sync JohnDrop→Bling NÃO completou para {sku} após "
+        f"{max_attempts * delay_s:.0f}s (estoque={saldo}, imagens={imgs}). "
+        "Continuando enriquecimento mesmo assim — variações podem ficar com 0 unidades.",
+    )
+    return full or {}
+
+
 async def enrich_product_by_sku(
     sku: str,
     raw_title: str,
@@ -672,6 +761,19 @@ async def enrich_product_by_sku(
 
     product_id = product.get("id")
 
+    # Wait for JohnDrop async sync to bring in stock + images.
+    # Without this, _set_children_stock reads saldo=0 and variations end up with
+    # 0 units; and _copy_images_to_children has nothing to copy to children.
+    full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
+    # If sync brought in images, prefer those over the bot-scraped URLs (Bling
+    # versions are more stable than the JohnDrop S3 presigned URLs).
+    bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
+    bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
+    bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]
+    bling_urls = [u for u in (bling_internal + bling_external) if u]
+    if bling_urls:
+        images = bling_urls
+
     try:
         short_desc, bullets, category_id = await asyncio.gather(
             generate_short_description(raw_title, raw_description),
@@ -694,7 +796,9 @@ async def enrich_product_by_sku(
         payload["categoria"] = {"id": category_id}
 
     try:
-        full = await _fetch_bling_product_full(product_id) or product
+        # Use the post-sync full product instead of an extra GET (the wait
+        # already returned the latest version).
+        full = full_after_sync or await _fetch_bling_product_full(product_id) or product
         variations = _parse_variations(raw_description)
         if variations:
             await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
