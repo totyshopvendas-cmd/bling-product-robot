@@ -46,63 +46,111 @@ COPY_MODEL = "claude-haiku-4-5-20251001"
 async def list_ad_eligible_products(busca: str = "", pagina: int = 1, limite: int = 30) -> dict:
     """List Bling products eligible for ad creation: enriched + has image.
 
-    Only the enriched products (marca=Generico, has descricaoCurta) are returned —
-    we don't want to advertise raw JohnDrop imports."""
-    params = {"pagina": pagina, "limite": min(max(limite, 1), 100)}
+    Reads from the local Mongo cache (bling_enriched_cache) populated by
+    bling_enrichment.enrich_product_by_sku. Single Mongo query, no per-item
+    Bling calls — listing returns in <100ms regardless of catalog size.
+    """
+    skip = max(0, (max(1, pagina) - 1) * max(1, limite))
+    query: dict = {}
     if busca:
-        params["pesquisa"] = busca
-    r = await bling_service.bling_request("GET", "/produtos", params=params)
-    if r.status_code >= 400:
-        return {"items": [], "error": r.text[:200]}
-    items_raw = (r.json() or {}).get("data") or []
+        # Case-insensitive partial match on nome OR sku
+        query = {
+            "$or": [
+                {"nome": {"$regex": re.escape(busca), "$options": "i"}},
+                {"sku": {"$regex": re.escape(busca), "$options": "i"}},
+            ]
+        }
+    cur = (
+        db.bling_enriched_cache.find(query, {"_id": 0})
+        .sort("enriched_at", -1)
+        .skip(skip)
+        .limit(min(max(limite, 1), 100))
+    )
+    items = await cur.to_list(limite)
+    total = await db.bling_enriched_cache.count_documents(query)
+    return {
+        "items": [
+            {
+                "id": it.get("product_id"),
+                "codigo": it.get("sku") or "",
+                "nome": it.get("nome") or "",
+                "preco": it.get("preco") or 0,
+                "image_url": it.get("image_url") or "",
+            }
+            for it in items
+        ],
+        "pagina": pagina,
+        "total": total,
+        "has_more": (skip + len(items)) < total,
+    }
 
-    items: List[dict] = []
-    for it in items_raw:
-        pid = it.get("id")
-        if not pid:
-            continue
-        full_r = await bling_service.bling_request("GET", f"/produtos/{pid}")
-        if full_r.status_code >= 400:
-            continue
-        product = (full_r.json() or {}).get("data") or {}
-        short = (product.get("descricaoCurta") or "").strip()
-        brand = (product.get("marca") or "").strip().lower()
-        if not short or brand not in ("generico", "generica"):
-            continue
-        # Skip variation CHILDREN — only show parent or simple products. Bling
-        # names children like "Produto X Cor:Verde" and gives them tipo="P" with
-        # a parent reference, so we filter by presence of "produtoPai" or the
-        # ":" in the nome.
-        nome_p = product.get("nome") or ""
-        if (product.get("produtoPai") or {}).get("id"):
-            continue
-        if re.search(r"\b(Cor|Tamanho|Modelo|Voltagem):", nome_p):
-            continue
-        # Pick first usable image
-        img_url = ""
-        midia = product.get("midia") or {}
-        imgs = midia.get("imagens") or {}
-        # Internal hosted images
-        for img in (imgs.get("internas") or []):
-            link = img.get("link") or img.get("linkMiniatura") or ""
-            if link:
-                img_url = link
+
+import asyncio as _asyncio_bf
+
+_BACKFILL_STATE: dict = {"running": False, "scanned": 0, "cached": 0, "total": 0, "started_at": None, "finished_at": None}
+
+
+async def _do_backfill(max_items: int) -> None:
+    from bling_enrichment import _upsert_enriched_cache as _cache
+    _BACKFILL_STATE.update({
+        "running": True, "scanned": 0, "cached": 0,
+        "total": max_items, "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+    })
+    try:
+        pagina = 1
+        while _BACKFILL_STATE["scanned"] < max_items and pagina < 30:
+            r = await bling_service.bling_request(
+                "GET", "/produtos", params={"pagina": pagina, "limite": 100},
+            )
+            if r.status_code >= 400:
                 break
-        if not img_url:
-            for img in (imgs.get("externas") or []):
-                link = img.get("link") or ""
-                if link:
-                    img_url = link
-                    break
-        items.append({
-            "id": pid,
-            "codigo": product.get("codigo") or "",
-            "nome": product.get("nome") or "",
-            "preco": product.get("preco") or 0,
-            "image_url": img_url,
-        })
+            items = (r.json() or {}).get("data") or []
+            if not items:
+                break
+            for it in items:
+                _BACKFILL_STATE["scanned"] += 1
+                pid = it.get("id")
+                if not pid:
+                    continue
+                full_r = await bling_service.bling_request("GET", f"/produtos/{pid}")
+                if full_r.status_code >= 400:
+                    continue
+                full = (full_r.json() or {}).get("data") or {}
+                short = (full.get("descricaoCurta") or "").strip()
+                brand = (full.get("marca") or "").strip().lower()
+                if not short or brand not in ("generico", "generica"):
+                    continue
+                await _cache(pid, full.get("codigo") or "")
+                _BACKFILL_STATE["cached"] += 1
+            if len(items) < 100:
+                break
+            pagina += 1
+        await add_log(
+            "success",
+            f"Backfill cache: {_BACKFILL_STATE['cached']}/{_BACKFILL_STATE['scanned']} cacheados",
+        )
+    except Exception as e:
+        await add_log("error", f"Backfill cache crashed: {e}")
+    finally:
+        _BACKFILL_STATE["running"] = False
+        _BACKFILL_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
 
-    return {"items": items, "pagina": pagina, "has_more": len(items_raw) >= params["limite"]}
+
+@router.post("/ad/products/backfill")
+async def backfill_enriched_cache(max_items: int = 500) -> dict:
+    """Fire-and-forget background scan of Bling catalog → populates the local
+    enriched cache. Use GET /ad/products/backfill-status to monitor progress.
+    """
+    if _BACKFILL_STATE.get("running"):
+        return {"ok": False, "reason": "backfill já em execução", **_BACKFILL_STATE}
+    _asyncio_bf.create_task(_do_backfill(max_items))
+    return {"ok": True, "started": True, "max_items": max_items}
+
+
+@router.get("/ad/products/backfill-status")
+async def backfill_status() -> dict:
+    return dict(_BACKFILL_STATE)
 
 
 # --------------------------------------------------------------- helpers
@@ -335,6 +383,8 @@ class PublishRequest(BaseModel):
     caption: Optional[str] = None  # user may override edited caption
     publish_instagram: bool = True
     publish_facebook: bool = True
+    publish_pinterest: bool = False
+    pinterest_board_id: Optional[str] = None
 
 
 @router.post("/ad/publish")
@@ -364,7 +414,7 @@ async def publish_ad(payload: PublishRequest, request: Request) -> dict:
     page_id = creds.get("facebook_page_id")
     ig_id = creds.get("instagram_business_id")
 
-    result: dict = {"draft_id": payload.draft_id, "instagram": None, "facebook": None}
+    result: dict = {"draft_id": payload.draft_id, "instagram": None, "facebook": None, "pinterest": None}
 
     async with httpx.AsyncClient(timeout=45) as cx:
         # Instagram: 2-step (create media → publish)
@@ -410,10 +460,26 @@ async def publish_ad(payload: PublishRequest, request: Request) -> dict:
                 except Exception as e:
                     result["facebook"] = {"ok": False, "error": str(e)}
 
+    # Pinterest (outside Meta httpx client — uses pinterest_service helpers)
+    if payload.publish_pinterest:
+        try:
+            from pinterest_service import create_pin as _pin_endpoint, PinRequest as _PinReq
+            pin_payload = _PinReq(
+                draft_id=payload.draft_id,
+                board_id=payload.pinterest_board_id,
+            )
+            pin_res = await _pin_endpoint(pin_payload)
+            result["pinterest"] = pin_res
+        except HTTPException as e:
+            result["pinterest"] = {"ok": False, "error": e.detail}
+        except Exception as e:
+            result["pinterest"] = {"ok": False, "error": str(e)}
+
     # Persist status on draft
     any_ok = (
         (result["instagram"] or {}).get("ok") or
-        (result["facebook"] or {}).get("ok")
+        (result["facebook"] or {}).get("ok") or
+        (result["pinterest"] or {}).get("ok")
     )
     await db.social_ad_drafts.update_one(
         {"id": payload.draft_id},

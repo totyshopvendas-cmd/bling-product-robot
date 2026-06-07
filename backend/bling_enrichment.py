@@ -591,6 +591,57 @@ async def _save_log(sku: str, status: str, message: str, **fields) -> None:
     await db.bling_enrichment_logs.insert_one(doc)
 
 
+async def _upsert_enriched_cache(product_id: int, sku: str) -> None:
+    """Cache product metadata after successful enrichment so /ad/products is fast.
+
+    Without this cache, listing enriched products requires GET /produtos/{id}
+    for each item (N+1 queries against Bling). With the cache, the listing
+    becomes a single MongoDB query.
+    """
+    try:
+        full = await _fetch_bling_product_full(product_id)
+        if not full:
+            return
+        # Skip variation children — only cache parents/simples
+        if (full.get("produtoPai") or {}).get("id"):
+            return
+        nome = (full.get("nome") or "").strip()
+        if re.search(r"\b(Cor|Tamanho|Modelo|Voltagem):", nome):
+            return
+
+        img_url = ""
+        midia = full.get("midia") or {}
+        imgs = midia.get("imagens") or {}
+        for img in (imgs.get("internas") or []):
+            link = img.get("link") or img.get("linkMiniatura") or ""
+            if link:
+                img_url = link
+                break
+        if not img_url:
+            for img in (imgs.get("externas") or []):
+                link = img.get("link") or ""
+                if link:
+                    img_url = link
+                    break
+
+        await db.bling_enriched_cache.update_one(
+            {"product_id": product_id},
+            {"$set": {
+                "product_id": product_id,
+                "sku": (full.get("codigo") or sku or "").strip(),
+                "nome": nome,
+                "preco": full.get("preco") or 0,
+                "image_url": img_url,
+                "descricao_curta": (full.get("descricaoCurta") or "")[:200],
+                "marca": full.get("marca") or "",
+                "enriched_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        await add_log("info", f"Cache enriched falhou para pid={product_id}: {e}")
+
+
 async def enrich_product_by_sku(
     sku: str,
     raw_title: str,
@@ -669,6 +720,8 @@ async def enrich_product_by_sku(
             cost=cost,
             variations=variations,
         )
+        # Cache for fast /ad/products listing
+        await _upsert_enriched_cache(product_id, sku)
         # AFTER successful enrichment: try to create variations (color/size).
         # This NEVER raises — if Bling rejects, only a warning is logged.
         variations_created = 0

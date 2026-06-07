@@ -137,6 +137,138 @@ async def test_meta_connection() -> dict:
     }
 
 
+@router.get("/meta/pages")
+async def list_meta_pages() -> dict:
+    """List all Facebook Pages the stored token has access to.
+
+    Used by the UI to let the user PICK which page to publish to when the token
+    grants access to multiple pages (common when the user owns several brands).
+    Each returned page also reports whether it has a linked Instagram Business
+    account, so the user can see the right one to choose.
+    """
+    doc = await db.social_credentials.find_one({"provider": "meta"})
+    if not doc:
+        raise HTTPException(400, "Credenciais não configuradas")
+    token = _dec(doc.get("page_access_token_enc"))
+    if not token:
+        raise HTTPException(400, "Token inválido")
+
+    async with httpx.AsyncClient(timeout=20) as cx:
+        # /me/accounts works with USER tokens (long-lived or short-lived).
+        # If user pasted a single PAGE token, /me/accounts may return empty —
+        # in that case fall back to /me (single page only).
+        r = await cx.get(
+            "https://graph.facebook.com/v23.0/me/accounts",
+            params={"access_token": token, "fields": "id,name,access_token,instagram_business_account"},
+        )
+        if r.status_code >= 400:
+            return {"ok": False, "error": r.json().get("error", {}).get("message", r.text[:200])}
+        pages = (r.json() or {}).get("data") or []
+
+        # If no /accounts response (user pasted a single-page token), fetch /me
+        if not pages:
+            rme = await cx.get(
+                "https://graph.facebook.com/v23.0/me",
+                params={"access_token": token, "fields": "id,name,instagram_business_account"},
+            )
+            if rme.status_code < 400:
+                me = rme.json()
+                pages = [{
+                    "id": me.get("id"),
+                    "name": me.get("name"),
+                    "instagram_business_account": me.get("instagram_business_account"),
+                }]
+
+    selected = doc.get("facebook_page_id")
+    return {
+        "ok": True,
+        "selected": selected,
+        "pages": [
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "instagram_business_id": (p.get("instagram_business_account") or {}).get("id"),
+                "has_instagram": bool((p.get("instagram_business_account") or {}).get("id")),
+                "selected": str(p.get("id")) == str(selected),
+            }
+            for p in pages
+        ],
+    }
+
+
+class SelectPageRequest(BaseModel):
+    facebook_page_id: str
+
+
+@router.post("/meta/select-page")
+async def select_meta_page(payload: SelectPageRequest) -> dict:
+    """Save the user's chosen Facebook Page (and auto-detect linked IG).
+
+    If the stored token is a USER token, we also derive the matching PAGE
+    access token here (different page_access_token per page). For single-page
+    tokens this is a no-op.
+    """
+    doc = await db.social_credentials.find_one({"provider": "meta"})
+    if not doc:
+        raise HTTPException(400, "Credenciais não configuradas")
+    token = _dec(doc.get("page_access_token_enc"))
+    if not token:
+        raise HTTPException(400, "Token inválido")
+
+    target_id = payload.facebook_page_id.strip()
+    if not target_id:
+        raise HTTPException(400, "facebook_page_id obrigatório")
+
+    page_token = None
+    ig_id = None
+    page_name = None
+    async with httpx.AsyncClient(timeout=20) as cx:
+        # Try to find the page in /me/accounts (so we can grab the per-page token)
+        ra = await cx.get(
+            "https://graph.facebook.com/v23.0/me/accounts",
+            params={"access_token": token, "fields": "id,name,access_token,instagram_business_account"},
+        )
+        if ra.status_code < 400:
+            for p in (ra.json() or {}).get("data") or []:
+                if str(p.get("id")) == target_id:
+                    page_token = p.get("access_token")
+                    page_name = p.get("name")
+                    ig_id = (p.get("instagram_business_account") or {}).get("id")
+                    break
+        # If not found via /accounts, fetch directly (user may have pasted a Page Token already)
+        if not page_token:
+            rp = await cx.get(
+                f"https://graph.facebook.com/v23.0/{target_id}",
+                params={"access_token": token, "fields": "id,name,instagram_business_account"},
+            )
+            if rp.status_code >= 400:
+                raise HTTPException(400, f"Não foi possível acessar a página {target_id}: {rp.text[:200]}")
+            body = rp.json()
+            page_name = body.get("name")
+            ig_id = (body.get("instagram_business_account") or {}).get("id")
+            # Keep the currently stored token (it's a Page Token already)
+            page_token = token
+
+    update = {
+        "facebook_page_id": target_id,
+        "page_access_token_enc": _enc(page_token),
+    }
+    if ig_id:
+        update["instagram_business_id"] = ig_id
+    else:
+        update["instagram_business_id"] = None  # clear stale value
+    await db.social_credentials.update_one({"provider": "meta"}, {"$set": update})
+
+    await add_log("success", f"Página Meta selecionada: {page_name} ({target_id}) IG={ig_id or 'sem'}")
+    return {
+        "ok": True,
+        "page_id": target_id,
+        "page_name": page_name,
+        "instagram_business_id": ig_id,
+        "instagram_linked": bool(ig_id),
+    }
+
+
 async def get_meta_token_and_ids() -> Optional[dict]:
     """Internal helper for posting flows. Returns decrypted token + page/ig ids."""
     _d = db

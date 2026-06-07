@@ -71,13 +71,66 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - `GET /ad/drafts`: histórico de anúncios gerados
 - Frontend: nova página `/criar-anuncio` com fluxo seleção→briefing→preview→publicar
 
+## Atualizações 07/02/2026
+### Robô separado do enriquecimento (P0)
+- **Robô JohnDrop agora SÓ cadastra produtos no Bling no formato bruto** (sem disparar enriquecimento automático)
+- O usuário deve rodar manualmente "Enriquecer em Lote" → filtro "Não enriquecidos" depois que o JohnDrop completar o sync de estoque + imagens (~2-3min após cadastro)
+- Isso resolve definitivamente os problemas recorrentes de:
+  - Estoque zerado em variações (sync JohnDrop chegava após a conversão formato=V)
+  - Imagens faltando (sync JohnDrop chegava após o PATCH)
+- Linhas alteradas: `johndrop_bot.py` ~912 (removido `asyncio.create_task(_safe_enrich_bling)`)
+
+### Seleção de Página Meta (P0)
+- Novo endpoint `GET /api/social/meta/pages` lista todas as páginas que o token tem acesso, com Instagram linkado
+- Novo endpoint `POST /api/social/meta/select-page` para escolher página + auto-detectar IG vinculado
+- Novo botão "Escolher Página" (azul) na UI Redes Sociais
+- **Page ID corrigido** de `37252617084329081` (TotyShop antigo) para `6937722930491369` (TotyShop.com, a página correta com Instagram vinculado)
+
+### Melhorias de UX nos erros
+- Pinterest "consumer type not supported" agora exibe explicação completa com passos para "Apply for Production" no dev console
+- Status Meta na UI mostra mensagem amarela explicativa quando Instagram Business não está vinculado, com link para business.facebook.com
+- Botão "Escolher Página" mostra estado claro: token expirado, IG por página, página atualmente selecionada
+## Atualizações 06/02/2026 (continuação)
+### Otimização /ad/products (P2-a)
+- Nova coleção MongoDB `bling_enriched_cache` populada automaticamente após enriquecimento
+- `/ad/products` agora retorna em ~13ms (antes ~30s para 30 produtos — **2300× mais rápido**)
+- Endpoint POST `/ad/products/backfill` (fire-and-forget) para popular cache de produtos já enriquecidos
+- GET `/ad/products/backfill-status` para monitorar progresso
+
+### Agendador de Anúncios (P2-b)
+- Worker assíncrono em `social_scheduler.py` roda a cada 60s
+- Horários de pico padrão (Brasil): 12h, 18h, 21h
+- Endpoints:
+  - `POST /ad/schedule` — agenda 1 anúncio para próximo pico (ou ISO específico)
+  - `POST /ad/schedule/bulk` — agenda vários distribuídos pelos picos
+  - `GET /ad/schedule` — lista agendamentos (filtros: pending/published/failed/cancelled)
+  - `DELETE /ad/schedule/{id}` — cancela
+  - `GET /ad/scheduler/status` — estado do worker
+- Frontend: nova página `/agenda` com tabela, filtros por status, cancelamento
+- Botão "Agendar para próximo pico" no Criar Anúncio
+- Retry automático até 3 tentativas em caso de falha
+
+### Pinterest (P2-c)
+- Serviço `pinterest_service.py` com endpoints:
+  - `POST /social/pinterest/credentials` — salva access token criptografado
+  - `POST /social/pinterest/test` — valida token + retorna username
+  - `GET /social/pinterest/boards` — lista boards do usuário
+  - `POST /social/pinterest/pin` — cria pin (image_url + title + description + board_id)
+- UI integrada na página Redes Sociais (seção Pinterest abaixo de Meta)
+- Checkbox Pinterest no Criar Anúncio (multi-channel select)
+- `/ad/publish` agora aceita `publish_pinterest=true` + `pinterest_board_id`
+
+## YouTube Shorts (próxima sprint — P2-d)
+- Mais complexo: requer OAuth 2.0 Google + refresh tokens + resumable upload + geração de vídeo (9:16)
+- Stack proposta: imagem 1080×1920 (Nano Banana) + áudio TTS Claude/OpenAI + ffmpeg merge
+- Quota crítica: `videos.insert` = 100/dia por projeto Google Cloud
+
 ## Backlog (P1/P2)
-- **P1**: Renovar Long-Lived Page Access Token Meta (atual expirou em 06-Jun-26)
-- **P1**: Configurar `instagram_business_id` em Redes Sociais para habilitar postagem no IG (atualmente Page Token só tem FB)
+- **P1**: Usuário renovar Long-Lived Page Access Token Meta usando botão "Tornar Token Vitalício"
+- **P1**: Usuário configurar `instagram_business_id` (linkar Instagram Business à Página)
 - **P1**: Opção "Limpar e re-enriquecer" (inativar variações erradas no Bling)
+- **P2**: YouTube Shorts (OAuth + resumable upload + geração de vídeo)
 - **P2**: Botão "Materializar imagens no Bling" (UI guide para o toggle manual)
-- **P2**: Pinterest e YouTube
-- **P2**: Otimizar `/ad/products` (atualmente 1 GET por produto, ~30s/página)
 - **P2**: Conta JohnDrop com mensalidade atrasada (depende do user)
 - **P2**: Migrar `@app.on_event` → FastAPI lifespan
 - **P2**: Limpeza de warnings de hooks React em Robot.js / Settings.js

@@ -29,6 +29,8 @@ import bling_enrichment
 import bulk_enrichment
 from social_service import router as social_router
 from social_ad_service import router as social_ad_router
+from social_scheduler import router as social_scheduler_router, start_scheduler
+from pinterest_service import router as pinterest_router
 from diag_service import router as diag_router
 
 
@@ -63,6 +65,12 @@ async def _startup() -> None:
             logger.info(f"Chromium pronto: {johndrop_bot._find_chromium_binary()}")
     except Exception as e:
         logger.warning(f"chromium auto-install skipped: {e}")
+    # Boot the social ad scheduler (peak-hour publisher)
+    try:
+        start_scheduler()
+        logger.info("Social ad scheduler started")
+    except Exception as e:
+        logger.warning(f"scheduler start failed: {e}")
 
 
 @api.get("/")
@@ -397,6 +405,8 @@ async def dashboard_stats() -> DashboardStats:
 
 api.include_router(social_router)
 api.include_router(social_ad_router)
+api.include_router(social_scheduler_router)
+api.include_router(pinterest_router)
 api.include_router(diag_router)
 app.include_router(api)
 

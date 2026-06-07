@@ -4,7 +4,7 @@ import { logger } from "@/lib/logger";
 import { toast } from "sonner";
 import {
   Sparkles, Search, Loader2, Send, Image as ImageIcon,
-  Edit3, RefreshCw, CheckCircle2, Facebook, Instagram,
+  Edit3, RefreshCw, CheckCircle2, Facebook, Instagram, Clock,
 } from "lucide-react";
 
 const PAGE_SIZE = 24;
@@ -23,6 +23,8 @@ export default function CreateAdPage() {
   const [editedCaption, setEditedCaption] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState(null);
+  const [scheduling, setScheduling] = useState(false);
+  const [channels, setChannels] = useState({ instagram: true, facebook: true, pinterest: false });
   const [drafts, setDrafts] = useState([]);
 
   const loadProducts = async () => {
@@ -76,6 +78,21 @@ export default function CreateAdPage() {
 
   const handleRegenerate = () => { setDraft(null); handleGenerate(); };
 
+  const handleSchedule = async () => {
+    if (!draft) return;
+    setScheduling(true);
+    try {
+      const { data } = await api.post("/social/ad/schedule", { draft_id: draft.draft_id });
+      toast.success(`Agendado para ${new Date(data.publish_at).toLocaleString("pt-BR")}`);
+      loadDrafts();
+    } catch (e) {
+      logger.error("schedule ad", e);
+      toast.error(e?.response?.data?.detail || "Falha ao agendar");
+    } finally {
+      setScheduling(false);
+    }
+  };
+
   const handlePublish = async () => {
     if (!draft) return;
     setPublishing(true);
@@ -84,8 +101,9 @@ export default function CreateAdPage() {
       const { data } = await api.post("/social/ad/publish", {
         draft_id: draft.draft_id,
         caption: editedCaption,
-        publish_instagram: true,
-        publish_facebook: true,
+        publish_instagram: channels.instagram,
+        publish_facebook: channels.facebook,
+        publish_pinterest: channels.pinterest,
       });
       setPublishResult(data);
       if (data.ok) toast.success("Anúncio publicado");
@@ -291,14 +309,35 @@ export default function CreateAdPage() {
                 <div className="text-xs text-muted-foreground mt-1">{editedCaption.length} caracteres</div>
               </div>
 
-              <div className="rounded-sm bg-zinc-50 px-3 py-2 text-xs">
-                Publicar em:
-                <span className="inline-flex items-center gap-1 ml-2 px-2 py-0.5 bg-pink-100 text-pink-700 rounded-sm">
-                  <Instagram className="h-3 w-3" /> Instagram
-                </span>
-                <span className="inline-flex items-center gap-1 ml-1.5 px-2 py-0.5 bg-blue-100 text-blue-700 rounded-sm">
-                  <Facebook className="h-3 w-3" /> Facebook
-                </span>
+              <div className="rounded-sm bg-zinc-50 px-3 py-2.5 text-xs space-y-1.5" data-testid="channel-picker">
+                <div className="font-medium text-zinc-700 mb-1">Canais</div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="ch-instagram"
+                    checked={channels.instagram}
+                    onChange={(e) => setChannels({ ...channels, instagram: e.target.checked })}
+                  />
+                  <Instagram className="h-3.5 w-3.5 text-pink-600" /> Instagram
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="ch-facebook"
+                    checked={channels.facebook}
+                    onChange={(e) => setChannels({ ...channels, facebook: e.target.checked })}
+                  />
+                  <Facebook className="h-3.5 w-3.5 text-blue-600" /> Facebook
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="ch-pinterest"
+                    checked={channels.pinterest}
+                    onChange={(e) => setChannels({ ...channels, pinterest: e.target.checked })}
+                  />
+                  <span className="inline-block h-3.5 w-3.5 rounded-full bg-red-600 text-white text-[8px] flex items-center justify-center font-bold">P</span> Pinterest
+                </label>
               </div>
 
               <button
@@ -309,6 +348,17 @@ export default function CreateAdPage() {
               >
                 {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 {publishing ? "Publicando…" : "Publicar agora"}
+              </button>
+
+              <button
+                onClick={handleSchedule}
+                disabled={scheduling || !editedCaption}
+                data-testid="schedule-btn"
+                title="Agenda para o próximo horário de pico (12h / 18h / 21h)"
+                className="w-full py-2.5 border border-[#EE7B22] text-[#EE7B22] text-sm font-medium rounded-sm hover:bg-orange-50 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {scheduling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
+                {scheduling ? "Agendando…" : "Agendar para próximo pico"}
               </button>
 
               {publishResult && (
@@ -331,6 +381,19 @@ export default function CreateAdPage() {
                       <span className="text-rose-600 text-xs">{publishResult.facebook?.error || "—"}</span>
                     )}
                   </div>
+                  {publishResult.pinterest && (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block h-3.5 w-3.5 rounded-full bg-red-600 text-white text-[8px] flex items-center justify-center font-bold">P</span>
+                      <span className="font-medium">Pinterest:</span>
+                      {publishResult.pinterest?.ok ? (
+                        <a href={publishResult.pinterest.url} target="_blank" rel="noreferrer" className="text-emerald-700 flex items-center gap-1 hover:underline">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> publicado
+                        </a>
+                      ) : (
+                        <span className="text-rose-600 text-xs">{publishResult.pinterest?.error || "—"}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
