@@ -89,6 +89,12 @@ import asyncio as _asyncio_bf
 
 _BACKFILL_STATE: dict = {"running": False, "scanned": 0, "cached": 0, "total": 0, "started_at": None, "finished_at": None}
 
+# Batch ad generation state — tracks bulk "generate + schedule" job
+_BATCH_AD_STATE: dict = {
+    "running": False, "total": 0, "generated": 0, "failed": 0, "scheduled": 0,
+    "started_at": None, "finished_at": None, "errors": [], "draft_ids": [],
+}
+
 
 async def _do_backfill(max_items: int) -> None:
     from bling_enrichment import _upsert_enriched_cache as _cache
@@ -151,6 +157,97 @@ async def backfill_enriched_cache(max_items: int = 500) -> dict:
 @router.get("/ad/products/backfill-status")
 async def backfill_status() -> dict:
     return dict(_BACKFILL_STATE)
+
+
+# ---------------------------------------------------------------- batch generate + schedule
+
+
+class BatchGenerateRequest(BaseModel):
+    product_ids: List[int]
+    audience: str = "geral"
+    extra_brief: str = ""
+    auto_schedule: bool = True
+    peak_hours: Optional[List[int]] = None  # default [12, 18, 21]
+    days_ahead: int = 1  # spread across N days starting today
+
+
+async def _do_batch_generate(payload: BatchGenerateRequest, base_url: str) -> None:
+    """Generate ads for every product_id, then optionally bulk-schedule them.
+
+    Runs in background — UI polls /ad/batch/status to track progress.
+    """
+    from social_scheduler import schedule_bulk, BulkScheduleRequest
+
+    _BATCH_AD_STATE.update({
+        "running": True, "total": len(payload.product_ids),
+        "generated": 0, "failed": 0, "scheduled": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None, "errors": [], "draft_ids": [],
+    })
+
+    # Helper request stub for absolute URL building (we don't have a real
+    # FastAPI Request inside a background task — pass the base_url instead).
+    class _FakeRequest:
+        def __init__(self, b): self.base_url = b
+    fake_req = _FakeRequest(base_url)
+
+    try:
+        for pid in payload.product_ids:
+            try:
+                gen_payload = GenerateAdRequest(
+                    product_id=pid,
+                    audience=payload.audience,
+                    extra_brief=payload.extra_brief,
+                )
+                result = await generate_ad(gen_payload, fake_req)
+                _BATCH_AD_STATE["generated"] += 1
+                _BATCH_AD_STATE["draft_ids"].append(result["draft_id"])
+            except Exception as e:
+                _BATCH_AD_STATE["failed"] += 1
+                _BATCH_AD_STATE["errors"].append(f"pid={pid}: {str(e)[:120]}")
+                await add_log("warning", f"Batch generate falhou para pid={pid}: {e}")
+
+        # Schedule all generated drafts together
+        if payload.auto_schedule and _BATCH_AD_STATE["draft_ids"]:
+            try:
+                sched_payload = BulkScheduleRequest(
+                    draft_ids=_BATCH_AD_STATE["draft_ids"],
+                    peak_hours=payload.peak_hours,
+                    days_ahead=payload.days_ahead,
+                )
+                res = await schedule_bulk(sched_payload)
+                _BATCH_AD_STATE["scheduled"] = res.get("total", 0)
+            except Exception as e:
+                await add_log("error", f"Bulk schedule falhou: {e}")
+    finally:
+        _BATCH_AD_STATE["running"] = False
+        _BATCH_AD_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await add_log(
+            "success",
+            f"Batch ad: {_BATCH_AD_STATE['generated']} gerados, "
+            f"{_BATCH_AD_STATE['scheduled']} agendados, {_BATCH_AD_STATE['failed']} falhas",
+        )
+
+
+@router.post("/ad/batch/generate")
+async def batch_generate_ads(payload: BatchGenerateRequest, request: Request) -> dict:
+    """Fire-and-forget batch generation. Generates N ads and (optionally)
+    auto-schedules them across upcoming peak hours."""
+    if _BATCH_AD_STATE.get("running"):
+        return {"ok": False, "reason": "batch já em execução", **_BATCH_AD_STATE}
+    if not payload.product_ids:
+        raise HTTPException(400, "product_ids vazio")
+    if len(payload.product_ids) > 30:
+        raise HTTPException(400, "máximo 30 produtos por lote (limite de orçamento da Universal Key)")
+
+    base_url = str(request.base_url).rstrip("/")
+    _asyncio_bf.create_task(_do_batch_generate(payload, base_url))
+    return {"ok": True, "started": True, "total": len(payload.product_ids)}
+
+
+@router.get("/ad/batch/status")
+async def batch_status() -> dict:
+    return dict(_BATCH_AD_STATE)
 
 
 # --------------------------------------------------------------- helpers
@@ -385,6 +482,28 @@ class PublishRequest(BaseModel):
     publish_facebook: bool = True
     publish_pinterest: bool = False
     pinterest_board_id: Optional[str] = None
+
+
+@router.post("/ad/republish/{draft_id}")
+async def republish_draft(draft_id: str, request: Request) -> dict:
+    """Re-attempt publication of a previously failed draft.
+
+    Reuses the existing image + caption (no LLM/Nano Banana cost) and re-runs
+    the Meta + Pinterest publishing flow. Useful after the user renews their
+    Meta token — they don't need to regenerate the ad, just click Republish.
+    """
+    draft = await db.social_ad_drafts.find_one({"id": draft_id})
+    if not draft:
+        raise HTTPException(404, "draft não encontrado")
+    # Build a PublishRequest with sensible defaults from the draft
+    payload = PublishRequest(
+        draft_id=draft_id,
+        caption=draft.get("caption"),
+        publish_instagram=True,
+        publish_facebook=True,
+        publish_pinterest=False,  # opt-in: user can flip via /publish if wanted
+    )
+    return await publish_ad(payload, request)
 
 
 @router.post("/ad/publish")

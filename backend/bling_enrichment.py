@@ -744,6 +744,13 @@ async def enrich_product_by_sku(
     if not sku:
         return {"ok": False, "reason": "sku vazio"}
 
+    # Track for live dashboard
+    try:
+        from enrichment_tracker import track as _track
+        _track(sku, "queued", title=raw_title[:80])
+    except Exception:
+        _track = lambda *a, **k: None  # noqa: E731
+
     await add_log("info", f"Bling: iniciando enriquecimento para SKU {sku}")
 
     try:
@@ -751,28 +758,31 @@ async def enrich_product_by_sku(
     except Exception as e:
         await add_log("error", f"Bling: erro ao buscar produto {sku}: {e}")
         await _save_log(sku, "error", f"busca falhou: {e}")
+        _track(sku, "failed", error=f"busca: {e}")
         return {"ok": False, "reason": str(e)}
 
     if not product:
         msg = f"Produto {sku} não encontrado no Bling após {FIND_PRODUCT_MAX_ATTEMPTS} tentativas (~{FIND_PRODUCT_MAX_ATTEMPTS * FIND_PRODUCT_DELAY_S}s)"
         await add_log("warning", msg)
         await _save_log(sku, "not_found", msg)
+        _track(sku, "failed", error="not_found")
         return {"ok": False, "reason": "not_found"}
 
     product_id = product.get("id")
+    _track(sku, "waiting_sync", product_id=product_id)
 
     # Wait for JohnDrop async sync to bring in stock + images.
-    # Without this, _set_children_stock reads saldo=0 and variations end up with
-    # 0 units; and _copy_images_to_children has nothing to copy to children.
     full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
-    # If sync brought in images, prefer those over the bot-scraped URLs (Bling
-    # versions are more stable than the JohnDrop S3 presigned URLs).
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
     bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]
     bling_urls = [u for u in (bling_internal + bling_external) if u]
     if bling_urls:
         images = bling_urls
+    sync_saldo = (full_after_sync.get("estoque") or {}).get("saldoVirtualTotal") or 0
+    _track(sku, "enriching", product_id=product_id,
+           saldo=int(sync_saldo) if sync_saldo else 0,
+           imagens=len(bling_urls))
 
     try:
         short_desc, bullets, category_id = await asyncio.gather(
@@ -783,6 +793,7 @@ async def enrich_product_by_sku(
     except Exception as e:
         await add_log("error", f"Bling: LLM falhou para {sku}: {e}")
         await _save_log(sku, "error", f"LLM: {e}")
+        _track(sku, "failed", error=f"LLM: {e}")
         return {"ok": False, "reason": str(e)}
 
     # Bling renders HTML in description fields — convert newlines to <br>
@@ -810,6 +821,7 @@ async def enrich_product_by_sku(
     except Exception as e:
         await add_log("error", f"Bling: PUT falhou para {sku}: {e}")
         await _save_log(sku, "error", f"PUT: {e}", product_id=product_id)
+        _track(sku, "failed", error=f"PUT: {e}")
         return {"ok": False, "reason": str(e)}
 
     if ok:
@@ -848,6 +860,9 @@ async def enrich_product_by_sku(
                 variations_created = result.get("created", 0)
             except Exception as e:
                 await add_log("warning", f"Variações pós-enrich falharam para {sku}: {e}")
+        _track(sku, "done", product_id=product_id,
+               variations_detected=len(variations) if variations else 0,
+               variations_created=variations_created)
         return {
             "ok": True,
             "product_id": product_id,
@@ -858,6 +873,7 @@ async def enrich_product_by_sku(
 
     await add_log("warning", f"Bling: PUT retornou erro para {sku}")
     await _save_log(sku, "error", "PUT retornou status >= 400", product_id=product_id)
+    _track(sku, "failed", error="put_failed")
     return {"ok": False, "reason": "put_failed"}
 
 

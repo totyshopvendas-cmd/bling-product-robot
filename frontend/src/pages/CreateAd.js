@@ -4,7 +4,8 @@ import { logger } from "@/lib/logger";
 import { toast } from "sonner";
 import {
   Sparkles, Search, Loader2, Send, Image as ImageIcon,
-  Edit3, RefreshCw, CheckCircle2, Facebook, Instagram, Clock,
+  Edit3, RefreshCw, CheckCircle2, Facebook, Instagram, Clock, Repeat,
+  CheckSquare, Square, Zap,
 } from "lucide-react";
 
 const PAGE_SIZE = 24;
@@ -25,7 +26,14 @@ export default function CreateAdPage() {
   const [publishResult, setPublishResult] = useState(null);
   const [scheduling, setScheduling] = useState(false);
   const [channels, setChannels] = useState({ instagram: true, facebook: true, pinterest: false });
+  const [republishing, setRepublishing] = useState(null);
   const [drafts, setDrafts] = useState([]);
+
+  // Batch generation
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSelected, setBatchSelected] = useState(new Set());
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [batchStatus, setBatchStatus] = useState(null);
 
   const loadProducts = async () => {
     setLoadingList(true);
@@ -53,6 +61,63 @@ export default function CreateAdPage() {
 
   useEffect(() => { loadProducts(); loadDrafts(); }, []); // eslint-disable-line
 
+  // Poll batch status while running
+  useEffect(() => {
+    if (!batchRunning) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const { data } = await api.get("/social/ad/batch/status");
+        setBatchStatus(data);
+        if (!data.running) {
+          setBatchRunning(false);
+          loadDrafts();
+          toast.success(`Lote concluído: ${data.generated} gerados, ${data.scheduled} agendados`);
+        }
+      } catch (_) { /* ignore polling errors */ }
+    };
+    const t = setInterval(tick, 2500);
+    tick();
+    return () => { cancelled = true; clearInterval(t); };
+  }, [batchRunning]); // eslint-disable-line
+
+  const toggleBatchProduct = (pid) => {
+    setBatchSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else next.add(pid);
+      return next;
+    });
+  };
+
+  const startBatch = async () => {
+    if (batchSelected.size === 0) {
+      toast.error("Selecione ao menos 1 produto");
+      return;
+    }
+    if (batchSelected.size > 30) {
+      toast.error("Máximo 30 produtos por lote");
+      return;
+    }
+    setBatchRunning(true);
+    setBatchStatus(null);
+    try {
+      await api.post("/social/ad/batch/generate", {
+        product_ids: Array.from(batchSelected),
+        audience,
+        extra_brief: extraBrief,
+        auto_schedule: true,
+        days_ahead: 2,
+      });
+      toast.success(`Lote iniciado: ${batchSelected.size} produtos`);
+      setBatchSelected(new Set());
+    } catch (e) {
+      setBatchRunning(false);
+      toast.error(e?.response?.data?.detail || "Erro ao iniciar lote");
+    }
+  };
+
   const handleGenerate = async () => {
     if (!selected) return;
     setGenerating(true);
@@ -77,6 +142,21 @@ export default function CreateAdPage() {
   };
 
   const handleRegenerate = () => { setDraft(null); handleGenerate(); };
+
+  const republishDraft = async (id) => {
+    setRepublishing(id);
+    try {
+      const { data } = await api.post(`/social/ad/republish/${id}`);
+      if (data.ok) toast.success("Republicado com sucesso!");
+      else toast.error("Republicação falhou em todos os canais");
+      loadDrafts();
+    } catch (e) {
+      logger.error("republish", e);
+      toast.error(e?.response?.data?.detail || "Erro ao republicar");
+    } finally {
+      setRepublishing(null);
+    }
+  };
 
   const handleSchedule = async () => {
     if (!draft) return;
@@ -134,6 +214,16 @@ export default function CreateAdPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold">1. Escolha um produto</h2>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setBatchMode(!batchMode); setBatchSelected(new Set()); }}
+                data-testid="toggle-batch-mode"
+                className={`px-3 py-2 text-xs rounded-sm flex items-center gap-1.5 ${
+                  batchMode ? "bg-[#EE7B22] text-white" : "bg-zinc-100 hover:bg-zinc-200"
+                }`}
+              >
+                <Zap className="h-3.5 w-3.5" />
+                {batchMode ? `Lote: ${batchSelected.size}` : "Modo Lote"}
+              </button>
               <div className="relative">
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <input
@@ -157,6 +247,44 @@ export default function CreateAdPage() {
             </div>
           </div>
 
+          {batchMode && (
+            <div className="mb-4 p-3 rounded-sm bg-amber-50 border border-amber-200 text-sm space-y-2" data-testid="batch-control">
+              <div className="font-semibold">Geração em Lote</div>
+              <p className="text-xs text-zinc-700">
+                Selecione até 30 produtos abaixo. A IA gera anúncios em paralelo e agenda automaticamente nos próximos picos (12h/18h/21h) ao longo de 2 dias.
+              </p>
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  data-testid="batch-audience"
+                  value={audience}
+                  onChange={(e) => setAudience(e.target.value)}
+                  placeholder="Público-alvo (ex: público amplo)"
+                  className="text-xs px-2 py-1 border border-border rounded-sm flex-1"
+                />
+                <button
+                  onClick={startBatch}
+                  disabled={batchRunning || batchSelected.size === 0}
+                  data-testid="start-batch-btn"
+                  className="px-3 py-1.5 bg-[#EE7B22] text-white text-xs font-medium rounded-sm hover:bg-[#d56a18] disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  {batchRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                  {batchRunning ? "Em execução…" : `Gerar e Agendar ${batchSelected.size}`}
+                </button>
+              </div>
+              {batchRunning && batchStatus && (
+                <div className="text-xs space-y-1 pt-2 border-t border-amber-200">
+                  <div>Gerados: <strong>{batchStatus.generated}/{batchStatus.total}</strong></div>
+                  <div>Agendados: <strong>{batchStatus.scheduled}</strong></div>
+                  {batchStatus.failed > 0 && <div className="text-rose-700">Falhas: {batchStatus.failed}</div>}
+                  <div className="h-1.5 bg-amber-200 rounded-sm overflow-hidden mt-1">
+                    <div className="h-full bg-[#EE7B22]" style={{ width: `${(batchStatus.generated / Math.max(batchStatus.total, 1)) * 100}%` }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {loadingList ? (
             <div className="py-16 text-center text-muted-foreground">
               <Loader2 className="h-6 w-6 mx-auto animate-spin mb-2" />
@@ -168,27 +296,41 @@ export default function CreateAdPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-              {products.map((p) => (
-                <button
-                  key={p.id}
-                  data-testid={`product-card-${p.id}`}
-                  onClick={() => setSelected(p)}
-                  className="text-left border border-border rounded-sm overflow-hidden hover:border-[#EE7B22] hover:shadow-md transition"
-                >
-                  <div className="aspect-square bg-zinc-100 flex items-center justify-center">
-                    {p.image_url ? (
-                      <img src={p.image_url} alt={p.nome} className="w-full h-full object-cover" />
-                    ) : (
-                      <ImageIcon className="h-8 w-8 text-zinc-400" />
+              {products.map((p) => {
+                const inBatch = batchSelected.has(p.id);
+                const onClick = batchMode
+                  ? () => toggleBatchProduct(p.id)
+                  : () => setSelected(p);
+                return (
+                  <button
+                    key={p.id}
+                    data-testid={`product-card-${p.id}`}
+                    onClick={onClick}
+                    className={`relative text-left border rounded-sm overflow-hidden transition ${
+                      batchMode && inBatch ? "border-[#EE7B22] ring-2 ring-[#EE7B22]"
+                      : "border-border hover:border-[#EE7B22] hover:shadow-md"
+                    }`}
+                  >
+                    {batchMode && (
+                      <div className="absolute top-1.5 left-1.5 z-10 bg-white rounded-sm p-0.5 shadow">
+                        {inBatch ? <CheckSquare className="h-4 w-4 text-[#EE7B22]" /> : <Square className="h-4 w-4 text-zinc-400" />}
+                      </div>
                     )}
-                  </div>
-                  <div className="p-2">
-                    <div className="text-xs font-medium line-clamp-2 leading-snug">{p.nome}</div>
-                    <div className="text-xs text-muted-foreground mt-1">{p.codigo}</div>
-                    <div className="text-xs font-semibold text-[#EE7B22] mt-0.5">R$ {Number(p.preco).toFixed(2)}</div>
-                  </div>
-                </button>
-              ))}
+                    <div className="aspect-square bg-zinc-100 flex items-center justify-center">
+                      {p.image_url ? (
+                        <img src={p.image_url} alt={p.nome} className="w-full h-full object-cover" />
+                      ) : (
+                        <ImageIcon className="h-8 w-8 text-zinc-400" />
+                      )}
+                    </div>
+                    <div className="p-2">
+                      <div className="text-xs font-medium line-clamp-2 leading-snug">{p.nome}</div>
+                      <div className="text-xs text-muted-foreground mt-1">{p.codigo}</div>
+                      <div className="text-xs font-semibold text-[#EE7B22] mt-0.5">R$ {Number(p.preco).toFixed(2)}</div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </section>
@@ -417,13 +559,25 @@ export default function CreateAdPage() {
                 </div>
                 <div className="p-2">
                   <div className="text-xs font-medium line-clamp-1">{d.headline || d.product_name}</div>
-                  <div className="text-xs mt-1">
+                  <div className="text-xs mt-1 flex items-center justify-between">
                     {d.status === "published" ? (
                       <span className="text-emerald-700">Publicado</span>
                     ) : d.status === "failed" ? (
                       <span className="text-rose-600">Falhou</span>
                     ) : (
                       <span className="text-zinc-500">Rascunho</span>
+                    )}
+                    {(d.status === "failed" || d.status === "draft") && (
+                      <button
+                        onClick={() => republishDraft(d.id)}
+                        disabled={republishing === d.id}
+                        data-testid={`republish-${d.id}`}
+                        title="Tentar publicar de novo"
+                        className="text-blue-600 hover:text-blue-800 inline-flex items-center gap-1"
+                      >
+                        {republishing === d.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Repeat className="h-3 w-3" />}
+                        {republishing === d.id ? "..." : "Republicar"}
+                      </button>
                     )}
                   </div>
                 </div>

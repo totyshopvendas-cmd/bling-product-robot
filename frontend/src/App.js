@@ -15,6 +15,7 @@ import SocialSettings from "@/pages/SocialSettings";
 import CreateAd from "@/pages/CreateAd";
 import Schedule from "@/pages/Schedule";
 import Onboarding from "@/pages/Onboarding";
+import EnrichmentProgress from "@/pages/EnrichmentProgress";
 
 function App() {
   return (
@@ -33,6 +34,7 @@ function App() {
           <Route path="/criar-anuncio" element={<CreateAd />} />
           <Route path="/agenda" element={<Schedule />} />
           <Route path="/setup-redes" element={<Onboarding />} />
+          <Route path="/progresso" element={<EnrichmentProgress />} />
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>
