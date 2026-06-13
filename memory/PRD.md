@@ -71,8 +71,43 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - `GET /ad/drafts`: histórico de anúncios gerados
 - Frontend: nova página `/criar-anuncio` com fluxo seleção→briefing→preview→publicar
 
-## Atualizações 07/02/2026 (continuação)
-### Setup Wizard de Redes Sociais (P0)- Nova página `/setup-redes` com checklist visual + guia passo-a-passo
+## Atualizações 13/02/2026 (P2 Backlog)
+
+### Setup Wizard de Redes Sociais (P0 — 07/02)
+- Página `/setup-redes` com checklist visual + guia passo-a-passo
+- Backend `GET /api/social/onboarding/status` agrega status de cada integração:
+  - Meta: credenciais / token válido / página selecionada / IG vinculado
+  - Pinterest: token funcional (detecta Sandbox) / board padrão
+- UI: barra de progresso, próxima ação destacada, status colorido por item, guias expandíveis, banner "Pronto para publicar!" quando token+página OK
+- Detecta token expirado e Pinterest Sandbox com instruções específicas para resolver
+
+### 1. Republicação de drafts falhados
+- Novo endpoint `POST /api/social/ad/republish/{draft_id}` que reusa imagem + caption gerados (sem custo de LLM/Nano Banana) e re-executa o flow de publicação Meta + Pinterest
+- Botão "Republicar" aparece no histórico de drafts (Criar Anúncio) para itens com status `failed` ou `draft`
+- Caso de uso: usuário renovou o token Meta — agora basta clicar Republicar nos drafts antigos sem regerar nada
+
+### 2. Geração + agendamento em lote
+- Novo endpoint `POST /api/social/ad/batch/generate` (fire-and-forget) gera anúncios para N produtos e agenda automaticamente nos picos 12h/18h/21h ao longo de N dias
+- `GET /api/social/ad/batch/status` retorna progresso em tempo real (total / gerados / agendados / falhas)
+- Limite de segurança: 30 produtos por lote (proteção contra estouro do orçamento da Universal Key)
+- UI: botão "Modo Lote" no Criar Anúncio → checkboxes nos product cards → "Gerar e Agendar N" → barra de progresso
+
+### 3. Dashboard de progresso do enriquecimento ⭐
+- Novo módulo `enrichment_tracker.py` mantém em memória o estágio de cada SKU
+- Estágios: queued → waiting_sync → enriching → done/failed
+- Integrado em `bling_enrichment.enrich_product_by_sku` — track automático em cada transição
+- Endpoint `GET /api/enrich/progress` + `DELETE /api/enrich/progress` (limpa histórico)
+- Nova página `/progresso` com:
+  - 4 cards de resumo (total / ativos / concluídos / falhas)
+  - Tabela com SKU, produto, estágio (chip colorido), detalhe (estoque+imgs em real-time), timestamp
+  - Auto-refresh a cada 3 segundos (toggle on/off)
+  - Botão "Limpar histórico"
+
+### YouTube Shorts (P2-d — não implementado)
+- Adiado para próxima sprint. Complexidade: OAuth 2.0 Google + ffmpeg para geração de vídeo 9:16 + TTS de áudio + resumable upload
+- Quota crítica: `videos.insert` = 100/dia por projeto Google Cloud
+
+- Nova página `/setup-redes` com checklist visual + guia passo-a-passo
 - Backend: `GET /api/social/onboarding/status` agrega o estado de cada integração:
   - Meta: credenciais salvas / token válido / página selecionada / Instagram vinculado
   - Pinterest: token funcional (detecta Sandbox) / board padrão

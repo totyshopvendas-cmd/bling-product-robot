@@ -80,7 +80,7 @@ export default function CreateAdPage() {
     const t = setInterval(tick, 2500);
     tick();
     return () => { cancelled = true; clearInterval(t); };
-  }, [batchRunning]); // eslint-disable-line
+  }, [batchRunning]);
 
   const toggleBatchProduct = (pid) => {
     setBatchSelected((prev) => {
