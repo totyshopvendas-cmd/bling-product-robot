@@ -73,6 +73,16 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 
 ## Atualizações 13/02/2026 (P2 Backlog)
 
+### Correções enriquecimento (P0) ⭐
+- **Bug crítico identificado**: o campo `descricao` no Bling está VAZIO após o JohnDrop sincronizar. Por isso o bulk re-enrichment perdia o texto bruto e nunca conseguia parsear as variações (cores/tamanhos).
+- **Solução**: nova coleção MongoDB `product_raw` armazena o texto cru do JohnDrop indexado por SKU, persistido por `enrich_product_by_sku` no início de cada execução.
+- Quando o bulk chama `_enrich_one` e o Bling retorna `descricao` vazio, o sistema consulta o `product_raw` e recupera o texto original — variações são corretamente parseadas e criadas.
+- Removido o "skip já enriquecido" no bulk — agora o usuário pode forçar re-enrich para criar variações em produtos antigos.
+- Novos endpoints para produtos pré-existentes (sem raw persistido):
+  - `POST /api/bling/raw-description` salva manualmente o texto bruto de um SKU
+  - `GET /api/bling/raw-description/{sku}` consulta se já existe
+- "Limpar campos" no Enriquecimento Bling: após sucesso, o form é limpo automaticamente; também adicionado botão manual "Limpar campos".
+
 ### Setup Wizard de Redes Sociais (P0 — 07/02)
 - Página `/setup-redes` com checklist visual + guia passo-a-passo
 - Backend `GET /api/social/onboarding/status` agrega status de cada integração:

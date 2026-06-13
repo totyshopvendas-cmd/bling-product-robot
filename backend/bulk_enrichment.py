@@ -125,15 +125,22 @@ job = BulkJob()
 
 async def _enrich_one(product_id: int) -> dict:
     """Fetch a single product from Bling, then run the standard enrichment flow.
-    Uses the product's own nome + descricao as source material for the LLM."""
+    Uses the Bling product's nome as title. raw_description comes from the
+    `descricao` field if present, otherwise enrich_product_by_sku falls back to
+    the persisted `product_raw` Mongo collection (saved by the JohnDrop bot)."""
     full = await _fetch_full(product_id)
     if not full:
         return {"ok": False, "reason": "produto não encontrado no Bling"}
     sku = (full.get("codigo") or "").strip()
     name = (full.get("nome") or "").strip()
-    raw_desc = (full.get("descricao") or full.get("descricaoComplementar") or "").strip()
+    # Prefer the RAW description from JohnDrop (the only place variation text
+    # lives). `descricaoCurta`/`descricaoComplementar` are already enriched and
+    # don't contain the variation phrases.
+    raw_desc = (full.get("descricao") or "").strip()
     if not sku:
         return {"ok": False, "reason": "produto sem SKU"}
+    # Pass empty raw_desc when Bling has nothing — enrich_product_by_sku will
+    # look up the persisted version from Mongo (product_raw collection).
     return await bling_enrichment.enrich_product_by_sku(sku, name, raw_desc)
 
 
@@ -160,17 +167,12 @@ async def _run_job(product_ids: List[int]) -> None:
             job.current_sku = (preview.get("codigo") or "").strip() or str(pid)
             job.current_name = (preview.get("nome") or "").strip()[:80]
 
-            if _is_enriched(preview):
-                job.skipped += 1
-                job.completed += 1
-                job.items.append({
-                    "product_id": pid,
-                    "sku": job.current_sku,
-                    "name": job.current_name,
-                    "status": "skipped",
-                    "message": "já enriquecido",
-                })
-                continue
+            # NOTE: previously we skipped products already marked as enriched
+            # (marca=Generica + descricaoCurta). That broke the use case of
+            # re-running enrichment to CREATE VARIATIONS on previously-enriched
+            # products. Now we always re-run — enrich_product_by_sku is
+            # idempotent and rerunning gives a chance to create variations
+            # from the persisted `product_raw` data.
 
             try:
                 result = await _enrich_one(pid)
@@ -181,7 +183,10 @@ async def _run_job(product_ids: List[int]) -> None:
                         "sku": job.current_sku,
                         "name": job.current_name,
                         "status": "success",
-                        "message": "enriquecido",
+                        "message": (
+                            f"enriquecido + {result.get('variations_created', 0)} variações"
+                            if result.get("variations_created") else "enriquecido"
+                        ),
                     })
                 else:
                     job.errors += 1

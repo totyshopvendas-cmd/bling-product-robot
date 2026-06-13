@@ -271,6 +271,44 @@ async def bling_enrich_endpoint(payload: EnrichRequest) -> dict:
     )
 
 
+class RawDescriptionRequest(BaseModel):
+    sku: str
+    raw_description: str
+    raw_title: Optional[str] = ""
+
+
+@api.post("/bling/raw-description")
+async def save_raw_description(payload: RawDescriptionRequest) -> dict:
+    """Allow the user to manually save a raw JohnDrop description for an
+    existing Bling product, so bulk re-enrichment can re-create its variations.
+    Especially useful for products imported before the persistence layer existed.
+    """
+    sku = payload.sku.strip()
+    if not sku or len(payload.raw_description) < 30:
+        raise HTTPException(400, "SKU e raw_description (>= 30 chars) obrigatórios")
+    from datetime import datetime as _dt, timezone as _tz
+    await db.product_raw.update_one(
+        {"sku": sku},
+        {"$set": {
+            "sku": sku,
+            "raw_title": payload.raw_title or "",
+            "raw_description": payload.raw_description,
+            "updated_at": _dt.now(_tz.utc).isoformat(),
+            "source": "manual",
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "sku": sku, "length": len(payload.raw_description)}
+
+
+@api.get("/bling/raw-description/{sku}")
+async def get_raw_description(sku: str) -> dict:
+    doc = await db.product_raw.find_one({"sku": sku}, {"_id": 0})
+    if not doc:
+        return {"sku": sku, "exists": False}
+    return {"sku": sku, "exists": True, **doc}
+
+
 @api.get("/bling/enrichment/logs")
 async def bling_enrichment_logs(limit: int = 100) -> list:
     return await bling_enrichment.get_enrichment_logs(limit)

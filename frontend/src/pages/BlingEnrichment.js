@@ -33,10 +33,26 @@ export default function BlingEnrichmentPage() {
   }, []);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [load]);
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const [s, l] = await Promise.all([
+          api.get("/bling/enrichment/stats"),
+          api.get("/bling/enrichment/logs?limit=100"),
+        ]);
+        if (cancelled) return;
+        setStats(s.data);
+        setLogs(l.data);
+      } catch (err) {
+        logger.error("Failed to load enrichment data:", err);
+      }
+    };
+    fetchOnce();
+    const timer = setInterval(fetchOnce, REFRESH_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const clearForm = () => setManual({ sku: "", title: "", description: "" });
 
   const runManual = async () => {
     if (!manual.sku || !manual.title) {
@@ -52,6 +68,7 @@ export default function BlingEnrichmentPage() {
       });
       if (data.ok) {
         toast.success("Enriquecido com sucesso");
+        clearForm();
       } else {
         toast.error("Falhou: " + (data.reason || "desconhecido"));
       }
@@ -125,15 +142,27 @@ export default function BlingEnrichmentPage() {
           onChange={(e) => setManual((m) => ({ ...m, description: e.target.value }))}
           className="w-full text-sm border border-border rounded-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#EE7B22] font-mono"
         />
-        <button
-          data-testid="run-manual"
-          onClick={runManual}
-          disabled={running}
-          className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
-        >
-          <Sparkles className="h-4 w-4" />
-          {running ? "Enriquecendo…" : "Enriquecer no Bling"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            data-testid="run-manual"
+            onClick={runManual}
+            disabled={running}
+            className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            {running ? "Enriquecendo…" : "Enriquecer no Bling"}
+          </button>
+          <button
+            data-testid="clear-manual"
+            onClick={clearForm}
+            disabled={running}
+            type="button"
+            className="text-sm font-medium px-4 py-2.5 rounded-sm border border-border hover:bg-zinc-50 disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Limpar campos
+          </button>
+        </div>
       </div>
 
       <div className="border border-border bg-white">

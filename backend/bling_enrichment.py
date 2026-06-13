@@ -744,6 +744,44 @@ async def enrich_product_by_sku(
     if not sku:
         return {"ok": False, "reason": "sku vazio"}
 
+    # Persist the raw_description AT THE START so bulk re-enrichment can recover it
+    # later (Bling stores enriched HTML in descricaoCurta — the original variation
+    # text from JohnDrop ends up lost otherwise). We upsert by SKU so subsequent
+    # runs don't duplicate the record.
+    if raw_description and len(raw_description) > 30:
+        try:
+            await db.product_raw.update_one(
+                {"sku": sku},
+                {"$set": {
+                    "sku": sku,
+                    "raw_title": raw_title,
+                    "raw_description": raw_description,
+                    "johndrop_id": johndrop_id,
+                    "cost": cost,
+                    "images": images,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            await add_log("warning", f"Falhou ao persistir raw para {sku}: {e}")
+
+    # If caller passed empty raw_description (typical of bulk re-enrich after a
+    # restart), try to load the persisted version from Mongo.
+    if not raw_description or len(raw_description) < 30:
+        try:
+            doc = await db.product_raw.find_one({"sku": sku})
+            if doc:
+                raw_description = doc.get("raw_description") or raw_description
+                johndrop_id = johndrop_id or doc.get("johndrop_id")
+                cost = cost if cost is not None else doc.get("cost")
+                if not images:
+                    images = doc.get("images")
+                if raw_description:
+                    await add_log("info", f"Bling: raw recuperado do Mongo para {sku} ({len(raw_description)} chars)")
+        except Exception:
+            pass
+
     # Track for live dashboard
     try:
         from enrichment_tracker import track as _track

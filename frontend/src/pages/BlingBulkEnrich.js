@@ -66,6 +66,8 @@ export default function BlingBulkEnrichPage() {
     return () => clearInterval(pollRef.current);
   }, [fetchJob]);
 
+  const refreshJob = fetchJob;
+
   const toggleOne = (id) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -94,7 +96,7 @@ export default function BlingBulkEnrichPage() {
     try {
       const { data } = await api.post("/bling/enrich-bulk", { product_ids: ids });
       toast.success(`Lote iniciado: ${data.total} produtos`);
-      fetchJob();
+      refreshJob();
     } catch (err) {
       toast.error(err?.response?.data?.detail || err.message);
     }
@@ -108,7 +110,7 @@ export default function BlingBulkEnrichPage() {
       });
       toast.success(`Varredura concluída: ${data.total} produtos na fila`);
       setEnrichAllOpen(false);
-      fetchJob();
+      refreshJob();
     } catch (err) {
       toast.error(err?.response?.data?.detail || err.message);
     }
@@ -118,7 +120,7 @@ export default function BlingBulkEnrichPage() {
     try {
       await api.post("/bling/bulk-job/stop");
       toast.message("Sinal de parada enviado");
-      fetchJob();
+      refreshJob();
     } catch (err) {
       toast.error(err.message);
     }
