@@ -25,7 +25,7 @@ export default function CreateAdPage() {
   const [publishing, setPublishing] = useState(false);
   const [publishResult, setPublishResult] = useState(null);
   const [scheduling, setScheduling] = useState(false);
-  const [channels, setChannels] = useState({ instagram: true, facebook: true, pinterest: false });
+  const [channels, setChannels] = useState({ instagram: true, facebook: true, pinterest: false, youtube: false });
   const [republishing, setRepublishing] = useState(null);
   const [drafts, setDrafts] = useState([]);
 
@@ -59,7 +59,7 @@ export default function CreateAdPage() {
     }
   };
 
-  useEffect(() => { loadProducts(); loadDrafts(); }, []); // eslint-disable-line
+  useEffect(() => { loadProducts(); loadDrafts(); }, []);
 
   // Poll batch status while running
   useEffect(() => {
@@ -185,8 +185,22 @@ export default function CreateAdPage() {
         publish_facebook: channels.facebook,
         publish_pinterest: channels.pinterest,
       });
-      setPublishResult(data);
-      if (data.ok) toast.success("Anúncio publicado");
+
+      // YouTube is a separate flow (different content type — video) — fire in parallel after Meta/Pinterest
+      let ytRes = null;
+      if (channels.youtube) {
+        try {
+          const yt = await api.post("/social/youtube/publish", {
+            draft_id: draft.draft_id,
+            privacy_status: "public",
+          });
+          ytRes = yt.data;
+        } catch (e) {
+          ytRes = { ok: false, error: e?.response?.data?.detail || "erro YouTube" };
+        }
+      }
+      setPublishResult({ ...data, youtube: ytRes });
+      if (data.ok || ytRes?.ok) toast.success("Anúncio publicado");
       else toast.error("Publicação falhou em todos os canais");
       loadDrafts();
     } catch (e) {
@@ -480,6 +494,15 @@ export default function CreateAdPage() {
                   />
                   <span className="inline-block h-3.5 w-3.5 rounded-full bg-red-600 text-white text-[8px] flex items-center justify-center font-bold">P</span> Pinterest
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="ch-youtube"
+                    checked={channels.youtube}
+                    onChange={(e) => setChannels({ ...channels, youtube: e.target.checked })}
+                  />
+                  <span className="inline-block h-3.5 w-3.5 rounded-sm bg-red-600 text-white text-[8px] flex items-center justify-center font-bold">▶</span> YouTube Shorts
+                </label>
               </div>
 
               <button
@@ -533,6 +556,19 @@ export default function CreateAdPage() {
                         </a>
                       ) : (
                         <span className="text-rose-600 text-xs">{publishResult.pinterest?.error || "—"}</span>
+                      )}
+                    </div>
+                  )}
+                  {publishResult.youtube && (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block h-3.5 w-3.5 rounded-sm bg-red-600 text-white text-[8px] flex items-center justify-center font-bold">▶</span>
+                      <span className="font-medium">YouTube:</span>
+                      {publishResult.youtube?.ok ? (
+                        <a href={publishResult.youtube.url} target="_blank" rel="noreferrer" className="text-emerald-700 flex items-center gap-1 hover:underline">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> publicado
+                        </a>
+                      ) : (
+                        <span className="text-rose-600 text-xs">{publishResult.youtube?.error || "—"}</span>
                       )}
                     </div>
                   )}

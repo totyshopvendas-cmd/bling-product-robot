@@ -32,6 +32,7 @@ from social_ad_service import router as social_ad_router
 from social_scheduler import router as social_scheduler_router, start_scheduler
 from pinterest_service import router as pinterest_router
 from social_onboarding import router as social_onboarding_router
+from youtube_service import router as youtube_router
 from enrichment_tracker import router as enrichment_tracker_router
 from diag_service import router as diag_router
 
@@ -448,6 +449,7 @@ api.include_router(social_ad_router)
 api.include_router(social_scheduler_router)
 api.include_router(pinterest_router)
 api.include_router(social_onboarding_router)
+api.include_router(youtube_router)
 api.include_router(enrichment_tracker_router)
 api.include_router(diag_router)
 app.include_router(api)

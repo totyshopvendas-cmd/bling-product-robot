@@ -73,6 +73,25 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 
 ## Atualizações 13/02/2026 (P2 Backlog)
 
+### YouTube Shorts (P2-d) ⭐ — IMPLEMENTADO
+- Novo módulo `youtube_service.py` com pipeline completo:
+  - **OAuth 2.0 Google**: endpoints `/youtube/credentials`, `/youtube/oauth/start` (redirect consent), `/youtube/oauth/callback` (captura refresh_token + channel info)
+  - **TTS via Universal Key**: `OpenAITextToSpeech` (model tts-1, voz `nova`, formato MP3)
+  - **Geração de vídeo 9:16 com ffmpeg**:
+    - Imagem 1:1 do anúncio é padded para 1080x1920 com fundo borrado (boxblur=40)
+    - Combina com áudio MP3 em MP4 (libx264, yuv420p, AAC 192k, 30fps)
+  - **Upload resumable**: POST `/upload/youtube/v3/videos?uploadType=resumable` → PUT do binário → retorna video_id
+  - **Refresh automático** de access_token via refresh_token salvo (válido permanentemente)
+- Adicionado ao Setup Wizard com guia 3-passos (Google Cloud project + OAuth Client ID + Conectar)
+- Adicionado checkbox no Criar Anúncio + resultado mostrado no preview
+- Adicionado ao `social_onboarding`: check do status de credenciais + autorização
+- ffmpeg instalado no container
+
+### Códigos nas variações (SKU + sigla)
+- `bling_variations.py`: cada variação criada agora recebe `codigo: <parent_sku>-<sigla>`
+- Função `_variation_sigla()` mapeia 30+ cores/tamanhos comuns (Azul→AZ, Verde→VD, Branco→BR, Pequeno→P, etc.)
+- Fallback para nomes desconhecidos: primeiros 2 caracteres alfanuméricos uppercase
+
 ### Correções enriquecimento (P0) ⭐
 - **Bug crítico identificado**: o campo `descricao` no Bling está VAZIO após o JohnDrop sincronizar. Por isso o bulk re-enrichment perdia o texto bruto e nunca conseguia parsear as variações (cores/tamanhos).
 - **Solução**: nova coleção MongoDB `product_raw` armazena o texto cru do JohnDrop indexado por SKU, persistido por `enrich_product_by_sku` no início de cada execução.

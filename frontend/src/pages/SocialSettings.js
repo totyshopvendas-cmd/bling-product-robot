@@ -369,6 +369,126 @@ export default function SocialSettingsPage() {
       )}
 
       <PinterestSection />
+      <YouTubeSection />
+    </div>
+  );
+}
+
+
+function YouTubeSection() {
+  const [loading, setLoading] = useState(true);
+  const [info, setInfo] = useState(null);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get("/social/youtube/credentials");
+        if (cancelled) return;
+        setInfo(data);
+        if (data.configured) setClientId(data.client_id || "");
+      } catch (e) { logger.error("yt creds", e); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async () => {
+    if (!clientId || !clientSecret) {
+      toast.error("Informe Client ID e Secret");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post("/social/youtube/credentials", { client_id: clientId, client_secret: clientSecret });
+      toast.success("Credenciais YouTube salvas. Agora clique 'Conectar YouTube'.");
+      setClientSecret("");
+      const { data } = await api.get("/social/youtube/credentials");
+      setInfo(data);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Erro ao salvar");
+    } finally { setSaving(false); }
+  };
+
+  const connect = () => {
+    // Opens Google consent in the same tab (after authorize, redirects back to /redes-sociais)
+    window.location.href = `${window.location.origin}/api/social/youtube/oauth/start`;
+  };
+
+  if (loading) return null;
+  const redirectUri = `${window.location.origin}/api/social/youtube/oauth/callback`;
+
+  return (
+    <div className="space-y-4 pt-2" data-testid="youtube-section">
+      <div className="border-t border-border pt-6">
+        <h2 className="font-display text-xl font-bold tracking-tighter">YouTube Shorts</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Gera Shorts automáticos dos anúncios (imagem 9:16 + voz Nova + upload).
+          Precisa de credenciais OAuth do Google Cloud.
+        </p>
+      </div>
+
+      {info?.configured && info.has_refresh_token && (
+        <div className="border border-emerald-300 bg-emerald-50 p-3 text-sm" data-testid="youtube-connected-card">
+          <div className="flex items-center gap-2 font-semibold text-emerald-900">
+            <CheckCircle2 className="h-4 w-4" /> Conectado ao canal {info.channel_title || info.channel_id}
+          </div>
+        </div>
+      )}
+
+      <div className="border border-border bg-white p-5 space-y-4">
+        <div className="bg-amber-50 border border-amber-200 p-3 rounded-sm text-xs space-y-1">
+          <div>📌 <strong>Redirect URI exata</strong> que você precisa cadastrar no Google Cloud:</div>
+          <code className="block bg-white px-2 py-1 rounded text-[11px] font-mono break-all">{redirectUri}</code>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="label-overline">Client ID</label>
+          <input
+            type="text"
+            data-testid="yt-client-id"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="123456789-xxxxx.apps.googleusercontent.com"
+            className="text-sm border border-border rounded-sm px-3 py-2 font-mono focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="label-overline">Client Secret</label>
+          <input
+            type="password"
+            data-testid="yt-client-secret"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder={info?.configured ? "Deixe vazio para manter o atual" : "GOCSPX-xxxxx"}
+            className="text-sm border border-border rounded-sm px-3 py-2 font-mono focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+          />
+        </div>
+
+        <div className="flex gap-2 pt-2 flex-wrap">
+          <button
+            onClick={save}
+            disabled={saving}
+            data-testid="save-yt-creds"
+            className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2 rounded-sm hover:bg-[#C9651A] disabled:opacity-40 inline-flex items-center gap-2"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Salvar credenciais
+          </button>
+          <button
+            onClick={connect}
+            disabled={!info?.configured}
+            data-testid="connect-yt-btn"
+            className="bg-red-600 text-white text-sm font-medium px-4 py-2 rounded-sm hover:bg-red-700 disabled:opacity-40 inline-flex items-center gap-2"
+          >
+            <ExternalLink className="h-4 w-4" />
+            {info?.has_refresh_token ? "Reconectar YouTube" : "Conectar YouTube"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

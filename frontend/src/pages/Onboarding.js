@@ -65,6 +65,35 @@ const PINTEREST_GUIDE = [
   },
 ];
 
+const YOUTUBE_GUIDE = [
+  {
+    title: "1. Criar projeto + habilitar API no Google Cloud",
+    steps: [
+      <>Abra <a className="text-[#EE7B22] underline" href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noreferrer">console.cloud.google.com</a> e crie um projeto (ex: &quot;TotyShop YouTube&quot;)</>,
+      <>Em <strong>APIs &amp; Services → Library</strong>, procure &quot;YouTube Data API v3&quot; e clique <strong>Enable</strong></>,
+      "Volte em APIs & Services → OAuth consent screen → External → preencha (nome, email, depois Save)",
+    ],
+  },
+  {
+    title: "2. Criar OAuth Client ID",
+    steps: [
+      "APIs & Services → Credentials → Create Credentials → OAuth client ID",
+      "Application type: Web application",
+      <>Em <strong>Authorized redirect URIs</strong>, cole exatamente: <code className="bg-zinc-100 px-1.5 py-0.5 rounded text-xs">{window.location.origin}/api/social/youtube/oauth/callback</code></>,
+      "Save. Copie Client ID + Client Secret",
+    ],
+  },
+  {
+    title: "3. Conectar no TotyShop",
+    steps: [
+      <>Em <Link to="/redes-sociais" className="text-[#EE7B22] underline">Redes Sociais</Link>, role até a seção YouTube</>,
+      "Cole Client ID + Secret → Salvar",
+      "Clique no botão verde Conectar YouTube → autorize → o sistema captura o refresh token automaticamente",
+      "Pronto! Agora cada anúncio gerado pode virar um Short automaticamente (imagem 9:16 + voz da Nova lendo o copy + upload).",
+    ],
+  },
+];
+
 
 export default function OnboardingPage() {
   const [data, setData] = useState(null);
@@ -207,6 +236,13 @@ export default function OnboardingPage() {
         title="Pinterest"
         steps={groups.pinterest || []}
         guide={PINTEREST_GUIDE}
+      />
+
+      {/* YouTube Shorts section */}
+      <Section
+        title="YouTube Shorts"
+        steps={groups.youtube || []}
+        guide={YOUTUBE_GUIDE}
       />
     </div>
   );

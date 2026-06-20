@@ -163,12 +163,48 @@ async def _check_pinterest() -> list:
     return steps
 
 
+async def _check_youtube() -> list:
+    """YouTube status: credentials + OAuth refresh token + channel."""
+    doc = await db.social_credentials.find_one({"provider": "google_youtube"})
+    if not doc:
+        return [{
+            "id": "yt-creds",
+            "status": "pending",
+            "label": "Google OAuth (YouTube) — credenciais",
+            "detail": "Crie um projeto no Google Cloud Console, habilite YouTube Data API v3, e cole Client ID + Secret em Redes Sociais.",
+            "action_external_url": "https://console.cloud.google.com/apis/credentials",
+        }]
+    has_refresh = bool(doc.get("refresh_token_enc"))
+    base = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
+    return [
+        {
+            "id": "yt-creds",
+            "status": "ok",
+            "label": "Google OAuth (YouTube) — credenciais",
+            "detail": f"Client ID configurado. Redirect URI: {base}/api/social/youtube/oauth/callback",
+            "action_route": "/redes-sociais",
+        },
+        {
+            "id": "yt-oauth",
+            "status": "ok" if has_refresh else "pending",
+            "label": "Autorização YouTube concedida",
+            "detail": (
+                f"Conectado ao canal: {doc.get('channel_title') or doc.get('channel_id')}"
+                if has_refresh else
+                "Clique em 'Conectar YouTube' em Redes Sociais para autorizar acesso."
+            ),
+            "action_route": "/redes-sociais",
+        },
+    ]
+
+
 @router.get("/onboarding/status")
 async def onboarding_status() -> dict:
     """Aggregate status of every integration step, ready for a checklist UI."""
     meta = await _check_meta()
     pinterest = await _check_pinterest()
-    all_steps = meta + pinterest
+    youtube = await _check_youtube()
+    all_steps = meta + pinterest + youtube
 
     # Decide which "next action" the user should focus on
     next_step = None
@@ -195,5 +231,6 @@ async def onboarding_status() -> dict:
         "groups": {
             "meta": meta,
             "pinterest": pinterest,
+            "youtube": youtube,
         },
     }

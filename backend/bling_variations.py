@@ -95,9 +95,10 @@ async def create_variations(
             f"(será dividido entre {len(variations)} variações)",
         )
 
-    # Build variation list — NO codigo (SKU): user explicitly requested to skip SKU
-    # generation. Bling will keep variations identified only by `variacao.nome`
-    # ("Cor:Rosa", "Tamanho:M" etc).
+    # Build variation list. The user wants Bling to receive per-variation codes
+    # like `<parent_sku>-<sigla>` (ex: SUPORTE-AZ for Azul, SUPORTE-VD for Verde).
+    # We derive a deterministic 2-letter abbreviation from the variation name so
+    # the codes are stable across re-runs.
     existing_names = set()
     for v in (parent_current.get("variacoes") or []):
         nome_var = (v.get("variacao") or {}).get("nome") or ""
@@ -115,8 +116,11 @@ async def create_variations(
         if var_label.lower() in existing_names:
             skipped += 1
             continue
+        sigla = _variation_sigla(clean)
+        child_sku = f"{parent_sku}-{sigla}" if parent_sku else ""
         new_vars.append({
             "nome": f"{parent_name} {clean}"[:120],
+            "codigo": child_sku,
             "preco": float(parent_price) if parent_price else 0.0,
             "tipo": "P",
             "situacao": "A",  # toggle "Situação do produto" ATIVO
@@ -236,6 +240,49 @@ async def create_variations(
 
 
 _DEPOSITO_CACHE: dict = {"id": None, "checked": False}
+
+
+# Map of common Portuguese color names → 2-letter abbreviations
+_SIGLA_MAP = {
+    "azul": "AZ", "amarelo": "AM", "amarela": "AM",
+    "branco": "BR", "branca": "BR",
+    "preto": "PT", "preta": "PT",
+    "verde": "VD",
+    "vermelho": "VM", "vermelha": "VM",
+    "rosa": "RS", "roxo": "RX", "roxa": "RX",
+    "laranja": "LJ", "marrom": "MR",
+    "cinza": "CZ", "prata": "PR", "dourado": "DR", "dourada": "DR",
+    "bege": "BG", "lilas": "LL", "ciano": "CN",
+    # Sizes
+    "pequeno": "P", "pequena": "P",
+    "medio": "M", "media": "M", "médio": "M", "média": "M",
+    "grande": "G",
+    "pp": "PP", "p": "P", "m": "M", "g": "G", "gg": "GG", "xg": "XG", "xgg": "XGG",
+    # Voltage
+    "110v": "110", "220v": "220", "bivolt": "BV",
+}
+
+
+def _variation_sigla(name: str) -> str:
+    """Return a 2-char abbreviation for a variation name.
+
+    Examples:
+      Azul → AZ, Verde → VD, Branco → BR, Pequeno → P, 110v → 110.
+    For unknown names, takes first 2 alphanumeric chars uppercase.
+    """
+    clean = (name or "").strip().lower()
+    if not clean:
+        return "XX"
+    # Exact match first
+    if clean in _SIGLA_MAP:
+        return _SIGLA_MAP[clean]
+    # Strip common suffixes/prefixes
+    for k, v in _SIGLA_MAP.items():
+        if clean.startswith(k) or clean.endswith(k):
+            return v
+    # Fallback: first 2 alphanumeric uppercase
+    alnum = "".join(c for c in clean if c.isalnum())
+    return (alnum[:2] or "XX").upper()
 
 
 async def _read_parent_stock_with_retry(
