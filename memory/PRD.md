@@ -211,15 +211,40 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 
 ## Atualizações 21/02/2026
 
-### Aba "Últimos 50 SKUs" no Enriquecimento em Lote ⭐
-- Novo endpoint `GET /api/bling/recent-skus?limit=50` que agrega SKUs recém-cadastrados pelo bot a partir das collections Mongo `enrich_pending` + `product_raw`, hidrata com `bling_enriched_cache` (Mongo $in) e faz fallback capado em até 10 chamadas Bling para preencher `product_id` ausente. Latência: ~5s para 50 itens (antes era 60s+ com 502 de timeout).
-- UI `/bling-lote`: nova aba "Últimos 50" agora é o filtro padrão. Os filtros antigos (Não enriquecidos / Já enriquecidos / Todos) continuam disponíveis.
-- Status badges: "Enriquecido" (verde), "Pendente" (laranja), "Aguardando Bling" (cinza para SKUs sem product_id).
-- Banner de erro `data-testid="bulk-load-error"` quando a API falha.
-- Checkbox desabilitado para linhas sem product_id (não selecionáveis).
-- Paginação ocultada na aba "Últimos 50".
-- Re-enriquecimento revê TODO o cadastro: descrição + bullets + marca + categoria + fornecedor + variações com códigos (SKU-sigla) + distribuição balanceada de estoque (já existente em `bling_enrichment.enrich_product_by_sku` + `bling_variations.create_variations`).
-- Novo endpoint `DELETE /api/bling/raw-description/{sku}` para limpar entradas de teste do `product_raw`.
+### Sincronização de Estoque JohnDrop → Bling ⭐ (NOVO MÓDULO ISOLADO)
+- Novo módulo `stock_sync.py` + scraper `stock_sync_bot.py` totalmente isolados (NÃO tocam o fluxo de cadastro existente).
+- Endpoints: `POST /api/stock-sync/run`, `GET /api/stock-sync/status`.
+- Página `/estoque-sync` com botão manual + tabela de resultados (atualizados / sem Bling / erros).
+- Fluxo:
+  1. Scraper faz login na JohnDrop, varre **Meus Produtos** (paginado, escolhe 100/página) → SKU + estoque + preço.
+  2. Abre **Alertas** via URL direta ou clicando no sino → "Ver todos Alertas". Capta alertas de "Preço atualizado" (extrai novo preço via regex `R$ X para R$ Y`).
+  3. Merge: alertas têm precedência sobre catálogo quando há sobreposição.
+  4. Para cada SKU:
+     - Busca produto no Bling pelo código exato. Se não existir → ignora (per regra do usuário).
+     - **Variações**: lê `product_raw.raw_description`, identifica nomes via `_parse_variations` e quantidades específicas via `_parse_variation_quantities` (suporta "esgotado", "Cor: 5", "(5 un)" etc.). Cores esgotadas recebem 0; com número específico recebem aquele valor; o restante divide o estoque remanescente.
+     - **Simples**: POST /estoques (operacao=B Balanço).
+     - **Preço**: PATCH /produtos/{id} se diferente do atual.
+- Persistência em `stock_sync_runs` com run_id + reports detalhados.
+- 8 testes unitários em `/app/backend/tests/test_stock_sync.py` validando distribuição (par/ímpar, esgotado, explícito, mix, zero, excedente, única).
+
+### Bug fix: Worker liberava enriquecimento sem imagens
+- Bug introduzido nesta sessão e revertido: o gate voltou a ser **APENAS imagens** (a "bagagem" pousou).
+- Removido `FORCE_AFTER_ATTEMPTS`, `MAX_ATTEMPTS` aumentado para 80 (~2h paciência).
+- 4 testes de regressão em `/app/backend/tests/test_worker_gate_and_parser.py`.
+
+### Bug fix: Parser de variações descartava cores compostas
+- "Cinza com preto" e "Vermelho com preto" (3 palavras) eram filtradas, fazendo o resultado colapsar para `[]`.
+- Subido limite para 3 palavras, mantendo filtros de frases descritivas.
+- 5 testes de regressão cobrindo cores simples, compostas, disclaimer, e filtros descritivos.
+
+### Aba "Últimos 50 SKUs" no Enriquecimento em Lote
+- Endpoint `GET /api/bling/recent-skus?limit=50` agrega de `enrich_pending` + `product_raw` + `bling_enriched_cache`. Latência <5s.
+- UI `/bling-lote`: aba padrão "Últimos 50" com badges Enriquecido/Pendente/Aguardando Bling, banner de erro, checkbox desabilitado para itens sem product_id.
+- Endpoint utilitário `DELETE /api/bling/raw-description/{sku}` para limpar dados de teste.
+
+### Bling Storage detectado cheio (root cause de imagens não aparecerem)
+- Investigação revelou que produtos pós-determinada data ficavam sem imagens no Bling.
+- Causa: storage do plano Bling cheio. Usuário liberou espaço — problema resolvido.
 
 ### Backlog ativo
 - **P1**: Usuário renovar Long-Lived Page Access Token Meta usando botão "Tornar Token Vitalício"

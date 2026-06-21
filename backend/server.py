@@ -37,6 +37,8 @@ from enrichment_tracker import router as enrichment_tracker_router
 from enrich_worker import router as enrich_worker_router, start_worker as start_enrich_worker
 from image_proxy import router as image_proxy_router
 from diag_service import router as diag_router
+import stock_sync
+import stock_sync_bot
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -404,6 +406,49 @@ async def bling_recent_skus(limit: int = 50) -> dict:
     quick "últimos N" tab so the user can re-enrich recent products without
     paginating through the whole Bling catalog."""
     return await bulk_enrichment.list_recent_skus(limit=limit)
+
+
+# ----- Stock Sync (JohnDrop → Bling) ---------------------------------------
+_STOCK_SYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+async def _stock_sync_task() -> None:
+    try:
+        scrape = await stock_sync_bot.collect_supplier_items()
+        items = scrape.get("items") or []
+        summary = await stock_sync.run_sync(items)
+        summary["catalog_count"] = scrape.get("catalog_count")
+        summary["alerts_count"] = scrape.get("alerts_count")
+        _STOCK_SYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("stock_sync task failed: %s", e)
+        _STOCK_SYNC_STATE["last_summary"] = {"error": str(e)[:200]}
+    finally:
+        _STOCK_SYNC_STATE["running"] = False
+
+
+@api.post("/stock-sync/run")
+async def stock_sync_run() -> dict:
+    """Trigger a manual stock-sync run (JohnDrop catalog + alerts → Bling).
+    Returns immediately; consult /stock-sync/status for progress."""
+    if _STOCK_SYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Sync já em execução"}
+    import asyncio as _aio
+    _STOCK_SYNC_STATE["running"] = True
+    _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_stock_sync_task())
+    return {"ok": True, "running": True, "started_at": _STOCK_SYNC_STATE["started_at"]}
+
+
+@api.get("/stock-sync/status")
+async def stock_sync_status() -> dict:
+    last = await stock_sync.get_last_run()
+    return {
+        "running": _STOCK_SYNC_STATE["running"],
+        "started_at": _STOCK_SYNC_STATE["started_at"],
+        "in_memory_summary": _STOCK_SYNC_STATE["last_summary"],
+        "last_run": last,
+    }
 
 
 class BulkEnrichRequest(BaseModel):
