@@ -25,8 +25,10 @@ from robot_service import add_log
 router = APIRouter(prefix="/enrich", tags=["enrich-pending-worker"])
 
 POLL_INTERVAL_S = 90  # check pending queue every 90s
-MAX_ATTEMPTS = 30  # ~45 min total wait
-MIN_IMAGES_REQUIRED = 1  # consider sync done when Bling has at least 1 image
+MAX_ATTEMPTS = 80  # ~2h total wait (suficiente para JohnDrop concluir o sync)
+MIN_IMAGES_REQUIRED = 1  # SOMENTE quando Bling tem ao menos 1 imagem
+                          # (imagens chegam como "bagagem" do produto vindo da JohnDrop;
+                          # sem imagens, o produto ainda está no ar — não enriquecemos)
 
 
 _WORKER_STATE = {"running": False, "last_tick": None, "task": None}
@@ -52,11 +54,22 @@ async def _find_in_bling(sku: str) -> Optional[dict]:
         return None
 
 
-async def _is_ready_for_enrichment(product: dict) -> bool:
-    """Sync considered done when Bling has at least 1 image (internas or externas)."""
+async def _is_ready_for_enrichment(product: dict) -> tuple[bool, str]:
+    """REGRA: produto pronto para enriquecimento SOMENTE quando Bling já tem
+    pelo menos 1 imagem.
+
+    O JohnDrop manda o produto + imagens ("bagagem") em momentos diferentes — o
+    metadado chega rápido mas as imagens demoram. Se enriquecermos antes das
+    imagens pousarem, podemos atropelar o sync nativo (Bling sobrescreve campos
+    durante o sync) e o produto fica sem imagens para sempre.
+
+    Estoque NÃO é sinal confiável: ele às vezes chega antes das imagens.
+    """
     imgs = (product.get("midia") or {}).get("imagens") or {}
     n_imgs = len(imgs.get("internas") or []) + len(imgs.get("externas") or [])
-    return n_imgs >= MIN_IMAGES_REQUIRED
+    if n_imgs >= MIN_IMAGES_REQUIRED:
+        return True, f"images={n_imgs}"
+    return False, "no_images"
 
 
 async def _tick() -> None:
@@ -78,7 +91,7 @@ async def _tick() -> None:
             )
             continue
 
-        ready = await _is_ready_for_enrichment(product)
+        ready, reason = await _is_ready_for_enrichment(product)
         if not ready:
             await db.enrich_pending.update_one(
                 {"sku": sku},
@@ -89,12 +102,15 @@ async def _tick() -> None:
             )
             continue
 
-        # Ready! Mark as processing and trigger enrichment
+        # Imagens chegaram (a "bagagem" pousou)! Mark as processing
+        # and trigger full enrichment.
         await db.enrich_pending.update_one(
             {"sku": sku},
-            {"$set": {"status": "processing", "started_at": datetime.now(timezone.utc).isoformat()}},
+            {"$set": {"status": "processing",
+                      "started_at": datetime.now(timezone.utc).isoformat(),
+                      "ready_reason": reason}},
         )
-        await add_log("info", f"Produto {sku} pronto no Bling — iniciando enriquecimento")
+        await add_log("info", f"Produto {sku} pronto no Bling ({reason}) — iniciando enriquecimento")
 
         try:
             result = await bling_enrichment.enrich_product_by_sku(

@@ -258,8 +258,11 @@ def _parse_variations(raw_description: str) -> List[str]:
         if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
             continue
         # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
+        # Allow up to 3 words to keep compound colors ("Cinza com preto",
+        # "Verde escuro", "Azul claro"). The descriptive_starts filter below
+        # still catches "Ideal Para X", "Compatível com X" etc.
         words = p_clean.split()
-        if len(words) > 2:
+        if len(words) > 3:
             continue
         # FILTER: phrases that start with descriptive adjectives
         descriptive_starts = {
