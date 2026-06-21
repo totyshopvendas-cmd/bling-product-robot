@@ -420,15 +420,56 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
-    """No-op: testes confirmaram que PATCH/PUT de midia.imagens em variações
-    com cloneInfo=true OU false retornam status 200 mas o Bling silentemente
-    ignora a mudança. A API v3 só aceita imagens no POST de criação inicial.
+    """Push parent images onto each child variation so the Bling listing shows
+    a thumbnail per variation.
 
-    Mantida como stub para compatibilidade com create_variations.
-    Para que as variações mostrem imagens, o produto pai precisa ter imagens
-    sincronizadas via JohnDrop. cloneInfo=true então herda visualmente."""
-    _ = child_ids, image_urls
-    return 0
+    HISTÓRICO: testes anteriores indicaram que Bling com `cloneInfo=true`
+    silenciosamente ignora PATCHes em `midia.imagens` de filhos. Porém o
+    usuário relata que ANTES funcionava — provavelmente porque a versão
+    inicial usava `imagensURL` (URL list) e o Bling baixa o asset no momento
+    da chamada. Restauramos essa tentativa: se a Bling aceitar, ótimo
+    (variação fica com a mesma imagem do pai); se rejeitar, logamos.
+
+    Estratégia: replica TODAS as imagens do pai em CADA variação
+    (não específica por cor). O usuário escolhe depois qual é a "capa"
+    correta de cada cor manualmente no painel Bling.
+    """
+    # Limpa URLs inválidas (data:/blob:). NÃO filtra S3-presigned: Bling
+    # baixa a imagem no momento da chamada, então uma URL temporária funciona.
+    clean_urls = [
+        u for u in (image_urls or [])
+        if u and not u.startswith("data:") and not u.startswith("blob:")
+    ]
+    if not clean_urls or not child_ids:
+        return 0
+    payload_imgs = [{"link": u} for u in clean_urls[:12]]
+    ok = 0
+    failures: List[str] = []
+    for cid in child_ids:
+        try:
+            r = await bling_service.bling_request(
+                "PATCH", f"/produtos/{cid}",
+                json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
+            )
+            if r.status_code < 400:
+                ok += 1
+            else:
+                failures.append(f"{cid}:HTTP{r.status_code}")
+        except Exception as e:
+            failures.append(f"{cid}:{type(e).__name__}")
+    if ok:
+        await add_log(
+            "info",
+            f"Imagens replicadas em {ok}/{len(child_ids)} variações "
+            f"({len(clean_urls)} URLs por variação)",
+        )
+    if failures:
+        await add_log(
+            "warning",
+            f"Replicação de imagens falhou em {len(failures)} variações: "
+            f"{', '.join(failures[:5])}",
+        )
+    return ok
 
 
 async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
