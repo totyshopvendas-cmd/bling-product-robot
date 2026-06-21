@@ -34,6 +34,8 @@ from pinterest_service import router as pinterest_router
 from social_onboarding import router as social_onboarding_router
 from youtube_service import router as youtube_router
 from enrichment_tracker import router as enrichment_tracker_router
+from enrich_worker import router as enrich_worker_router, start_worker as start_enrich_worker
+from image_proxy import router as image_proxy_router
 from diag_service import router as diag_router
 
 
@@ -74,6 +76,12 @@ async def _startup() -> None:
         logger.info("Social ad scheduler started")
     except Exception as e:
         logger.warning(f"scheduler start failed: {e}")
+    # Boot the enrich worker (watches JohnDrop→Bling sync)
+    try:
+        start_enrich_worker()
+        logger.info("Enrich worker started")
+    except Exception as e:
+        logger.warning(f"enrich worker start failed: {e}")
 
 
 @api.get("/")
@@ -382,6 +390,15 @@ async def bling_products_with_status(
     return await bulk_enrichment.list_products_with_status(pagina, limite, filtro, busca)
 
 
+@api.get("/bling/recent-skus")
+async def bling_recent_skus(limit: int = 50) -> dict:
+    """Return the last N SKUs registered locally by the JohnDrop bot, joined
+    with their current Bling state. Used by the bulk-enrich UI to show a
+    quick "últimos N" tab so the user can re-enrich recent products without
+    paginating through the whole Bling catalog."""
+    return await bulk_enrichment.list_recent_skus(limit=limit)
+
+
 class BulkEnrichRequest(BaseModel):
     product_ids: Optional[list[int]] = None
     enrich_all_not_enriched: bool = False
@@ -451,6 +468,8 @@ api.include_router(pinterest_router)
 api.include_router(social_onboarding_router)
 api.include_router(youtube_router)
 api.include_router(enrichment_tracker_router)
+api.include_router(enrich_worker_router)
+api.include_router(image_proxy_router)
 api.include_router(diag_router)
 app.include_router(api)
 

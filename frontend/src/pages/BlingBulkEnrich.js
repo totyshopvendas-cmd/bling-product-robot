@@ -11,13 +11,14 @@ const PAGE_SIZE = 50;
 const JOB_POLL_MS = 2500;
 
 const FILTROS = [
+  { value: "recent", label: "Últimos 50" },
   { value: "not_enriched", label: "Não enriquecidos" },
   { value: "enriched", label: "Já enriquecidos" },
   { value: "all", label: "Todos" },
 ];
 
 export default function BlingBulkEnrichPage() {
-  const [filtro, setFiltro] = useState("not_enriched");
+  const [filtro, setFiltro] = useState("recent");
   const [busca, setBusca] = useState("");
   const [buscaInput, setBuscaInput] = useState("");
   const [pagina, setPagina] = useState(1);
@@ -33,12 +34,30 @@ export default function BlingBulkEnrichPage() {
   const loadProducts = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await api.get("/bling/products-with-status", {
-        params: { pagina, limite: PAGE_SIZE, filtro, busca },
-      });
-      setItems(data.items || []);
-      setHasMore(Boolean(data.has_more));
-      setSelected(new Set());
+      if (filtro === "recent") {
+        const { data } = await api.get("/bling/recent-skus", { params: { limit: 50 } });
+        const mapped = (data.items || []).map((p) => ({
+          id: p.product_id,
+          codigo: p.sku,
+          nome: p.nome,
+          marca: p.marca || "",
+          enriched: !!p.enriched,
+          bling_found: !!p.bling_found,
+          queue_status: p.queue_status,
+          registered_at: p.registered_at,
+          situacao: p.situacao,
+        }));
+        setItems(mapped);
+        setHasMore(false);
+        setSelected(new Set());
+      } else {
+        const { data } = await api.get("/bling/products-with-status", {
+          params: { pagina, limite: PAGE_SIZE, filtro, busca },
+        });
+        setItems(data.items || []);
+        setHasMore(Boolean(data.has_more));
+        setSelected(new Set());
+      }
     } catch (err) {
       logger.error("list bling products:", err);
       toast.error("Falha ao listar produtos do Bling");
@@ -78,8 +97,8 @@ export default function BlingBulkEnrichPage() {
 
   const toggleAllPage = () => {
     setSelected((prev) => {
-      const allIds = items.map((i) => i.id);
-      const allSelected = allIds.every((id) => prev.has(id));
+      const allIds = items.filter((i) => i.id).map((i) => i.id);
+      const allSelected = allIds.length > 0 && allIds.every((id) => prev.has(id));
       const next = new Set(prev);
       if (allSelected) allIds.forEach((id) => next.delete(id));
       else allIds.forEach((id) => next.add(id));
@@ -137,9 +156,10 @@ export default function BlingBulkEnrichPage() {
           Enriquecimento em Lote
         </h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-          Lista todos os produtos do Bling e marca quais ainda <strong>não foram enriquecidos</strong>
-          {" "}(sem descrição curta + complementar + marca Generica). Selecione um lote ou rode
-          todos automaticamente.
+          Aba <strong>Últimos 50</strong> mostra os SKUs mais recentes cadastrados pelo robô da JohnDrop
+          (selecione apenas os que precisam ser revisados). Os demais filtros varrem todo o catálogo
+          Bling. Re-enriquecer revê <strong>todo o cadastro</strong>: descrição, bullets, marca,
+          categoria, fornecedor, variações com códigos (SKU + sigla) e distribuição de estoque.
         </p>
       </div>
 
@@ -281,7 +301,10 @@ export default function BlingBulkEnrichPage() {
                   <input
                     data-testid="select-all-page"
                     type="checkbox"
-                    checked={items.length > 0 && items.every((i) => selected.has(i.id))}
+                    checked={
+                      items.filter((i) => i.id).length > 0 &&
+                      items.filter((i) => i.id).every((i) => selected.has(i.id))
+                    }
                     onChange={toggleAllPage}
                   />
                 </th>
@@ -302,20 +325,26 @@ export default function BlingBulkEnrichPage() {
                 </td></tr>
               ) : (
                 items.map((p) => (
-                  <tr key={p.id} className={selected.has(p.id) ? "bg-orange-50" : ""}>
+                  <tr key={p.id || p.codigo} className={selected.has(p.id) ? "bg-orange-50" : ""}>
                     <td className="px-3 py-2">
                       <input
-                        data-testid={`select-${p.id}`}
+                        data-testid={`select-${p.id || p.codigo}`}
                         type="checkbox"
                         checked={selected.has(p.id)}
-                        onChange={() => toggleOne(p.id)}
+                        disabled={!p.id}
+                        title={!p.id ? "Produto ainda não chegou ao Bling — aguarde sync" : ""}
+                        onChange={() => p.id && toggleOne(p.id)}
                       />
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">{p.codigo || "—"}</td>
                     <td className="px-3 py-2 truncate max-w-[400px]" title={p.nome}>{p.nome}</td>
                     <td className="px-3 py-2 text-xs">{p.marca || "—"}</td>
                     <td className="px-3 py-2">
-                      {p.enriched ? (
+                      {p.bling_found === false ? (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 border border-zinc-300 bg-zinc-50 text-zinc-700">
+                          <Loader2 className="h-3 w-3 animate-spin" /> Aguardando Bling
+                        </span>
+                      ) : p.enriched ? (
                         <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 border border-emerald-300 bg-emerald-50 text-emerald-800">
                           <CheckCircle2 className="h-3 w-3" /> Enriquecido
                         </span>
@@ -333,25 +362,27 @@ export default function BlingBulkEnrichPage() {
         </div>
 
         {/* Pagination */}
-        <div className="px-4 py-3 border-t border-border flex items-center justify-between">
-          <button
-            data-testid="prev-page"
-            onClick={() => setPagina((p) => Math.max(1, p - 1))}
-            disabled={pagina === 1 || loading}
-            className="text-xs inline-flex items-center gap-1.5 border border-border px-3 py-1.5 hover:bg-zinc-50 disabled:opacity-40"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" /> Anterior
-          </button>
-          <span className="text-xs text-muted-foreground">Página {pagina}</span>
-          <button
-            data-testid="next-page"
-            onClick={() => setPagina((p) => p + 1)}
-            disabled={!hasMore || loading}
-            className="text-xs inline-flex items-center gap-1.5 border border-border px-3 py-1.5 hover:bg-zinc-50 disabled:opacity-40"
-          >
-            Próxima <ChevronRight className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        {filtro !== "recent" && (
+          <div className="px-4 py-3 border-t border-border flex items-center justify-between">
+            <button
+              data-testid="prev-page"
+              onClick={() => setPagina((p) => Math.max(1, p - 1))}
+              disabled={pagina === 1 || loading}
+              className="text-xs inline-flex items-center gap-1.5 border border-border px-3 py-1.5 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" /> Anterior
+            </button>
+            <span className="text-xs text-muted-foreground">Página {pagina}</span>
+            <button
+              data-testid="next-page"
+              onClick={() => setPagina((p) => p + 1)}
+              disabled={!hasMore || loading}
+              className="text-xs inline-flex items-center gap-1.5 border border-border px-3 py-1.5 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              Próxima <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Modal: enrich all */}

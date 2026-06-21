@@ -909,18 +909,37 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
                 johndrop_id = m.group(1)
         except Exception:
             johndrop_id = None
-        # ENRIQUECIMENTO AUTOMÁTICO COM WAIT INTELIGENTE:
-        # O robô JohnDrop terminou o cadastro, mas o sync JohnDrop→Bling
-        # acontece de forma assíncrona (estoque e imagens chegam alguns
-        # segundos/minutos depois). Antes de enriquecer, vamos esperar até
-        # que (a) o produto exista no Bling E (b) estoque > 0 OU imagens > 0
-        # — qualquer dos dois indica que o sync chegou.
-        # A função _safe_enrich_bling roda em background (não bloqueia o robô).
+        # ARQUITETURA: o robô JohnDrop SÓ cadastra. NÃO dispara enriquecimento
+        # imediatamente — JohnDrop sincroniza com Bling de forma assíncrona
+        # (5-15 min) e durante esse período o produto fica sem imagens/estoque.
+        # Em vez disso, salvamos o SKU em `enrich_pending` e um worker periódico
+        # detecta quando o produto está completo no Bling e dispara o enriquecimento.
         if sku:
-            asyncio.create_task(
-                _safe_enrich_bling(sku, cleaned["cleaned"], raw_description,
-                                   johndrop_id=johndrop_id, cost=cost, images=raw_images)
-            )
+            try:
+                from db import db as _db
+                from datetime import datetime, timezone
+                await _db.enrich_pending.update_one(
+                    {"sku": sku},
+                    {"$set": {
+                        "sku": sku,
+                        "raw_title": cleaned["cleaned"],
+                        "raw_description": raw_description,
+                        "johndrop_id": johndrop_id,
+                        "cost": cost,
+                        "images": raw_images,
+                        "status": "pending",
+                        "queued_at": datetime.now(timezone.utc).isoformat(),
+                        "attempts": 0,
+                    }},
+                    upsert=True,
+                )
+                await add_log(
+                    "info",
+                    f"Produto {sku} cadastrado na JohnDrop. Aguardando sync→Bling. "
+                    "Worker vai enriquecer automaticamente quando estiver completo.",
+                )
+            except Exception as e:
+                await add_log("warning", f"Falhou ao agendar enriquecimento de {sku}: {e}")
     else:
         robot.failed += 1
 

@@ -226,10 +226,23 @@ async def create_variations(
                     pass
 
     # Copy parent images onto each child variation so the Bling listing shows
-    # a thumbnail for each variation (cloneInfo alone does NOT do this visually —
-    # we have to disable cloneInfo to trigger Bling to materialize parent images).
+    # a thumbnail for each variation. We RE-FETCH the parent here so we can pull
+    # the freshly-hosted Bling URLs (after our PATCH uploaded them) instead of
+    # the original JohnDrop S3 presigned URLs (Bling rejects external URLs in
+    # variation children with HTTP 500).
     if saved_ids:
-        await _copy_images_to_children(saved_ids, parent_images or [])
+        urls_to_copy = parent_images or []
+        try:
+            r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
+            if r.status_code < 400:
+                refreshed = (r.json() or {}).get("data") or {}
+                imgs = (refreshed.get("midia") or {}).get("imagens") or {}
+                internal = [(i.get("link") or "") for i in (imgs.get("internas") or []) if i.get("link")]
+                if internal:
+                    urls_to_copy = internal[:12]
+        except Exception:
+            pass
+        await _copy_images_to_children(saved_ids, urls_to_copy)
 
     flat = ", ".join(variations[:6]) + ("…" if len(variations) > 6 else "")
     await add_log(
@@ -407,48 +420,15 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
 
 
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
-    """Push parent images onto each child variation so the Bling listing shows
-    a thumbnail per variation.
+    """No-op: testes confirmaram que PATCH/PUT de midia.imagens em variações
+    com cloneInfo=true OU false retornam status 200 mas o Bling silentemente
+    ignora a mudança. A API v3 só aceita imagens no POST de criação inicial.
 
-    IMPORTANT history note: an earlier version of this function filtered out
-    "AWSAccessKeyId" / "X-Amz-Signature" URLs (S3 presigned). That was WRONG —
-    Bling downloads the image at request time, so a short-lived presigned URL is
-    fine. The filter caused JohnDrop images (which are S3 presigned) to be
-    silently dropped, leaving variations imageless. The filter is now removed.
-
-    Returns the count of variations that accepted the images. We send via
-    `midia.imagens.imagensURL` which Bling does honor on variations.
-    """
-    clean_urls = [u for u in (image_urls or []) if u and not u.startswith("data:") and not u.startswith("blob:")]
-    if not clean_urls or not child_ids:
-        return 0
-    payload_imgs = [{"link": u} for u in clean_urls[:12]]
-    ok = 0
-    failures: List[str] = []
-    for cid in child_ids:
-        try:
-            r = await bling_service.bling_request(
-                "PATCH", f"/produtos/{cid}",
-                json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
-            )
-            if r.status_code < 400:
-                ok += 1
-            else:
-                failures.append(f"{cid}:{r.status_code}")
-        except Exception as e:
-            failures.append(f"{cid}:{type(e).__name__}")
-            continue
-    if ok:
-        await add_log(
-            "info",
-            f"Imagens enviadas para {ok}/{len(child_ids)} variações ({len(payload_imgs)} cada)",
-        )
-    if failures:
-        await add_log(
-            "warning",
-            f"Imagens em variações: {len(failures)} falhas — {', '.join(failures[:5])}",
-        )
-    return ok
+    Mantida como stub para compatibilidade com create_variations.
+    Para que as variações mostrem imagens, o produto pai precisa ter imagens
+    sincronizadas via JohnDrop. cloneInfo=true então herda visualmente."""
+    _ = child_ids, image_urls
+    return 0
 
 
 async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:

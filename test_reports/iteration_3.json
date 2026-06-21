@@ -1,0 +1,84 @@
+{
+  "summary": "Iteration 3 — Validated new 'Últimos 50 SKUs' tab, enrich-worker lifecycle, raw_description persistence, recent-skus aggregation, sigla mapping for variations. 18/19 pytest tests pass. One HIGH-priority bug found: GET /api/bling/recent-skus?limit=50 (the DEFAULT call when user opens /bling-lote) consistently returns 502 after ~60s ingress timeout because list_recent_skus() performs ~100 sequential Bling HTTP calls (1×/produtos?codigo=X and 1×/produtos/{id} per SKU). Frontend renders correctly (all 4 tabs, default = recent, pagination hidden on recent), but the Últimos 50 list is stuck in 'Carregando...' until the request fails. Re-enrichment flow itself was not exercised end-to-end (would burn LLM credits + mutate live Bling catalog); the bulk-enrich POST contract is unchanged from iter 2.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/bling/recent-skus?limit=50",
+        "issue": "Times out at ingress (60s → 502 Bad Gateway). bulk_enrichment.list_recent_skus() loops sequentially over up to 50 SKUs, doing 2 Bling REST calls per SKU (codigo search + full fetch). Total wall time exceeds 60s even on a warm Bling. Frontend defaults to filtro='recent' and uses limit=50, so users land on a page that never finishes loading. Reproduce: curl --max-time 90 https://bling-product-robot.preview.emergentagent.com/api/bling/recent-skus?limit=50 → HTTP 502 at ~60.1s. With limit=5 or 10 it completes in <5s. Fix options: (a) parallelize the per-SKU hydration with asyncio.gather (bounded semaphore 5-10); (b) cache last-known enriched/marca/preco on enrich_pending docs and skip Bling round-trip when fresh; (c) drop the codigo search and resolve product_id from product_raw/enrich_pending directly when available; (d) reduce default frontend limit to 20.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "bulk_enrichment.list_recent_skus()",
+        "issue": "The codigo-search step is wasteful when entry.get('product_id') is already known from enrich_pending — we could go straight to _fetch_full(product_id) and skip GET /produtos?codigo=X for ~half the SKUs."
+      },
+      {
+        "endpoint": "POST /api/bling/raw-description",
+        "issue": "No DELETE endpoint to clean up TEST raw_description rows. The test seeded TEST_RAWDESC_001 and TEST_RAWDESC_PYTEST_001 — they will persist in product_raw forever and show up as 'recent' SKUs (with bling_found=false because no Bling match)."
+      },
+      {
+        "endpoint": "server.py",
+        "issue": "Still uses deprecated @app.on_event('startup') — flagged in iter 1 and still not migrated to FastAPI lifespan handlers."
+      },
+      {
+        "endpoint": "bling_variations._variation_sigla",
+        "issue": "Loop `for k, v in _SIGLA_MAP.items(): if clean.startswith(k) or clean.endswith(k)` runs in dict-insertion order — for 'pp' it correctly matches 'pp' before 'p' only because 'pp' is inserted after 'p'. Fragile if map is reordered. Consider sorting keys by len desc, or doing exact-match-only and falling back."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "BlingBulkEnrich (Últimos 50 tab)",
+        "issue": "Default view stuck on 'Carregando...' because backend /bling/recent-skus?limit=50 times out at 60s with 502. After failure the table silently shows '0 produtos nesta página'. No error banner is rendered to the user.",
+        "selector": "[data-testid='bulk-products-table']",
+        "priority": "HIGH"
+      },
+      {
+        "component": "BlingBulkEnrich.loadProducts catch block",
+        "issue": "When recent-skus call fails (502/timeout) the catch sets produtos=[] but does NOT surface an error toast/message. User just sees 'Carregando...' replaced by an empty table with no indication the call failed.",
+        "selector": "loadProducts try/catch",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Open /bling-lote → see recent SKUs",
+        "issue": "Loading spinner runs ~60s then resolves to empty list (because of the backend 502). Has to be the FIRST thing fixed since it's the page's default view.",
+        "affected_selectors": ["filter-recent", "bulk-products-table"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_recent_skus_and_worker.py",
+    "/app/test_reports/pytest/iteration_3_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Parallelize the Bling hydration loop in bulk_enrichment.list_recent_skus() with asyncio.gather (bounded semaphore ~5-10) so that 50 SKUs resolve in <10s instead of >60s. This single change fixes both the 502 and the 'Carregando...' UX bug.",
+    "HIGH: Add an error state to BlingBulkEnrich.loadProducts — when the recent-skus call throws, show a red banner 'Falha ao carregar últimos SKUs — tente novamente' so the empty table isn't silently misleading.",
+    "MEDIUM: When entry['product_id'] is already known from enrich_pending, skip the /produtos?codigo= lookup and go straight to _fetch_full(pid).",
+    "LOW: Migrate FastAPI startup hook from @app.on_event to lifespan context manager (carried over from iter 1)."
+  ],
+  "critical_code_review_comments": [
+    "list_recent_skus performs N sequential Bling REST calls in an async function — classic anti-pattern when asyncio.gather + a small semaphore would cut wall time 10x. Same module already does similar work in list_products_with_status; consider extracting a hydrate_one(sku) helper and reusing it.",
+    "Frontend useCallback dependency list for loadProducts includes [pagina, filtro, busca] — when filtro==='recent' it ignores pagina/busca but still re-runs on those changes. Minor wasted requests; consider conditional dependency.",
+    "BlingBulkEnrich.loadProducts has no AbortController — if user switches tabs while limit=50 is in-flight, the late response still mutates state. Use an AbortSignal to cancel previous request.",
+    "POST /api/bling/raw-description accepts arbitrary SKU and stores raw_description with source='manual' but does NOT validate the SKU exists in Bling. A typo creates a phantom product_raw doc that then pollutes the 'Últimos 50' view as bling_found=false.",
+    "enrich_worker.start_worker is correctly idempotent (checks task.done()) — good. _WORKER_STATE['running'] flag is set inside _loop, so there is a brief window between asyncio.create_task and the first line of _loop where /enrich/queue would report running=false; not observed in practice but worth a comment."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_recent_skus_and_worker.py (new — 19 pytest cases covering this iteration's scope)"
+  ],
+  "success_rate": {
+    "backend": "94.7% (18/19 pytest pass; 1 failure is the 502 on limit=50 — that's the HIGH bug, intentionally asserted)",
+    "frontend": "75% (UI structure 100% correct: all 4 tabs render, default=recent, pagination hidden on recent, no console errors. But Últimos 50 list never populates because of the backend 502.)"
+  },
+  "test_credentials": "Reused from /app/memory/test_credentials.md — Bling OAuth token in DB is valid (expires 2026-06-21 — keep an eye on this if next testing runs after that date).",
+  "seed_data_creation": "Two raw_description docs in product_raw: TEST_RAWDESC_001 and TEST_RAWDESC_PYTEST_001 (both with source='manual', no matching Bling product). They will appear in /bling/recent-skus output as bling_found=false. Safe to leave; will be ignored by enrich pipeline.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run with: `pytest /app/backend/tests/test_recent_skus_and_worker.py -v --tb=short`. Note the suite includes one test that WILL FAIL until the recent-skus 502 is fixed (test_default_limit_returns_items). After main agent parallelizes list_recent_skus, re-run that test — it should pass in <15s. The 502 reproduces with: `curl --max-time 90 $BASE_URL/api/bling/recent-skus?limit=50`. With limit=10 the endpoint responds in <5s. Worker (`/api/enrich/queue.worker.running`) was confirmed true. Tick-now works. POST raw-description validation works. Frontend selectors confirmed: filter-recent, filter-not_enriched, filter-enriched, filter-all, bulk-products-table, prev-page, next-page (last two are hidden in DOM when filtro='recent'). DO NOT trigger /api/bling/enrich-bulk on real SKUs — it mutates the live catalog.",
+  "rca of the issue": "HIGH 502 on /api/bling/recent-skus?limit=50 — RCA: bulk_enrichment.list_recent_skus() (lines 245-340) builds a list of up to 50 SKUs from enrich_pending + product_raw, then enters a sequential `for entry in ordered:` loop where each iteration does TWO awaits against Bling: (1) `bling_service.bling_request('GET','/produtos', params={'codigo': sku, 'limite': 5})` to resolve the product id, then (2) `_fetch_full(target['id'])` (another GET /produtos/{id}). At ~0.6-1.2s per Bling call, 50 × 2 = 100 sequential awaits ≈ 60-120s — exceeds the 60s ingress timeout and the request is killed mid-flight with HTTP 502. Frontend useEffect fires this on mount (default filtro='recent'), so users see 'Carregando...' until the timeout, then an empty table with no error message. Mitigation: wrap the per-entry hydration in an inner async function `async def _hydrate(entry): ...` and run via `await asyncio.gather(*[asyncio.create_task(_hydrate(e)) for e in ordered])` — or better, use a Semaphore(8) to cap Bling concurrency at 8 parallel requests (Bling API rate limits are ~10 req/s per account). Expected wall time after fix: ~6-8s for 50 SKUs."
+}

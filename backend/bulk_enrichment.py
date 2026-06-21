@@ -242,6 +242,104 @@ async def stop() -> dict:
     return {"ok": True}
 
 
+async def list_recent_skus(limit: int = 50) -> dict:
+    """List the N most recently registered SKUs.
+
+    Pulls from the local MongoDB queues (`enrich_pending` and `product_raw`) — these
+    are populated by the JohnDrop bot the moment a product is cadastrated. Joins
+    each SKU with its current Bling state to flag enriched vs not-enriched.
+    """
+    from db import db as _db
+
+    limit = max(1, min(int(limit or 50), 200))
+
+    # Aggregate by SKU keeping the most recent timestamp. We merge two sources:
+    #   - enrich_pending.queued_at (set when bot just registered the product)
+    #   - product_raw.updated_at (set when raw description was persisted, also by bot)
+    skus: dict = {}
+
+    async for doc in _db.enrich_pending.find(
+        {}, {"sku": 1, "raw_title": 1, "queued_at": 1, "status": 1, "product_id": 1, "_id": 0},
+    ).sort("queued_at", -1).limit(limit * 2):
+        sku = (doc.get("sku") or "").strip()
+        if not sku:
+            continue
+        skus[sku] = {
+            "sku": sku,
+            "nome": doc.get("raw_title") or "",
+            "queue_status": doc.get("status"),
+            "product_id": doc.get("product_id"),
+            "registered_at": doc.get("queued_at"),
+            "source": "enrich_pending",
+        }
+
+    async for doc in _db.product_raw.find(
+        {}, {"sku": 1, "raw_title": 1, "updated_at": 1, "_id": 0},
+    ).sort("updated_at", -1).limit(limit * 2):
+        sku = (doc.get("sku") or "").strip()
+        if not sku:
+            continue
+        if sku not in skus:
+            skus[sku] = {
+                "sku": sku,
+                "nome": doc.get("raw_title") or "",
+                "queue_status": None,
+                "product_id": None,
+                "registered_at": doc.get("updated_at"),
+                "source": "product_raw",
+            }
+
+    # Sort by registered_at desc
+    ordered = sorted(
+        skus.values(),
+        key=lambda x: x.get("registered_at") or "",
+        reverse=True,
+    )[:limit]
+
+    # Hydrate each entry with Bling product state (enriched / not / nome / preco)
+    for entry in ordered:
+        sku = entry["sku"]
+        try:
+            resp = await bling_service.bling_request(
+                "GET", "/produtos", params={"codigo": sku, "limite": 5},
+            )
+            if resp.status_code >= 400:
+                entry["enriched"] = False
+                entry["bling_found"] = False
+                continue
+            items = (resp.json() or {}).get("data") or []
+            target = next(
+                (it for it in items
+                 if (it.get("codigo") or "").strip().upper() == sku.upper()),
+                None,
+            )
+            if not target:
+                entry["enriched"] = False
+                entry["bling_found"] = False
+                continue
+            entry["product_id"] = target.get("id")
+            full = await _fetch_full(target["id"])
+            if not full:
+                entry["enriched"] = False
+                entry["bling_found"] = True
+                continue
+            entry["bling_found"] = True
+            entry["enriched"] = _is_enriched(full)
+            entry["nome"] = full.get("nome") or entry.get("nome") or ""
+            entry["preco"] = full.get("preco") or 0
+            entry["marca"] = full.get("marca") or ""
+            entry["situacao"] = full.get("situacao") or ""
+        except Exception:
+            entry["enriched"] = False
+            entry["bling_found"] = False
+
+    return {
+        "items": ordered,
+        "total": len(ordered),
+        "limit": limit,
+    }
+
+
 async def collect_not_enriched_ids(max_items: int = 500) -> List[int]:
     """Walk through Bling pages collecting IDs of products that are NOT yet enriched."""
     ids: List[int] = []

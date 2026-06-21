@@ -529,6 +529,15 @@ async def update_bling_product(
     if payload.get("categoria"):
         patch_payload["categoria"] = payload["categoria"]
 
+    # IMAGENS: API v3 do Bling NÃO permite upload de imagens via PATCH ou PUT
+    # em produtos existentes (testado e confirmado: status 200 mas Bling
+    # silentemente ignora). Imagens chegam exclusivamente via sync JohnDrop→Bling
+    # (que pode demorar de segundos a minutos). Nossa lógica em
+    # _wait_for_johndrop_sync já aguarda isso. Se sync não completar dentro do
+    # tempo limite, o produto fica sem imagens — único workaround é o usuário
+    # fazer upload manual no Bling Dashboard.
+    _ = images  # kept for API signature compatibility
+
     # Supplier collected here, applied AFTER the patch succeeds (separate endpoint)
     supplier_id = await _find_jonh_supplier_id()
     supplier_entry: Optional[dict] = None
@@ -644,7 +653,7 @@ async def _upsert_enriched_cache(product_id: int, sku: str) -> None:
 
 async def _wait_for_johndrop_sync(
     product_id: int, sku: str,
-    max_attempts: int = 12, delay_s: float = 15.0,
+    max_attempts: int = 20, delay_s: float = 15.0,
 ) -> dict:
     """Wait until JohnDrop finishes syncing the product into Bling.
 
@@ -726,7 +735,8 @@ async def _wait_for_johndrop_sync(
         "warning",
         f"Sync JohnDrop→Bling NÃO completou para {sku} após "
         f"{max_attempts * delay_s:.0f}s (estoque={saldo}, imagens={imgs}). "
-        "Continuando enriquecimento mesmo assim — variações podem ficar com 0 unidades.",
+        "PRÓXIMO PASSO: aguarde 5-10 min e rode 'Enriquecer em Lote' selecionando "
+        f"o {sku} novamente — quando o JohnDrop terminar o sync, vai funcionar.",
     )
     return full or {}
 
