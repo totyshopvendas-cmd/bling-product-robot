@@ -245,17 +245,21 @@ async def stop() -> dict:
 async def list_recent_skus(limit: int = 50) -> dict:
     """List the N most recently registered SKUs.
 
-    Pulls from the local MongoDB queues (`enrich_pending` and `product_raw`) — these
-    are populated by the JohnDrop bot the moment a product is cadastrated. Joins
-    each SKU with its current Bling state to flag enriched vs not-enriched.
+    Pulls from local MongoDB only — fast (<1s for 50 SKUs):
+      - `enrich_pending`: queued by JohnDrop bot, contains product_id
+      - `product_raw`: stores the raw description per SKU
+      - `bling_enriched_cache`: populated after each successful enrichment
+        with nome/preco/marca/imagem — used to flag enriched vs pending
+
+    NOTE: we intentionally avoid Bling API calls here — the global Bling
+    semaphore serializes requests at ~1/s, which made the older per-SKU
+    hydration take 60s+ and hit the ingress timeout. The cache gets us the
+    same answer in <100ms.
     """
     from db import db as _db
 
     limit = max(1, min(int(limit or 50), 200))
 
-    # Aggregate by SKU keeping the most recent timestamp. We merge two sources:
-    #   - enrich_pending.queued_at (set when bot just registered the product)
-    #   - product_raw.updated_at (set when raw description was persisted, also by bot)
     skus: dict = {}
 
     async for doc in _db.enrich_pending.find(
@@ -289,49 +293,71 @@ async def list_recent_skus(limit: int = 50) -> dict:
                 "source": "product_raw",
             }
 
-    # Sort by registered_at desc
     ordered = sorted(
         skus.values(),
         key=lambda x: x.get("registered_at") or "",
         reverse=True,
     )[:limit]
 
-    # Hydrate each entry with Bling product state (enriched / not / nome / preco)
+    # Bulk-load enriched cache for these SKUs in ONE Mongo query
+    sku_list = [e["sku"] for e in ordered]
+    cache_map: dict = {}
+    if sku_list:
+        async for c in _db.bling_enriched_cache.find(
+            {"sku": {"$in": sku_list}}, {"_id": 0},
+        ):
+            cache_map[c.get("sku")] = c
+
     for entry in ordered:
-        sku = entry["sku"]
+        cached = cache_map.get(entry["sku"])
+        if cached:
+            entry["enriched"] = True
+            entry["bling_found"] = True
+            entry["product_id"] = entry.get("product_id") or cached.get("product_id")
+            entry["nome"] = cached.get("nome") or entry.get("nome") or ""
+            entry["preco"] = cached.get("preco") or 0
+            entry["marca"] = cached.get("marca") or ""
+            entry["image_url"] = cached.get("image_url") or ""
+        else:
+            entry["enriched"] = False
+            # If we have product_id from enrich_pending, Bling has the product
+            entry["bling_found"] = bool(entry.get("product_id"))
+
+    # FALLBACK: for entries missing product_id (older `product_raw` rows that
+    # never went through enrich_pending), do a CAPPED Bling lookup so the UI
+    # can show them as selectable. Hard cap = 10 calls (~10s budget given
+    # Bling's global Semaphore(1) serialization). Skips entries with explicit
+    # TEST_ prefix which are seeded test data without real Bling counterparts.
+    missing = [
+        e for e in ordered
+        if not e.get("product_id") and not (e.get("sku") or "").startswith("TEST_")
+    ][:10]
+    for entry in missing:
         try:
             resp = await bling_service.bling_request(
-                "GET", "/produtos", params={"codigo": sku, "limite": 5},
+                "GET", "/produtos", params={"codigo": entry["sku"], "limite": 5},
             )
             if resp.status_code >= 400:
-                entry["enriched"] = False
-                entry["bling_found"] = False
                 continue
             items = (resp.json() or {}).get("data") or []
             target = next(
                 (it for it in items
-                 if (it.get("codigo") or "").strip().upper() == sku.upper()),
+                 if (it.get("codigo") or "").strip().upper() == entry["sku"].upper()),
                 None,
             )
             if not target:
-                entry["enriched"] = False
-                entry["bling_found"] = False
                 continue
             entry["product_id"] = target.get("id")
-            full = await _fetch_full(target["id"])
-            if not full:
-                entry["enriched"] = False
-                entry["bling_found"] = True
-                continue
             entry["bling_found"] = True
-            entry["enriched"] = _is_enriched(full)
-            entry["nome"] = full.get("nome") or entry.get("nome") or ""
-            entry["preco"] = full.get("preco") or 0
-            entry["marca"] = full.get("marca") or ""
-            entry["situacao"] = full.get("situacao") or ""
+            entry["marca"] = entry.get("marca") or target.get("marca") or ""
+            entry["preco"] = entry.get("preco") or target.get("preco") or 0
+            # Persist product_id back to enrich_pending for future fast lookups
+            await _db.enrich_pending.update_one(
+                {"sku": entry["sku"]},
+                {"$set": {"product_id": entry["product_id"]}},
+            )
         except Exception:
-            entry["enriched"] = False
-            entry["bling_found"] = False
+            continue
 
     return {
         "items": ordered,

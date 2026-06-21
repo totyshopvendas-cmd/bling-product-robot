@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 4 — HIGH bug RETEST PASSED. /api/bling/recent-skus?limit=50 now responds in ~5s (was 60s+ with 502). 19/19 pytest cases pass (including the previously failing test_default_limit_returns_items). Frontend /bling-lote loads the Últimos 50 table in 4.7s with 50 populated rows; bulk-load-error banner correctly surfaces backend failures (verified via route interception with a simulated 500). All existing flows (products-with-status, enrich/queue, tick-now, raw-description CRUD, sigla mapping, dashboard) regression-pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/bling/recent-skus",
+        "issue": "Fallback Bling lookup is capped at 10 sequential calls (~10s budget). If >10 product_raw rows lack product_id, only the first 10 get hydrated and the rest stay bling_found=false. In the current dataset only 1/50 fell into this bucket so it didn't matter, but a future bulk insert of unmatched raw_descriptions could leave many rows non-selectable until a worker tick fills product_id. Consider a background reconciler instead of inline Bling calls."
+      },
+      {
+        "endpoint": "POST /api/bling/raw-description",
+        "issue": "Still no DELETE endpoint to remove TEST_ rows from product_raw — the pytest-seeded TEST_RAWDESC_PYTEST_001 reappears at the top of the Últimos 50 list with bling_found=false. Code correctly disables its checkbox so it can't be selected, but it visually pollutes the most-recent slot. Reported in iter 3 as well."
+      },
+      {
+        "endpoint": "server.py",
+        "issue": "Still uses deprecated @app.on_event('startup') — flagged in iter 1 and 3, not yet migrated to FastAPI lifespan."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_recent_skus_and_worker.py",
+    "/app/test_reports/pytest/iteration_4_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Replace the inline capped Bling fallback in list_recent_skus with an out-of-band reconciler that backfills product_id on enrich_pending whenever a JohnDrop sync completes — keeps the endpoint pure-Mongo for predictable <500ms latency.",
+    "(Optional) Add DELETE /api/bling/raw-description/{sku} so testing agents can clean up seeded TEST_ rows.",
+    "(LOW carry-over) Migrate FastAPI startup hook to lifespan."
+  ],
+  "critical_code_review_comments": [
+    "Good fix: list_recent_skus now hydrates from bling_enriched_cache in a single $in query — wall time dropped from 60s+ to ~5s. The capped 10-call fallback also correctly persists product_id back to enrich_pending for next-call speed-up.",
+    "Frontend loadError state + bulk-load-error banner is clean; toast.error fires too which gives users dual feedback. AbortController is still missing — switching tabs while a slow recent-skus is in-flight will still race-condition setItems, but acceptable given the new 5s budget.",
+    "TEST_ filter in fallback path (entry.sku.startswith('TEST_')) is a pragmatic guard but tightly couples the production code to test-data conventions. Consider gating it behind an env flag or moving to a Mongo-side filter."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (19/19 pytest pass; recent-skus endpoint <6s on 3 consecutive curls)",
+    "frontend": "100% (Últimos 50 loads in 4.7s with 50 rows; error banner verified via route mock; disabled checkboxes verified — 2 disabled matching the 2 bling_found=false rows)"
+  },
+  "test_credentials": "Reused from /app/memory/test_credentials.md — Bling OAuth token in DB still valid.",
+  "seed_data_creation": "TEST_RAWDESC_PYTEST_001 row in product_raw persists from iter 3 (pytest re-writes it on every run). It shows as the first row in Últimos 50 with bling_found=false and a disabled checkbox — exactly the intended UX for that case.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "HIGH bug from iter 3 is fully resolved. Re-run command: `pytest /app/backend/tests/test_recent_skus_and_worker.py -v --tb=short`. Recent-skus performance ~5s for limit=50 (well under 15s ingress timeout). Frontend selectors confirmed: filter-recent (default), filter-not_enriched, filter-enriched, filter-all, bulk-products-table, bulk-load-error (NEW, works), select-{id} (disabled when bling_found=false). To verify the error banner without breaking backend: use Playwright page.route('**/api/bling/recent-skus*', ...) to fulfill with status 500. The TEST_RAWDESC_PYTEST_001 pollution is benign but worth a DELETE endpoint in a future iteration.",
+  "rca of the issue": "Iteration 3 RCA confirmed and fix verified: list_recent_skus() was doing N sequential Bling REST calls (each serialized by the global bling_service Semaphore(1) — async.gather couldn't help). The applied fix (iter 4) replaces those calls with a single Mongo $in query against bling_enriched_cache plus a capped fallback (max 10 Bling lookups for SKUs missing product_id, with results persisted back to enrich_pending). Result: 5.1s vs >60s, 49/50 items hydrated with product_id, 44/50 marked enriched=true via the cache. No 502s observed on 3 consecutive calls."
+}

@@ -29,10 +29,12 @@ export default function BlingBulkEnrichPage() {
   const [job, setJob] = useState(null);
   const [enrichAllOpen, setEnrichAllOpen] = useState(false);
   const [maxItems, setMaxItems] = useState(200);
+  const [loadError, setLoadError] = useState(null);
   const pollRef = useRef(null);
 
   const loadProducts = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       if (filtro === "recent") {
         const { data } = await api.get("/bling/recent-skus", { params: { limit: 50 } });
@@ -60,7 +62,10 @@ export default function BlingBulkEnrichPage() {
       }
     } catch (err) {
       logger.error("list bling products:", err);
-      toast.error("Falha ao listar produtos do Bling");
+      const msg = err?.response?.data?.detail || err?.message || "Falha ao listar produtos do Bling";
+      setLoadError(msg);
+      setItems([]);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -293,6 +298,14 @@ export default function BlingBulkEnrichPage() {
 
       {/* Table */}
       <div className="border border-border bg-white">
+        {loadError && (
+          <div
+            data-testid="bulk-load-error"
+            className="px-4 py-2 border-b border-rose-200 bg-rose-50 text-xs text-rose-800"
+          >
+            <strong>Erro ao carregar:</strong> {loadError}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-zinc-50 border-b border-border text-zinc-600">
