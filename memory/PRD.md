@@ -208,10 +208,24 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - Quota crítica: `videos.insert` = 100/dia por projeto Google Cloud
 
 ## Backlog (P1/P2)
+
+## Atualizações 21/02/2026
+
+### Aba "Últimos 50 SKUs" no Enriquecimento em Lote ⭐
+- Novo endpoint `GET /api/bling/recent-skus?limit=50` que agrega SKUs recém-cadastrados pelo bot a partir das collections Mongo `enrich_pending` + `product_raw`, hidrata com `bling_enriched_cache` (Mongo $in) e faz fallback capado em até 10 chamadas Bling para preencher `product_id` ausente. Latência: ~5s para 50 itens (antes era 60s+ com 502 de timeout).
+- UI `/bling-lote`: nova aba "Últimos 50" agora é o filtro padrão. Os filtros antigos (Não enriquecidos / Já enriquecidos / Todos) continuam disponíveis.
+- Status badges: "Enriquecido" (verde), "Pendente" (laranja), "Aguardando Bling" (cinza para SKUs sem product_id).
+- Banner de erro `data-testid="bulk-load-error"` quando a API falha.
+- Checkbox desabilitado para linhas sem product_id (não selecionáveis).
+- Paginação ocultada na aba "Últimos 50".
+- Re-enriquecimento revê TODO o cadastro: descrição + bullets + marca + categoria + fornecedor + variações com códigos (SKU-sigla) + distribuição balanceada de estoque (já existente em `bling_enrichment.enrich_product_by_sku` + `bling_variations.create_variations`).
+- Novo endpoint `DELETE /api/bling/raw-description/{sku}` para limpar entradas de teste do `product_raw`.
+
+### Backlog ativo
 - **P1**: Usuário renovar Long-Lived Page Access Token Meta usando botão "Tornar Token Vitalício"
 - **P1**: Usuário configurar `instagram_business_id` (linkar Instagram Business à Página)
 - **P1**: Opção "Limpar e re-enriquecer" (inativar variações erradas no Bling)
-- **P2**: YouTube Shorts (OAuth + resumable upload + geração de vídeo)
+- **P2**: Reconciler de background para preencher `product_id` em `enrich_pending` (substitui o fallback de 10 chamadas inline)
 - **P2**: Botão "Materializar imagens no Bling" (UI guide para o toggle manual)
 - **P2**: Conta JohnDrop com mensalidade atrasada (depende do user)
 - **P2**: Migrar `@app.on_event` → FastAPI lifespan

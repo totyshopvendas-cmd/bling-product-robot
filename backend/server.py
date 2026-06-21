@@ -318,6 +318,13 @@ async def get_raw_description(sku: str) -> dict:
     return {"sku": sku, "exists": True, **doc}
 
 
+@api.delete("/bling/raw-description/{sku}")
+async def delete_raw_description(sku: str) -> dict:
+    """Remove a persisted raw_description (useful for cleaning up test data)."""
+    r = await db.product_raw.delete_one({"sku": sku})
+    return {"ok": True, "deleted": r.deleted_count}
+
+
 @api.get("/bling/enrichment/logs")
 async def bling_enrichment_logs(limit: int = 100) -> list:
     return await bling_enrichment.get_enrichment_logs(limit)
