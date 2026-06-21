@@ -53,32 +53,47 @@ async def _scrape_catalog(page) -> List[dict]:
 
     Table columns (per user screenshot):
        Id | Canal | Integração | Img | Nome | Sku | Preço | Estoque | Data | Ações
+
+    NOTE: the Sku cell contains the raw SKU PLUS a "Catálogo: <sku>" badge.
+    The badge may be rendered inline (no newline) so we MUST split on the
+    "Catálogo:" literal — splitting on \\n alone is unreliable.
     """
     items: List[dict] = []
     await page.goto(JOHNDROP_PRODUCTS_URL, wait_until="networkidle", timeout=60000)
 
-    # Try to bump page-size to max (50 or 100) via the 'Mostrar' select
-    try:
-        selects = await page.query_selector_all("select")
-        for sel in selects:
-            opts = await sel.evaluate(
-                "el => Array.from(el.options).map(o => o.value)"
+    # Try to bump page-size to max via the 'Mostrar' select. Several patterns
+    # are tried because the select may render lazily or use Bootstrap dropdown.
+    for size_value in ("100", "50", "25"):
+        try:
+            ok = await page.evaluate(
+                """(val) => {
+                    const selects = Array.from(document.querySelectorAll('select'));
+                    for (const s of selects) {
+                        const opt = Array.from(s.options).find(o => o.value === val || o.textContent.trim() === val);
+                        if (opt) {
+                            s.value = opt.value;
+                            s.dispatchEvent(new Event('change', {bubbles: true}));
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                size_value,
             )
-            if "100" in opts:
-                await sel.select_option(value="100")
+            if ok:
                 await page.wait_for_load_state("networkidle", timeout=15000)
+                await add_log("info", f"SyncEstoque: page-size do catálogo: {size_value}")
                 break
-            if "50" in opts:
-                await sel.select_option(value="50")
-                await page.wait_for_load_state("networkidle", timeout=15000)
-                break
-    except Exception:
-        pass
+        except Exception:
+            continue
 
     page_idx = 1
     seen_skus: set = set()
     while True:
-        await page.wait_for_selector("table tbody tr", timeout=15000)
+        try:
+            await page.wait_for_selector("table tbody tr", timeout=15000)
+        except Exception:
+            break
         rows = await page.query_selector_all("table tbody tr")
         added_this_page = 0
         for row in rows:
@@ -86,12 +101,16 @@ async def _scrape_catalog(page) -> List[dict]:
                 cells = await row.query_selector_all("td")
                 if len(cells) < 8:
                     continue
-                # Sku cell — extract first non-empty line (the catalogo: badge is on a separate line)
+                # SKU cell: clean by splitting on "Catálogo:" (the badge text)
                 sku_text = (await cells[5].inner_text() or "").strip()
-                sku = sku_text.split("\n")[0].strip()
+                # Split on Catalogo (with or without accent, with or without colon)
+                sku_clean = re.split(
+                    r"\s*Cat[áa]logo\s*:", sku_text, maxsplit=1, flags=re.IGNORECASE,
+                )[0].strip()
+                # Also split on newline as backup
+                sku = sku_clean.split("\n")[0].strip()
                 if not sku:
                     continue
-                # Preço, Estoque
                 preco_text = await cells[6].inner_text()
                 est_text = await cells[7].inner_text()
                 preco = _parse_price(preco_text)
@@ -113,23 +132,32 @@ async def _scrape_catalog(page) -> List[dict]:
             "info",
             f"SyncEstoque: catálogo página {page_idx} → {added_this_page} SKUs (total {len(items)})",
         )
-        # Try to go to next page — pagination footer
-        nxt = await page.query_selector(
-            "a[rel='next'], li.page-item:not(.disabled) a:has-text('Próximo'), "
-            "li.page-item:not(.disabled) a:has-text('Next'), a.paginate_button.next:not(.disabled)"
-        )
-        if not nxt:
+        if added_this_page == 0:
             break
-        disabled = await nxt.evaluate("el => el.closest('.disabled') !== null || el.classList.contains('disabled')")
-        if disabled:
-            break
-        try:
-            await nxt.click()
-            await page.wait_for_load_state("networkidle", timeout=15000)
-            page_idx += 1
-            if page_idx > 60:  # hard safety stop
+        # Navigate to next page — try several pagination patterns
+        next_clicked = False
+        for sel in [
+            "li.page-item:not(.disabled) a:has-text('Próximo')",
+            "li.page-item:not(.disabled) a:has-text('Next')",
+            "a.paginate_button.next:not(.disabled)",
+            "a[rel='next']:not(.disabled)",
+            "button:has-text('Próxima'):not([disabled])",
+            f"li.page-item a:has-text('{page_idx + 1}')",
+        ]:
+            try:
+                nxt = await page.query_selector(sel)
+                if not nxt:
+                    continue
+                await nxt.click()
+                await page.wait_for_load_state("networkidle", timeout=15000)
+                next_clicked = True
+                page_idx += 1
                 break
-        except Exception:
+            except Exception:
+                continue
+        if not next_clicked:
+            break
+        if page_idx > 60:  # hard safety
             break
     return items
 
@@ -173,23 +201,49 @@ async def _scrape_alerts(page) -> List[dict]:
             continue
 
     if not opened:
-        # Strategy 2: click the bell icon → "Ver Alertas" → "Ver todos Alertas"
+        # Strategy 2: click the bell icon → "Ver Alertas" → "Ver todos Alertas".
+        # JS-based click is more reliable than ElementHandle.click() for
+        # icon-only buttons (no visible bounding box at first).
         try:
             await page.goto(JOHNDROP_PRODUCTS_URL, wait_until="networkidle", timeout=30000)
-            bell = await page.query_selector(
-                "i.fa-bell, svg.lucide-bell, .notification-bell, [aria-label*='Alerta'], a:has-text('Alertas')"
+            # Try clicking via JS — find the bell icon's clickable ancestor
+            clicked = await page.evaluate(
+                """() => {
+                    const candidates = [
+                        ...document.querySelectorAll('i.fa-bell, svg.lucide-bell, [class*="bell"]'),
+                    ];
+                    for (const c of candidates) {
+                        const tgt = c.closest('a, button, [role="button"]') || c;
+                        if (tgt) {
+                            tgt.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }"""
             )
-            if bell:
-                await bell.click()
-                await page.wait_for_timeout(800)
-                ver = await page.query_selector("a:has-text('Ver Alertas')")
-                if ver:
-                    await ver.click()
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                ver_all = await page.query_selector("a:has-text('Ver todos Alertas')")
-                if ver_all:
-                    await ver_all.click()
-                    await page.wait_for_load_state("networkidle", timeout=15000)
+            if clicked:
+                await page.wait_for_timeout(1500)
+                # Click "Ver Alertas" (intermediate link in dropdown)
+                try:
+                    ver_btn = await page.query_selector("a:has-text('Ver Alertas'), a:has-text('Ver Alertas')")
+                    if ver_btn:
+                        await ver_btn.click()
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                # Click "Ver todos Alertas"
+                try:
+                    all_btn = await page.query_selector("a:has-text('Ver todos Alertas'), a:has-text('todos Alertas')")
+                    if all_btn:
+                        await all_btn.click()
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        opened = True
+                except Exception:
+                    pass
+                # If still not opened, just check current URL — JD may have
+                # already navigated to an alerts page
+                if not opened and "alert" in page.url.lower():
                     opened = True
         except Exception as e:
             await add_log("warning", f"SyncEstoque: alertas via sino falhou: {str(e)[:120]}")
