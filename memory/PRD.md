@@ -209,7 +209,54 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 
 ## Backlog (P1/P2)
 
-## Atualizações 21/02/2026
+## Atualizações 22/02/2026
+
+### Correção: imagens nas variações + Backfill via CSV ⭐
+- **Bug**: `_copy_images_to_children` em `bling_variations.py` tinha sido convertida em no-op por um agente anterior assumindo que "Bling silenciosamente ignora PATCH em variações". **Errado**. Restaurei o PATCH com `imagensURL` e validei: Bling aceita perfeitamente quando as URLs são as internas do próprio Bling (testado em KA-9103: 3/3 variações com 6 imagens cada após refetch do pai).
+- Agora produtos NOVOS cadastrados com variações terão imagens replicadas em todos os children automaticamente.
+- **Backfill por CSV**: script `/tmp/backfill_csv_imgs.py` que lê o CSV exportado do Bling, extrai o `Jonhdrop id` da coluna Observações, abre a página JonhDrop de cada produto, extrai as URLs das imagens originais e faz PATCH no Bling (com retry e limite de 4 imagens por chamada para evitar 504 do Cloudflare). Resultado em 39 produtos: 20 pais + 10 variações corrigidos, 17 já OK, 0 erros, 7m27s.
+
+### Sincronização de Estoque JohnDrop → Bling (NOVO MÓDULO ISOLADO)
+- Módulo `stock_sync.py` + scraper `stock_sync_bot.py` + página `/estoque-sync`.
+- Endpoints: `POST /api/stock-sync/run`, `GET /api/stock-sync/status`.
+- Fluxo: login JonhDrop → varre "Meus Produtos" (100/pág, paginado) + "Ver todos Alertas" → atualiza Bling. Para variações: respeita "esgotado"/quantidade específica na descrição; restante divide igualmente. Preço também atualizado via PATCH.
+- Bugs corrigidos durante validação:
+  1. SKU parseado errado ("GDR1015 Catálogo: GDR1015") — split por "Catálogo:" literal
+  2. Page-size 100/pág não aplicado — JS evaluate force change event
+  3. Sino → "Ver todos Alertas" não clicado — JS evaluate com `closest('a, button')`
+- 8 testes unitários cobrindo distribuição (par, ímpar, esgotado, explícito, mix, zero, excedente, única).
+- Sync de teste: 499 SKUs catalogados em 1m20s, 38/39 atualizações na fase inicial (97% sucesso).
+
+### Correção: worker liberava enriquecimento sem imagens (revertido)
+- Bug introduzido nesta sessão e revertido na mesma: o gate voltou a ser **APENAS imagens** (a "bagagem" pousou).
+- Removido `FORCE_AFTER_ATTEMPTS`, `MAX_ATTEMPTS=80` (~2h paciência).
+- 4 testes de regressão.
+
+### Correção: parser de variações descartava cores compostas
+- "Cinza com preto" (3 palavras) era filtrada → resultado colapsava para `[]` (single item rule).
+- Limite subido para 3 palavras, mantendo filtros descritivos.
+- 5 testes de regressão.
+
+### Aba "Últimos 50 SKUs" no Enriquecimento em Lote
+- Endpoint `GET /api/bling/recent-skus?limit=50` agrega de `enrich_pending` + `product_raw` + `bling_enriched_cache`. Latência <5s.
+- UI `/bling-lote`: aba padrão "Últimos 50" com badges, banner de erro, checkbox desabilitado para itens sem product_id.
+- Endpoint utilitário `DELETE /api/bling/raw-description/{sku}`.
+
+### Diagnóstico de imagens faltantes (causa raiz)
+- Storage do plano Bling tinha estourado — todos os produtos novos chegavam sem imagem.
+- Hipótese do usuário confirmada via varredura de 100 produtos: 0% com imagem na página 1 vs 100% na página 4. Usuário liberou espaço — problema resolvido.
+
+### Status final do projeto
+- ✅ Robô JohnDrop cadastra produtos (cadastro + variações + códigos)
+- ✅ Worker delayed aguarda imagens chegarem do sync nativo JohnDrop
+- ✅ Enriquecimento completo: descrição + 8 bullets + marca "Generico" + condição "Novo" + produção "Terceiros" + fornecedor JONH VARIEDADES
+- ✅ Variações com códigos `<sku>-<sigla>` (AZ, VD, PT) e estoque balanceado
+- ✅ Imagens replicadas em todas as variações
+- ✅ Sync Estoque diário JohnDrop→Bling
+- ✅ Módulo Social: Meta (FB/IG), Pinterest, YouTube Shorts (setup wizard + scheduler)
+- ✅ Onboarding/Setup wizard de redes sociais
+
+### Backlog ativo
 
 ### Sincronização de Estoque JohnDrop → Bling ⭐ (NOVO MÓDULO ISOLADO)
 - Novo módulo `stock_sync.py` + scraper `stock_sync_bot.py` totalmente isolados (NÃO tocam o fluxo de cadastro existente).
