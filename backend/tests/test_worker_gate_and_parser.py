@@ -108,3 +108,31 @@ def test_parse_filters_descriptive_phrases():
     assert "Preto" in out
     assert "Branco" in out
     assert not any("Ideal" in v for v in out), f"Frase descritiva vazou: {out}"
+
+
+def test_parse_tamanho_unico_nao_bloqueia_cores():
+    """REGRESSÃO: 'Tamanho: Tamanho Único para Adultos' NÃO deve zerar as
+    variações de COR (só bloqueia bloco de TAMANHOS)."""
+    raw = (
+        "Capa de Chuva Impermeável.\n"
+        "Tamanho: Tamanho Único para Adultos.\n\n"
+        "Cores Disponíveis:\n\n"
+        "- Azul\n"
+        "- Amarelo\n"
+        "- Rosa\n"
+        "- Roxo\n"
+        "- Preto\n\n"
+        "Medidas da embalagem: 3x23x26 cm"
+    )
+    out = _parse_variations(raw)
+    assert set(out) >= {"Azul", "Amarelo", "Rosa", "Roxo", "Preto"}, out
+
+
+def test_parse_cor_unica_bloqueia_cores():
+    raw = "Cor única do produto.\nCores disponíveis: Azul, Verde"
+    assert _parse_variations(raw) == []
+
+
+def test_parse_tamanho_unico_bloqueia_tamanhos():
+    raw = "Tamanho Único.\nTamanhos disponíveis: P, M, G"
+    assert _parse_variations(raw) == []

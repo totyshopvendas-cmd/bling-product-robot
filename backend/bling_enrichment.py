@@ -214,33 +214,48 @@ def _parse_variations(raw_description: str) -> List[str]:
         return []
 
     # GATE 1: "conforme disponibilidade do estoque" → buyer doesn't choose → no variations
-    disclaimer_patterns = [
+    # Estes disclaimers bloqueiam qualquer tipo de variação (o vendedor manda
+    # o que tiver, comprador não escolhe).
+    global_disclaimers = [
         r"conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque",
         r"seguindo\s+(?:a\s+)?disponibilidade",
         r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
         r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
         r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
-        # "Cor única" / "Cor do produto" → produto monocromático, sem variações
-        r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b",
-        r"\b(?:tamanho|modelo)\s+(?:[úu]nico|fixo|padr[ãa]o)\b",
     ]
-    for dp in disclaimer_patterns:
+    for dp in global_disclaimers:
         if re.search(dp, raw_description, re.IGNORECASE):
             return []
+
+    # GATE 1b: disclaimers ESPECÍFICOS por tipo — "cor única" só bloqueia
+    # variações de COR; "tamanho único" só bloqueia TAMANHO; etc.
+    # Um produto pode ter "tamanho único" para adultos MAS ter 5 cores.
+    blocked_kinds: set = set()
+    if re.search(r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b", raw_description, re.IGNORECASE):
+        blocked_kinds.add("cores")
+    if re.search(r"\btamanho\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+        blocked_kinds.add("tamanhos")
+    if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+        blocked_kinds.add("modelos")
 
     # GATE 2: require PLURAL "cores"/"tamanhos"/"modelos" with "Disponível"
     # — singular "Disponível na cor X" is descriptive, NOT a variation
     patterns = [
-        r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(?:cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)",
-        r"(?:cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)",
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", "kind_group1_body_group2"),
+        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", "kind_group1_body_group2"),
     ]
     body = ""
-    for pat in patterns:
+    kind = ""
+    for pat, _ in patterns:
         m = re.search(pat, raw_description, re.IGNORECASE)
         if m:
-            body = m.group(1)
+            kind = (m.group(1) or "").lower()
+            body = m.group(2)
             break
     if not body:
+        return []
+    # Se o tipo detectado no bloco está bloqueado por disclaimer específico → vazio
+    if kind in blocked_kinds:
         return []
 
     # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
