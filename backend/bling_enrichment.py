@@ -238,15 +238,20 @@ def _parse_variations(raw_description: str) -> List[str]:
     if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
         blocked_kinds.add("modelos")
 
-    # GATE 2: require PLURAL "cores"/"tamanhos"/"modelos" with "Disponível"
-    # — singular "Disponível na cor X" is descriptive, NOT a variation
+    # GATE 2: aceita PLURAL ("cores"/"tamanhos"/"modelos") sempre; aceita
+    # SINGULAR ("cor"/"tamanho"/"modelo") APENAS quando o body tem múltiplos
+    # itens listados abaixo — nesse caso é uma variação real, não descrição.
     patterns = [
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", "kind_group1_body_group2"),
-        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", "kind_group1_body_group2"),
+        # Plural com "Disponível" prefixo — regra original
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
+        # Plural sem "Disponível" — "Cores disponíveis:"
+        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
+        # Singular com "Disponível" — só será aceito se body tiver 2+ itens
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
     ]
     body = ""
     kind = ""
-    for pat, _ in patterns:
+    for pat, _is_plural in patterns:
         m = re.search(pat, raw_description, re.IGNORECASE)
         if m:
             kind = (m.group(1) or "").lower()
@@ -254,8 +259,9 @@ def _parse_variations(raw_description: str) -> List[str]:
             break
     if not body:
         return []
-    # Se o tipo detectado no bloco está bloqueado por disclaimer específico → vazio
-    if kind in blocked_kinds:
+    # Normaliza kind singular → plural para bater com blocked_kinds
+    kind_normalized = {"cor": "cores", "tamanho": "tamanhos", "modelo": "modelos"}.get(kind, kind)
+    if kind_normalized in blocked_kinds:
         return []
 
     # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
@@ -299,6 +305,9 @@ def _parse_variations(raw_description: str) -> List[str]:
     # If only ONE option was extracted, it's a single-color/size product — not a variation
     if len(deduped) <= 1:
         return []
+    # Se o padrão original usava singular ("Disponível na cor"), só aceita
+    # quando de fato há múltiplas opções listadas (o que a regra acima já
+    # garante, pois exige >= 2). Ok, retorna.
     return deduped[:10]
 
 

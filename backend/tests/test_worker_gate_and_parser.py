@@ -136,3 +136,25 @@ def test_parse_cor_unica_bloqueia_cores():
 def test_parse_tamanho_unico_bloqueia_tamanhos():
     raw = "Tamanho Único.\nTamanhos disponíveis: P, M, G"
     assert _parse_variations(raw) == []
+
+
+def test_parse_singular_cor_com_multiplos_itens():
+    """REGRESSÃO W9MAX: 'Disponível na cor:' (singular) com múltiplos itens
+    listados abaixo DEVE gerar variações (é uma variação real, não descrição)."""
+    raw = (
+        "Especificações:\n- Tela 49mm\n\n"
+        "Disponível na cor:\n"
+        " -Caixa/Bisel PRETO\n"
+        " -Caixa/Bisel PRATA\n"
+        " -Caixa/Bisel ROSE\n\n"
+        "Medidas da embalagem: 23x4x15cm"
+    )
+    out = _parse_variations(raw)
+    assert len(out) == 3, f"esperava 3, achei {out}"
+    assert any("Preto" in v.title() or "PRETO" in v.upper() for v in out)
+
+
+def test_parse_singular_cor_apenas_uma_opcao_ignora():
+    """'Disponível na cor Preto' com apenas 1 item continua sendo descritivo."""
+    raw = "Disponível na cor Preto"
+    assert _parse_variations(raw) == []
