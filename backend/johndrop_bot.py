@@ -660,13 +660,13 @@ async def _read_product_images(page) -> list:
         )
         result = [u for u in (urls or []) if u]
 
-        # DEDUPE + limpeza pós-processamento (SEM perder fotos):
-        # 1. Remove URLs de páginas HTML e avatares/user.png (lixo puro).
-        # 2. Prioriza `app.jonhdrop.com.br/uploads` — que é a PASTA COMPLETA
-        #    de fotos do produto (superset). `meucatalogofacil.com` é só o
-        #    catálogo público do fornecedor com um SUBSET (as vezes 3 de 6).
-        # 3. Se não tiver uploads, usa meucatalogofacil como fallback.
-        # 4. Dedupe final por URL exato.
+        # LIMPEZA MÍNIMA — mantém TODAS as fotos do produto:
+        # 1. Remove só o lixo puro (HTML, avatar, logo).
+        # 2. Junta URLs dos dois CDNs do JohnDrop (uploads folder +
+        #    meucatalogofacil.com) — cada um pode ter fotos DIFERENTES do
+        #    mesmo produto.
+        # 3. Dedupe apenas por URL exato (não por CDN, nem por nome de arquivo,
+        #    porque URLs diferentes = fotos diferentes).
         img_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
 
         def _is_real_image(u: str) -> bool:
@@ -675,41 +675,27 @@ async def _read_product_images(page) -> list:
                 return False
             if "user.png" in low or "avatar" in low or "/logo" in low:
                 return False
+            if "bling" in low and "icon" in low:  # placeholder do Bling
+                return False
             base = low.split("?")[0].split("#")[0]
             return any(base.endswith(ext) for ext in img_exts)
 
         cleaned = [u for u in result if _is_real_image(u)]
 
-        # Prioridade: uploads folder (completo) > meucatalogofacil (subset)
-        uploads = [u for u in cleaned if "jonhdrop.com.br/uploads" in u.lower()]
-        catalog = [u for u in cleaned if "meucatalogofacil.com" in u.lower()]
-        others = [u for u in cleaned if u not in uploads and u not in catalog]
-
-        if uploads:
-            # Se temos uploads (pasta master), usa APENAS eles + outros não
-            # relacionados a meucatalogofacil (para não duplicar as fotos que
-            # também estão no catálogo)
-            chosen = uploads + others
-        elif catalog:
-            chosen = catalog + others
-        else:
-            chosen = cleaned
-
-        # Dedupe final por URL exato
+        # Dedupe por URL exato — NÃO por CDN, para não perder fotos
         seen = set()
         final: list = []
-        for u in chosen:
+        for u in cleaned:
             if u not in seen:
                 seen.add(u)
                 final.append(u)
-        final = final[:12]
+        final = final[:15]  # limite razoável de fotos por produto
 
         try:
             await add_log(
                 "info",
                 f"Imagens extraídas do JohnDrop: {len(final)} "
-                f"(brutas={len(result)}, uploads={len(uploads)}, "
-                f"catalog={len(catalog)})",
+                f"(brutas={len(result)}, após limpeza={len(cleaned)})",
             )
         except Exception:
             pass
