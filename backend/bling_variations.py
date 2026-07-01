@@ -434,19 +434,32 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
     (não específica por cor). O usuário escolhe depois qual é a "capa"
     correta de cada cor manualmente no painel Bling.
     """
-    # Limpa URLs inválidas (data:/blob:). NÃO filtra S3-presigned: Bling
-    # baixa a imagem no momento da chamada, então uma URL temporária funciona.
-    clean_urls = [
-        u for u in (image_urls or [])
-        if u and not u.startswith("data:") and not u.startswith("blob:")
-    ]
-    if not clean_urls or not child_ids:
+    # Dedupe URLs pelo nome base do arquivo — evita passar a MESMA imagem
+    # do JohnDrop em duas fontes (meucatalogofacil.com vs jonhdrop.com.br/uploads)
+    seen: set = set()
+    dedup_urls: List[str] = []
+    for u in image_urls or []:
+        if not u or u.startswith(("data:", "blob:")):
+            continue
+        key = u.split("?")[0].split("#")[0].rsplit("/", 1)[-1]
+        if key not in seen:
+            seen.add(key)
+            dedup_urls.append(u)
+    if not dedup_urls or not child_ids:
         return 0
-    payload_imgs = [{"link": u} for u in clean_urls[:12]]
+    payload_imgs = [{"link": u} for u in dedup_urls[:12]]
     ok = 0
     failures: List[str] = []
     for cid in child_ids:
         try:
+            # STEP 1: limpa imagens antigas do child (Bling acumula em vez de
+            # substituir quando se envia `imagensURL`). Sem esse clear, rodar
+            # o enrichment duas vezes duplica as imagens.
+            await bling_service.bling_request(
+                "PATCH", f"/produtos/{cid}",
+                json={"midia": {"imagens": {"imagensURL": [], "internas": [], "externas": []}}},
+            )
+            # STEP 2: aplica as novas
             r = await bling_service.bling_request(
                 "PATCH", f"/produtos/{cid}",
                 json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
@@ -461,7 +474,7 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
         await add_log(
             "info",
             f"Imagens replicadas em {ok}/{len(child_ids)} variações "
-            f"({len(clean_urls)} URLs por variação)",
+            f"({len(dedup_urls)} URLs únicas por variação)",
         )
     if failures:
         await add_log(

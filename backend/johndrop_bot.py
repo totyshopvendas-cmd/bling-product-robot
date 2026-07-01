@@ -658,12 +658,52 @@ async def _read_product_images(page) -> list:
             }
             """
         )
-        result = [u for u in (urls or []) if u][:12]
+        result = [u for u in (urls or []) if u]
+
+        # DEDUPE + limpeza pós-processamento:
+        # 1. Remove URLs que apontam para páginas HTML (não têm extensão de imagem)
+        # 2. Remove URLs de avatar/user do usuário
+        # 3. Se houver URLs do CDN principal `meucatalogofacil.com` (originais
+        #    do fornecedor), usa APENAS essas — descarta o cache redimensionado
+        #    em `app.jonhdrop.com.br/uploads` que é a MESMA imagem duplicada.
+        img_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+
+        def _is_real_image(u: str) -> bool:
+            low = u.lower()
+            if "/dashboard/" in low or "/product/" in low:
+                return False
+            if "user.png" in low or "avatar" in low:
+                return False
+            # Se não tem extensão de imagem visível, ainda pode ser válida
+            # (URLs S3/CDN podem terminar com ? ou #) → checa base path
+            base = low.split("?")[0].split("#")[0]
+            return any(base.endswith(ext) for ext in img_exts)
+
+        cleaned = [u for u in result if _is_real_image(u)]
+
+        # Prioriza CDN principal quando presente
+        primary = [u for u in cleaned if "meucatalogofacil.com" in u.lower()]
+        if primary:
+            cleaned = primary
+
+        # Dedupe final por URL exato
+        seen = set()
+        final: list = []
+        for u in cleaned:
+            if u not in seen:
+                seen.add(u)
+                final.append(u)
+        final = final[:12]
+
         try:
-            await add_log("info", f"Imagens extraídas do JohnDrop: {len(result)} (primeira: {result[0][:80] if result else '—'})")
+            await add_log(
+                "info",
+                f"Imagens extraídas do JohnDrop: {len(final)} "
+                f"(brutas={len(result)}, primeira={final[0][:80] if final else '—'})",
+            )
         except Exception:
             pass
-        return result
+        return final
     except Exception as e:
         try:
             await add_log("warning", f"Falha ao ler imagens: {e}")
