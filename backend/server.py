@@ -39,6 +39,8 @@ from image_proxy import router as image_proxy_router
 from diag_service import router as diag_router
 import stock_sync
 import stock_sync_bot
+import category_mapping
+import category_mapping_bot
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -486,6 +488,74 @@ async def stock_sync_status() -> dict:
         "in_memory_summary": _STOCK_SYNC_STATE["last_summary"],
         "last_run": last,
     }
+
+
+# ----- Category Mapping (Bling → Marketplaces multiloja) -------------------
+_CATMAP_STATE = {"running": False, "started_at": None}
+
+
+class CatMapRunRequest(BaseModel):
+    bling_user: str
+    bling_pass: str
+
+
+async def _catmap_task(bling_user: str, bling_pass: str) -> None:
+    try:
+        trees = await category_mapping_bot.scan_marketplace_trees(bling_user, bling_pass)
+        bling_cats = await category_mapping._get_bling_categories_from_api()
+        await category_mapping.generate_suggestions(trees, bling_cats)
+    except Exception as e:
+        logger.exception("catmap task failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "main"}, {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _CATMAP_STATE["running"] = False
+
+
+@api.post("/category-mapping/scan")
+async def category_mapping_scan(req: CatMapRunRequest) -> dict:
+    """Dispara scan das árvores de marketplace + geração de sugestões IA."""
+    if _CATMAP_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Scan já em execução"}
+    import asyncio as _aio
+    _CATMAP_STATE["running"] = True
+    _CATMAP_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_catmap_task(req.bling_user, req.bling_pass))
+    return {"ok": True, "running": True, "started_at": _CATMAP_STATE["started_at"]}
+
+
+@api.get("/category-mapping/status")
+async def category_mapping_status() -> dict:
+    run = await category_mapping.get_run_status()
+    return {
+        "running": _CATMAP_STATE["running"],
+        "started_at": _CATMAP_STATE["started_at"],
+        "run": run,
+    }
+
+
+@api.get("/category-mapping/previews")
+async def category_mapping_previews(
+    marketplace: Optional[str] = None, limit: int = 500,
+) -> dict:
+    items = await category_mapping.list_previews(marketplace, limit)
+    return {"total": len(items), "items": items}
+
+
+class ApprovePreviewRequest(BaseModel):
+    bling_category_id: int
+    marketplace: str
+    new_suggestion_id: Optional[str] = None
+    approved: bool = True
+
+
+@api.post("/category-mapping/approve")
+async def category_mapping_approve(req: ApprovePreviewRequest) -> dict:
+    return await category_mapping.approve_preview(
+        req.bling_category_id, req.marketplace,
+        req.new_suggestion_id, req.approved,
+    )
 
 
 class BulkEnrichRequest(BaseModel):

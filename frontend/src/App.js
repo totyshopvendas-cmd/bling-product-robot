@@ -12,6 +12,7 @@ import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
 import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
 import StockSync from "@/pages/StockSync";
+import CategoryMapping from "@/pages/CategoryMapping";
 import SocialSettings from "@/pages/SocialSettings";
 import CreateAd from "@/pages/CreateAd";
 import Schedule from "@/pages/Schedule";
@@ -32,6 +33,7 @@ function App() {
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />
           <Route path="/estoque-sync" element={<StockSync />} />
+          <Route path="/categorias-multiloja" element={<CategoryMapping />} />
           <Route path="/redes-sociais" element={<SocialSettings />} />
           <Route path="/criar-anuncio" element={<CreateAd />} />
           <Route path="/agenda" element={<Schedule />} />
