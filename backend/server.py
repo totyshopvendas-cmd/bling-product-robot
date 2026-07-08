@@ -535,6 +535,13 @@ async def category_mapping_status() -> dict:
     }
 
 
+@api.get("/category-mapping/marketplaces")
+async def category_mapping_marketplaces() -> dict:
+    """Lista marketplaces já escaneados (fonte para o filtro na UI)."""
+    items = await category_mapping.list_marketplaces()
+    return {"total": len(items), "items": items}
+
+
 @api.get("/category-mapping/previews")
 async def category_mapping_previews(
     marketplace: Optional[str] = None, limit: int = 500,

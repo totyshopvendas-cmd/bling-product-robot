@@ -169,6 +169,16 @@ async def generate_suggestions(mkt_trees: dict, bling_categories: List[dict]) ->
     return {"total": total, "done": done}
 
 
+async def list_marketplaces() -> List[str]:
+    """Retorna nomes de marketplaces já escaneados (a partir de category_mapping_trees)."""
+    out: List[str] = []
+    async for d in db.category_mapping_trees.find({}, {"_id": 0, "marketplace": 1}):
+        m = d.get("marketplace")
+        if m and m not in out:
+            out.append(m)
+    return sorted(out)
+
+
 async def list_previews(marketplace: Optional[str] = None, limit: int = 500) -> List[dict]:
     q: dict = {}
     if marketplace:

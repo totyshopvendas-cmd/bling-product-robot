@@ -13,6 +13,7 @@ export default function CategoryMappingPage() {
   const [running, setRunning] = useState(false);
   const [syncingNew, setSyncingNew] = useState(false);
   const [previews, setPreviews] = useState([]);
+  const [availableMkts, setAvailableMkts] = useState([]);
   const [filterMkt, setFilterMkt] = useState("");
   const [filterQuery, setFilterQuery] = useState("");
   const [bling_user, setBlingUser] = useState("");
@@ -50,6 +51,15 @@ export default function CategoryMappingPage() {
     }
   }, []);
 
+  const loadMarketplaces = useCallback(async () => {
+    try {
+      const { data } = await api.get("/category-mapping/marketplaces");
+      setAvailableMkts(data?.items || []);
+    } catch (err) {
+      logger.error("marketplaces:", err);
+    }
+  }, []);
+
   const loadPreviews = useCallback(async () => {
     try {
       const params = {};
@@ -65,6 +75,7 @@ export default function CategoryMappingPage() {
     loadStatus();
     loadAutoSyncStatus();
     loadPendingCount();
+    loadMarketplaces();
     loadPreviews();
     pollRef.current = setInterval(() => {
       loadStatus();
@@ -72,10 +83,11 @@ export default function CategoryMappingPage() {
       if (running || syncingNew) {
         loadPreviews();
         loadPendingCount();
+        loadMarketplaces();
       }
     }, POLL_MS);
     return () => pollRef.current && clearInterval(pollRef.current);
-  }, [loadStatus, loadAutoSyncStatus, loadPendingCount, loadPreviews, running, syncingNew]);
+  }, [loadStatus, loadAutoSyncStatus, loadPendingCount, loadMarketplaces, loadPreviews, running, syncingNew]);
 
   const runScan = async () => {
     if (!bling_user || !bling_pass) {
@@ -140,7 +152,9 @@ export default function CategoryMappingPage() {
     }
   };
 
-  const uniqueMkts = Array.from(new Set(previews.map((p) => p.marketplace))).sort();
+  const uniqueMkts = Array.from(
+    new Set([...availableMkts, ...previews.map((p) => p.marketplace)])
+  ).filter(Boolean).sort();
   const filtered = previews.filter((p) => {
     if (filterQuery) {
       const q = filterQuery.toLowerCase();
