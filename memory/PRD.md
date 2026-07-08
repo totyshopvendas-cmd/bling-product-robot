@@ -302,3 +302,38 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - **P2**: Conta JohnDrop com mensalidade atrasada (depende do user)
 - **P2**: Migrar `@app.on_event` → FastAPI lifespan
 - **P2**: Limpeza de warnings de hooks React em Robot.js / Settings.js
+
+## [2026-02] Auto-Sync de Novas Categorias Multiloja (P0)
+
+**Solicitação do usuário:** "sempre que eu cadastrar uma nova categoria o robô vai fazer o processo automático para as plataformas"
+
+**Decisão do usuário:**
+- Trigger: manual via botão na UI ("Sincronizar Novas")
+- Comportamento: aplicar automaticamente nos marketplaces sem revisão manual
+
+### Backend
+- `category_mapping.get_new_bling_categories()` — lista categorias Bling que não têm preview.
+- `category_mapping.map_single_category()` — LLM matching de UMA categoria contra todos os marketplaces, idempotente, com `auto_approve=True`, flag `applied=False`.
+- `category_mapping.sync_new_categories()` — orquestrador: detecta novas → usa árvores em cache (roda scan se vazio) → LLM → chama Playwright para aplicar.
+- `category_mapping_bot.apply_mappings_for_categories()` — Playwright: para cada categoria, marca checkbox pela descrição, abre modal "Vincular categorias multiloja", para cada preview approved seleciona marketplace + categoria + clica Adicionar/Salvar, marca `applied=True` no Mongo.
+- Endpoints:
+  - `GET /api/category-mapping/new-count` → `{pending: N}` categorias pendentes.
+  - `POST /api/category-mapping/sync-new` → dispara pipeline em background.
+  - `GET /api/category-mapping/sync-new/status` → fase atual + last_summary.
+
+### Frontend (`/categorias-multiloja`)
+- Botão verde **"Sincronizar Novas"** com badge da contagem pendente (128 detectadas na 1ª execução).
+- Botão laranja **"Rescan completo"** renomeado para deixar claro que é reescanear árvores.
+- Banner de progresso mostra a fase atual (`detect` → `scanning_trees` → `matching` → `applying`).
+- Card de resumo pós-execução: novas / pares gerados / vínculos aplicados.
+
+### Testes
+- `tests/test_category_mapping_autosync.py`: 5 testes cobrindo score de tokens, filtro de categorias novas, idempotência por (bling_id, marketplace), auto-aprovação e caso de "sem sugestão LLM". Todos verdes.
+
+### Backlog atualizado
+- **P2**: Recolher credenciais Bling salvas em vez de pedir toda vez (armazenar cifrado com opt-in).
+- **P2**: Toggle "aplicar automaticamente" (usuário pediu ON por default; deixar configurável).
+- **P2**: Filtro de confiança mínima antes de aplicar (ex: só ≥0.6 vai pro Playwright).
+- **P2**: Progresso em tempo real via WebSocket para o Stock Sync e Category Auto-Sync.
+- **P2**: Refatoração de `server.py` (642 linhas) → dividir em `/app/backend/routes/`.
+

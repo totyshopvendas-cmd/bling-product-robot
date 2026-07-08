@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Search } from "lucide-react";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Search, Zap } from "lucide-react";
 import { api } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
@@ -8,13 +8,17 @@ const POLL_MS = 4000;
 
 export default function CategoryMappingPage() {
   const [status, setStatus] = useState(null);
+  const [autoSyncStatus, setAutoSyncStatus] = useState(null);
+  const [pendingNew, setPendingNew] = useState(null);
   const [running, setRunning] = useState(false);
+  const [syncingNew, setSyncingNew] = useState(false);
   const [previews, setPreviews] = useState([]);
   const [filterMkt, setFilterMkt] = useState("");
   const [filterQuery, setFilterQuery] = useState("");
   const [bling_user, setBlingUser] = useState("");
   const [bling_pass, setBlingPass] = useState("");
   const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState("scan"); // "scan" | "sync"
   const pollRef = useRef(null);
 
   const loadStatus = useCallback(async () => {
@@ -24,6 +28,25 @@ export default function CategoryMappingPage() {
       setRunning(Boolean(data?.running));
     } catch (err) {
       logger.error("catmap status:", err);
+    }
+  }, []);
+
+  const loadAutoSyncStatus = useCallback(async () => {
+    try {
+      const { data } = await api.get("/category-mapping/sync-new/status");
+      setAutoSyncStatus(data);
+      setSyncingNew(Boolean(data?.running));
+    } catch (err) {
+      logger.error("autosync status:", err);
+    }
+  }, []);
+
+  const loadPendingCount = useCallback(async () => {
+    try {
+      const { data } = await api.get("/category-mapping/new-count");
+      setPendingNew(data?.pending ?? null);
+    } catch (err) {
+      logger.error("pending count:", err);
     }
   }, []);
 
@@ -40,16 +63,23 @@ export default function CategoryMappingPage() {
 
   useEffect(() => {
     loadStatus();
+    loadAutoSyncStatus();
+    loadPendingCount();
     loadPreviews();
     pollRef.current = setInterval(() => {
       loadStatus();
-      if (running) loadPreviews();
+      loadAutoSyncStatus();
+      if (running || syncingNew) {
+        loadPreviews();
+        loadPendingCount();
+      }
     }, POLL_MS);
     return () => pollRef.current && clearInterval(pollRef.current);
-  }, [loadStatus, loadPreviews, running]);
+  }, [loadStatus, loadAutoSyncStatus, loadPendingCount, loadPreviews, running, syncingNew]);
 
   const runScan = async () => {
     if (!bling_user || !bling_pass) {
+      setAuthMode("scan");
       setShowAuth(true);
       return;
     }
@@ -65,6 +95,33 @@ export default function CategoryMappingPage() {
     } catch (err) {
       toast.error("Falha ao iniciar scan");
     }
+  };
+
+  const runSyncNew = async () => {
+    if (!bling_user || !bling_pass) {
+      setAuthMode("sync");
+      setShowAuth(true);
+      return;
+    }
+    try {
+      const { data } = await api.post("/category-mapping/sync-new", {
+        bling_user, bling_pass, apply: true,
+      });
+      if (data?.ok) {
+        toast.success("Sincronização iniciada — mapeando e aplicando novas categorias");
+        setSyncingNew(true);
+        setShowAuth(false);
+      } else {
+        toast.warning(data?.message || "Já em execução");
+      }
+    } catch (err) {
+      toast.error("Falha ao sincronizar novas");
+    }
+  };
+
+  const confirmAuth = () => {
+    if (authMode === "sync") runSyncNew();
+    else runScan();
   };
 
   const approve = async (item, approved) => {
@@ -111,21 +168,45 @@ export default function CategoryMappingPage() {
           <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
             Robô abre o Bling, lê a árvore de categorias de cada marketplace conectado
             (Amazon, Shopee, ML, Kwai, etc.), e a IA sugere o mapeamento de cada categoria
-            Bling. Você revisa e aprova antes de aplicar (aplicação na próxima fase).
+            Bling. Ao clicar em <strong>&quot;Sincronizar Novas&quot;</strong> o robô detecta apenas
+            as categorias ainda não mapeadas, faz o match com IA e aplica automaticamente
+            no Bling — sem revisão manual.
           </p>
         </div>
-        <button
-          data-testid="run-catmap-scan"
-          onClick={runScan}
-          disabled={running}
-          className="inline-flex items-center gap-2 bg-[#EE7B22] hover:bg-[#d96d1c] text-white px-4 py-2 text-sm font-medium disabled:opacity-50"
-        >
-          {running ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Escaneando...</>
-          ) : (
-            <><Play className="h-4 w-4" /> Escanear categorias</>
-          )}
-        </button>
+        <div className="flex flex-col gap-2 items-end">
+          <button
+            data-testid="run-catmap-sync-new"
+            onClick={runSyncNew}
+            disabled={syncingNew || running}
+            className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {syncingNew ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Sincronizando...</>
+            ) : (
+              <>
+                <Zap className="h-4 w-4" />
+                Sincronizar Novas
+                {typeof pendingNew === "number" && pendingNew > 0 && (
+                  <span className="ml-1 bg-white text-emerald-700 rounded-full px-2 py-0.5 text-xs font-semibold">
+                    {pendingNew}
+                  </span>
+                )}
+              </>
+            )}
+          </button>
+          <button
+            data-testid="run-catmap-scan"
+            onClick={runScan}
+            disabled={running || syncingNew}
+            className="inline-flex items-center gap-2 bg-[#EE7B22] hover:bg-[#d96d1c] text-white px-4 py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {running ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Escaneando...</>
+            ) : (
+              <><Play className="h-4 w-4" /> Rescan completo</>
+            )}
+          </button>
+        </div>
       </div>
 
       {showAuth && (
@@ -156,10 +237,10 @@ export default function CategoryMappingPage() {
           </div>
           <button
             data-testid="confirm-scan-btn"
-            onClick={runScan}
+            onClick={confirmAuth}
             className="text-sm bg-zinc-900 text-white px-3 py-1.5"
           >
-            Confirmar e Iniciar
+            {authMode === "sync" ? "Confirmar e Sincronizar" : "Confirmar e Escanear"}
           </button>
         </div>
       )}
@@ -176,6 +257,23 @@ export default function CategoryMappingPage() {
           <Loader2 className="h-4 w-4 animate-spin" />
           Scan em andamento. Status: <strong>{status?.run?.status}</strong>{" "}
           {status?.run?.done && `— ${status.run.done}/${status.run.total_pairs} pares`}
+        </div>
+      )}
+
+      {syncingNew && (
+        <div className="border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 flex items-center gap-3" data-testid="autosync-banner">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Sincronizando novas categorias — fase: <strong>{autoSyncStatus?.run?.phase || "..."}</strong>
+          {autoSyncStatus?.run?.new_count != null && ` — ${autoSyncStatus.run.new_count} novas`}
+          {autoSyncStatus?.run?.applied_count != null && ` — ${autoSyncStatus.run.applied_count} aplicadas`}
+        </div>
+      )}
+
+      {!syncingNew && autoSyncStatus?.last_summary && (
+        <div className="border border-emerald-100 bg-emerald-50/40 px-4 py-2 text-xs text-emerald-900" data-testid="autosync-summary">
+          Última auto-sync: {autoSyncStatus.last_summary.new_count} novas categorias →
+          {" "}{autoSyncStatus.last_summary.created_pairs} pares gerados,
+          {" "}{autoSyncStatus.last_summary.applied} vínculos aplicados no Bling.
         </div>
       )}
 

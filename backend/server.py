@@ -558,6 +558,66 @@ async def category_mapping_approve(req: ApprovePreviewRequest) -> dict:
     )
 
 
+# ----- Auto-sync novas categorias (P0) --------------------------------------
+_AUTOSYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+class CatMapAutoSyncRequest(BaseModel):
+    bling_user: str
+    bling_pass: str
+    apply: bool = True
+
+
+async def _autosync_task(bling_user: str, bling_pass: str, apply: bool) -> None:
+    try:
+        summary = await category_mapping.sync_new_categories(
+            bling_user, bling_pass, apply=apply,
+        )
+        _AUTOSYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("autosync failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "auto_sync"},
+            {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _AUTOSYNC_STATE["running"] = False
+
+
+@api.get("/category-mapping/new-count")
+async def category_mapping_new_count() -> dict:
+    """Retorna a contagem de categorias Bling sem mapeamento (pendentes)."""
+    try:
+        n = await category_mapping.count_pending_new()
+        return {"pending": n}
+    except Exception as e:
+        logger.exception("new-count failed: %s", e)
+        return {"pending": 0, "error": str(e)[:200]}
+
+
+@api.post("/category-mapping/sync-new")
+async def category_mapping_sync_new(req: CatMapAutoSyncRequest) -> dict:
+    """Detecta categorias Bling novas e mapeia+aplica automaticamente."""
+    if _AUTOSYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Auto-sync já em execução"}
+    import asyncio as _aio
+    _AUTOSYNC_STATE["running"] = True
+    _AUTOSYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_autosync_task(req.bling_user, req.bling_pass, req.apply))
+    return {"ok": True, "running": True, "started_at": _AUTOSYNC_STATE["started_at"]}
+
+
+@api.get("/category-mapping/sync-new/status")
+async def category_mapping_sync_new_status() -> dict:
+    run = await category_mapping.get_auto_sync_status()
+    return {
+        "running": _AUTOSYNC_STATE["running"],
+        "started_at": _AUTOSYNC_STATE["started_at"],
+        "last_summary": _AUTOSYNC_STATE["last_summary"],
+        "run": run,
+    }
+
+
 class BulkEnrichRequest(BaseModel):
     product_ids: Optional[list[int]] = None
     enrich_all_not_enriched: bool = False

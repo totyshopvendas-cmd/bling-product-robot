@@ -198,3 +198,162 @@ async def approve_preview(
 async def get_run_status() -> dict:
     doc = await db.category_mapping_runs.find_one({"name": "main"}, {"_id": 0})
     return doc or {"status": "idle"}
+
+
+async def _get_cached_trees() -> dict:
+    """Retorna as árvores de marketplace salvas em `category_mapping_trees`."""
+    trees: dict = {}
+    async for d in db.category_mapping_trees.find({}, {"_id": 0}):
+        trees[d["marketplace"]] = d.get("categories") or []
+    return trees
+
+
+async def get_new_bling_categories() -> List[dict]:
+    """Categorias Bling que ainda NÃO possuem preview em nenhum marketplace."""
+    all_cats = await _get_bling_categories_from_api()
+    if not all_cats:
+        return []
+    known_ids = set()
+    async for p in db.category_mapping_previews.find(
+        {}, {"_id": 0, "bling_category_id": 1},
+    ):
+        known_ids.add(p.get("bling_category_id"))
+    return [c for c in all_cats if c["id"] not in known_ids]
+
+
+async def map_single_category(
+    bling_cat: dict, mkt_trees: dict, auto_approve: bool = True,
+) -> int:
+    """Gera sugestões IA para UMA categoria Bling contra todos os marketplaces.
+
+    Retorna o nº de previews criados. Se `auto_approve=True` marca aprovado
+    para permitir aplicação imediata via Playwright.
+    """
+    if not mkt_trees:
+        return 0
+    bling_name = bling_cat.get("descricao") or ""
+    if not bling_name:
+        return 0
+    created = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for marketplace, tree in mkt_trees.items():
+        # Skip if already exists (idempotente)
+        existing = await db.category_mapping_previews.find_one({
+            "bling_category_id": bling_cat["id"],
+            "marketplace": marketplace,
+        })
+        if existing:
+            continue
+        suggestion = await _llm_pick_best_match(bling_name, marketplace, tree or [])
+        await db.category_mapping_previews.insert_one({
+            "bling_category_id": bling_cat["id"],
+            "bling_category_name": bling_name,
+            "marketplace": marketplace,
+            "suggestion_id": (suggestion or {}).get("id"),
+            "suggestion_name": (suggestion or {}).get("name"),
+            "confidence": (suggestion or {}).get("confidence", 0.0),
+            "reason": (suggestion or {}).get("reason", "no_match"),
+            "approved": bool(auto_approve and (suggestion or {}).get("id")),
+            "applied": False,
+            "created_at": now,
+            "auto_synced": True,
+        })
+        created += 1
+    return created
+
+
+async def sync_new_categories(
+    bling_user: str, bling_pass: str, apply: bool = True,
+) -> dict:
+    """Detecta categorias Bling novas, gera mapeamentos IA e (opcional) aplica.
+
+    Fluxo:
+    1. Consulta API Bling → lista categorias novas (sem preview).
+    2. Usa árvores de marketplace já cacheadas em `category_mapping_trees`.
+       Se não houver cache, dispara um scan primeiro.
+    3. Para cada nova categoria, roda LLM em cada marketplace, salva approved.
+    4. Se `apply=True`, chama Playwright para aplicar os mapeamentos no Bling.
+    """
+    from db import db as _db
+    started = datetime.now(timezone.utc).isoformat()
+    await _db.category_mapping_runs.update_one(
+        {"name": "auto_sync"},
+        {"$set": {"status": "running", "started_at": started, "phase": "detect"}},
+        upsert=True,
+    )
+
+    trees = await _get_cached_trees()
+    if not trees:
+        await add_log(
+            "info",
+            "AutoSync: nenhum cache de árvores — executando scan primeiro",
+        )
+        await _db.category_mapping_runs.update_one(
+            {"name": "auto_sync"}, {"$set": {"phase": "scanning_trees"}},
+        )
+        import category_mapping_bot
+        trees = await category_mapping_bot.scan_marketplace_trees(bling_user, bling_pass)
+
+    new_cats = await get_new_bling_categories()
+    await add_log(
+        "info", f"AutoSync: {len(new_cats)} categorias novas detectadas",
+    )
+    if not new_cats:
+        await _db.category_mapping_runs.update_one(
+            {"name": "auto_sync"},
+            {"$set": {"status": "done", "finished_at": datetime.now(timezone.utc).isoformat(),
+                      "new_count": 0, "applied_count": 0}},
+        )
+        return {"new_count": 0, "created_pairs": 0, "applied": 0}
+
+    await _db.category_mapping_runs.update_one(
+        {"name": "auto_sync"},
+        {"$set": {"phase": "matching", "new_count": len(new_cats)}},
+    )
+    created_total = 0
+    for cat in new_cats:
+        created_total += await map_single_category(cat, trees, auto_approve=True)
+    await add_log(
+        "success",
+        f"AutoSync: {created_total} pares gerados para {len(new_cats)} categorias novas",
+    )
+
+    applied_count = 0
+    if apply:
+        await _db.category_mapping_runs.update_one(
+            {"name": "auto_sync"}, {"$set": {"phase": "applying"}},
+        )
+        try:
+            import category_mapping_bot
+            # Aplica somente os previews desta rodada (não aplicados, approved)
+            new_cat_ids = [c["id"] for c in new_cats]
+            applied_count = await category_mapping_bot.apply_mappings_for_categories(
+                bling_user, bling_pass, new_cat_ids,
+            )
+        except Exception as e:
+            logger.exception("apply failed: %s", e)
+            await add_log("error", f"AutoSync apply falhou: {e}")
+
+    await _db.category_mapping_runs.update_one(
+        {"name": "auto_sync"},
+        {"$set": {"status": "done",
+                  "finished_at": datetime.now(timezone.utc).isoformat(),
+                  "new_count": len(new_cats), "created_pairs": created_total,
+                  "applied_count": applied_count, "phase": "done"}},
+    )
+    return {
+        "new_count": len(new_cats),
+        "created_pairs": created_total,
+        "applied": applied_count,
+    }
+
+
+async def get_auto_sync_status() -> dict:
+    doc = await db.category_mapping_runs.find_one({"name": "auto_sync"}, {"_id": 0})
+    return doc or {"status": "idle"}
+
+
+async def count_pending_new() -> int:
+    """Quantas categorias Bling ainda não têm mapeamento."""
+    cats = await get_new_bling_categories()
+    return len(cats)
