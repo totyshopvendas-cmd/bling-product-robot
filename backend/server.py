@@ -646,6 +646,76 @@ async def category_mapping_sync_new_status() -> dict:
     }
 
 
+# ----- API-based sync (não usa Playwright) ----------------------------------
+_APISYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+class ApiSyncRequest(BaseModel):
+    include_subcategorias: bool = True
+    dry_run: bool = False
+
+
+async def _apisync_task(include_subcategorias: bool, dry_run: bool) -> None:
+    try:
+        summary = await category_mapping.sync_via_api(
+            include_subcategorias=include_subcategorias, dry_run=dry_run,
+        )
+        _APISYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("api-sync failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "api_sync"},
+            {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _APISYNC_STATE["running"] = False
+
+
+@api.post("/category-mapping/sync-api")
+async def category_mapping_sync_api(req: ApiSyncRequest) -> dict:
+    """Sincroniza via API oficial Bling (sem Playwright, sem credenciais web)."""
+    if _APISYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "API-sync já em execução"}
+    import asyncio as _aio
+    _APISYNC_STATE["running"] = True
+    _APISYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_apisync_task(req.include_subcategorias, req.dry_run))
+    return {"ok": True, "running": True, "started_at": _APISYNC_STATE["started_at"]}
+
+
+@api.get("/category-mapping/sync-api/status")
+async def category_mapping_sync_api_status() -> dict:
+    run = await category_mapping.get_api_sync_status()
+    return {
+        "running": _APISYNC_STATE["running"],
+        "started_at": _APISYNC_STATE["started_at"],
+        "last_summary": _APISYNC_STATE["last_summary"],
+        "run": run,
+    }
+
+
+class LojaAliasRequest(BaseModel):
+    loja_id: int
+    alias: str
+
+
+@api.put("/category-mapping/lojas/alias")
+async def category_mapping_loja_alias(req: LojaAliasRequest) -> dict:
+    return await category_mapping.set_loja_alias(req.loja_id, req.alias)
+
+
+class KnownLojaRequest(BaseModel):
+    loja_id: int
+    name: str
+    sample_code: str = ""
+
+
+@api.post("/category-mapping/lojas/known")
+async def category_mapping_add_known_loja(req: KnownLojaRequest) -> dict:
+    """Registra manualmente uma loja Bling (útil para lojas sem vínculos ainda)."""
+    return await category_mapping.add_known_loja(req.loja_id, req.name, req.sample_code)
+
+
 class BulkEnrichRequest(BaseModel):
     product_ids: Optional[list[int]] = None
     enrich_all_not_enriched: bool = False
