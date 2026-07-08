@@ -408,6 +408,43 @@ async def bling_recent_skus(limit: int = 50) -> dict:
     return await bulk_enrichment.list_recent_skus(limit=limit)
 
 
+@api.get("/bling/needs-llm-retry")
+async def bling_needs_llm_retry() -> dict:
+    """Lista SKUs que foram enriquecidos parcialmente (falha no LLM). Usado
+    para reprocessar em lote quando o saldo da Universal Key voltar."""
+    from db import db as _db
+    skus = []
+    async for doc in _db.enrich_pending.find(
+        {"needs_llm_retry": True},
+        {"_id": 0, "sku": 1, "llm_last_error": 1, "product_id": 1},
+    ):
+        skus.append(doc)
+    return {"total": len(skus), "items": skus}
+
+
+@api.post("/bling/retry-llm-failed")
+async def bling_retry_llm_failed() -> dict:
+    """Re-enriquece TODOS os SKUs marcados como needs_llm_retry. Usar quando
+    o saldo da Universal Key voltar."""
+    from db import db as _db
+    ids = []
+    async for doc in _db.enrich_pending.find(
+        {"needs_llm_retry": True}, {"product_id": 1, "_id": 0}
+    ):
+        if doc.get("product_id"):
+            ids.append(doc["product_id"])
+    if not ids:
+        return {"ok": True, "message": "Nenhum SKU pendente de retry LLM", "count": 0}
+    job = await bulk_enrichment.start(ids)
+    # Limpa a flag depois (o job fica em background — flag será revalidada
+    # naturalmente ao próximo enrichment se falhar de novo)
+    await _db.enrich_pending.update_many(
+        {"needs_llm_retry": True},
+        {"$unset": {"needs_llm_retry": "", "llm_last_error": ""}},
+    )
+    return {"ok": True, "count": len(ids), "job_id": job.get("job_id")}
+
+
 # ----- Stock Sync (JohnDrop → Bling) ---------------------------------------
 _STOCK_SYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
 

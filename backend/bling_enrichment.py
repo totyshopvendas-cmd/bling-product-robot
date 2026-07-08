@@ -859,6 +859,8 @@ async def enrich_product_by_sku(
            saldo=int(sync_saldo) if sync_saldo else 0,
            imagens=len(bling_urls))
 
+    llm_failed = False
+    llm_error = None
     try:
         short_desc, bullets, category_id = await asyncio.gather(
             generate_short_description(raw_title, raw_description),
@@ -866,18 +868,25 @@ async def enrich_product_by_sku(
             pick_or_create_category(raw_title, raw_description),
         )
     except Exception as e:
-        await add_log("error", f"Bling: LLM falhou para {sku}: {e}")
-        await _save_log(sku, "error", f"LLM: {e}")
-        _track(sku, "failed", error=f"LLM: {e}")
-        return {"ok": False, "reason": str(e)}
+        # LLM falhou (saldo esgotado, rate limit, etc). Em vez de abortar tudo,
+        # aplica APENAS os campos que não dependem de LLM (marca, condição,
+        # tipoProducao, fornecedor, variações) — assim o produto não fica com
+        # dados errados de origem (Kapbom / Própria / Não Especificado).
+        llm_failed = True
+        llm_error = str(e)[:200]
+        await add_log("error",
+                      f"Bling: LLM falhou para {sku} — aplicando só metadados "
+                      f"(marca/condição/produção/fornecedor). Erro: {llm_error}")
+        short_desc, bullets, category_id = "", [], None
 
     # Bling renders HTML in description fields — convert newlines to <br>
-    short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>")
-    complementar_html = "<br>".join(bullets)
-    payload: dict = {
-        "descricaoCurta": short_desc_html,
-        "descricaoComplementar": complementar_html,
-    }
+    short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>") if short_desc else ""
+    complementar_html = "<br>".join(bullets) if bullets else ""
+    payload: dict = {}
+    if short_desc_html:
+        payload["descricaoCurta"] = short_desc_html
+    if complementar_html:
+        payload["descricaoComplementar"] = complementar_html
     if category_id:
         payload["categoria"] = {"id": category_id}
 
@@ -900,7 +909,21 @@ async def enrich_product_by_sku(
         return {"ok": False, "reason": str(e)}
 
     if ok:
-        await add_log("success", f"Bling enriquecido: {sku} (cat={category_id})")
+        status_msg = "enriquecido (parcial: LLM falhou)" if llm_failed else "enriquecido"
+        await add_log(
+            "warning" if llm_failed else "success",
+            f"Bling {status_msg}: {sku} (cat={category_id})",
+        )
+        # Marca no enrich_pending que este produto precisa retry LLM depois
+        if llm_failed:
+            try:
+                from db import db as _db
+                await _db.enrich_pending.update_one(
+                    {"sku": sku},
+                    {"$set": {"needs_llm_retry": True, "llm_last_error": llm_error}},
+                )
+            except Exception:
+                pass
         await _save_log(
             sku, "success", "enriquecido",
             product_id=product_id,
