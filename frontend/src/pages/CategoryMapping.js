@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Search, Zap } from "lucide-react";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Search, Zap, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
@@ -53,8 +53,17 @@ export default function CategoryMappingPage() {
 
   const loadMarketplaces = useCallback(async () => {
     try {
-      const { data } = await api.get("/category-mapping/marketplaces");
-      setAvailableMkts(data?.items || []);
+      // Fonte primária: API Bling (não depende de Playwright)
+      const { data } = await api.get("/category-mapping/lojas");
+      const names = (data?.items || []).map((l) => l.name);
+      // Merge com marketplaces já escaneados por Playwright (fallback)
+      try {
+        const legacy = await api.get("/category-mapping/marketplaces");
+        (legacy.data?.items || []).forEach((n) => {
+          if (!names.includes(n)) names.push(n);
+        });
+      } catch (_) { /* ignora */ }
+      setAvailableMkts(names.sort());
     } catch (err) {
       logger.error("marketplaces:", err);
     }
@@ -226,6 +235,28 @@ export default function CategoryMappingPage() {
           </button>
         </div>
       </div>
+
+      {autoSyncStatus?.run?.status === "error" && !syncingNew && (
+        <div
+          data-testid="autosync-error-banner"
+          className="border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900 space-y-2"
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4" />
+            Última sincronização falhou
+          </div>
+          <div className="text-xs font-mono bg-white/60 border border-rose-200 px-2 py-1 whitespace-pre-wrap break-words">
+            {String(autoSyncStatus.run.error || "").slice(0, 500)}
+          </div>
+          <p className="text-xs">
+            <strong>Diagnóstico:</strong> este container não consegue navegar para <code>bling.com.br</code>{" "}
+            (timeout de rede). O fluxo automático via Playwright precisa rodar num
+            ambiente com acesso à web do Bling. Enquanto isso, use a lista abaixo
+            (via <strong>API oficial do Bling</strong>) para ver marketplaces conectados
+            e vínculos existentes.
+          </p>
+        </div>
+      )}
 
       {showAuth && (
         <div className="border border-amber-200 bg-amber-50 p-4 space-y-3">

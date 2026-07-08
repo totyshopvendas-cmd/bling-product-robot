@@ -542,6 +542,27 @@ async def category_mapping_marketplaces() -> dict:
     return {"total": len(items), "items": items}
 
 
+@api.get("/category-mapping/lojas")
+async def category_mapping_lojas() -> dict:
+    """Lista marketplaces conectados via API Bling (não usa Playwright)."""
+    try:
+        items = await category_mapping.list_bling_lojas()
+        return {"total": len(items), "items": items}
+    except Exception as e:
+        logger.exception("list_bling_lojas failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Bling API: {e}")
+
+
+@api.get("/category-mapping/gaps")
+async def category_mapping_gaps() -> dict:
+    """Categorias Bling sem vínculo em cada loja conectada (via API)."""
+    try:
+        return await category_mapping.list_gaps()
+    except Exception as e:
+        logger.exception("list_gaps failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Bling API: {e}")
+
+
 @api.get("/category-mapping/previews")
 async def category_mapping_previews(
     marketplace: Optional[str] = None, limit: int = 500,

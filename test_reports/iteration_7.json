@@ -1,0 +1,26 @@
+{
+  "summary": "Full backend + frontend verification of the new API-based marketplace/loja endpoints and the auto-sync error banner. Backend: 9/9 pytest cases pass covering /category-mapping/lojas, /gaps, /marketplaces, /new-count, /previews, /sync-new (POST) and /sync-new/status. Frontend: dropdown correctly lists 7 options (Todos marketplaces + Mercado Livre + Shopee + 4 Loja(...)), sourced from the Bling API (not from the empty Playwright cache). Auto-sync error banner (data-testid='autosync-error-banner') renders as expected when run status = 'error' and hides while running or done — banner shows the full Playwright timeout, the 'Diagnóstico' explanation and the mention of bling.com.br.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_category_mapping_lojas_gaps.py",
+    "/app/test_reports/pytest/iteration_7_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "category_mapping.py list_gaps() re-fetches /categorias/lojas a second time (via a fresh paginated loop inside list_gaps) after list_bling_lojas() already paginated the same endpoint. For 6 lojas / 128 categories this is fine, but the two loops should share a single fetch — extract a helper _fetch_lojas_raw() that returns the flat list and reuse it in both list_bling_lojas() and list_gaps() to halve API round-trips.",
+    "_guess_marketplace_name() labels the 4 numeric-code lojas as 'Loja (100291)', 'Loja (21462)', etc. These are likely valid Bling loja types the user recognizes (Kwai, Nuvemshop, Tray, etc). Consider persisting a manual override map (loja_id -> display_name) in Mongo so the user can rename these 'Loja (xxxx)' to their real marketplace names via the UI.",
+    "server.py is now ~730 lines (pre-existing concern flagged in iter_5 & iter_6). Splitting category-mapping routes into routers/category_mapping.py is overdue.",
+    "CategoryMapping.js loadMarketplaces() catches the /lojas error silently (only logger.error) but does not surface a user-facing toast. If the Bling API itself is down (502 from our endpoint), the user gets the same 'Todos marketplaces' dropdown with no explanation — consider a small warning strip when /lojas fails."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_category_mapping_lojas_gaps.py (new)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (dropdown + banner)"},
+  "test_credentials": "N/A — Bling access already configured in backend/.env (bling_service.bling_request works).",
+  "seed_data_creation": "None. Tests hit the live Bling account attached to backend/.env (read-only /categorias/lojas + /categorias/produtos calls).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The /lojas endpoint currently returns 6 lojas (2 named 'Shopee' + 'Mercado Livre', 4 labeled 'Loja (xxxxx)' due to numeric codes). The Playwright sync-new/scan flow WILL fail in this container (bling.com.br is unreachable — 60s timeout); that's the diagnostic message intentionally shown in the error banner. Do NOT try to make Playwright work; test the API-based flows only. Regression suite: /app/backend/tests/test_category_mapping_lojas_gaps.py (9 tests, ~10s).",
+  "rca of the issue": "Original bug had two roots: (1) marketplace dropdown was fed only by /marketplaces which reads category_mapping_trees Mongo collection populated by Playwright scans that could never complete in this container — collection was empty so dropdown showed only 'Todos marketplaces'. (2) sync-new failed silently because Playwright cannot reach bling.com.br from this container. Fix: (a) new /lojas endpoint bypasses Playwright and reads Bling's official /categorias/lojas API — validated 6 lojas returned including Shopee + Mercado Livre; (b) frontend merges /lojas + /marketplaces so users always see connected marketplaces; (c) new error banner surfaces the Playwright failure with a clear 'Diagnóstico' about the network limitation. All three fixes verified working end-to-end."
+}

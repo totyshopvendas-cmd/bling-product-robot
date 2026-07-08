@@ -179,6 +179,124 @@ async def list_marketplaces() -> List[str]:
     return sorted(out)
 
 
+# --- Marketplaces via Bling API v3 (não depende de Playwright) --------------
+_LOJA_NAME_HINTS = {
+    "MLB": "Mercado Livre", "MLA": "Mercado Livre (AR)",
+    "AMZ": "Amazon", "AMAZON": "Amazon",
+    "SHP": "Shopee", "SHOPEE": "Shopee",
+    "MGL": "Magalu", "MAGALU": "Magalu",
+    "AME": "Americanas", "B2W": "B2W",
+    "TRAY": "Tray", "NUV": "Nuvemshop", "NUVEM": "Nuvemshop",
+    "KWAI": "Kwai Shop", "TIK": "TikTok Shop",
+    "FB": "Facebook", "IG": "Instagram",
+}
+
+
+def _guess_marketplace_name(codigo: str) -> str:
+    if not codigo:
+        return "Loja"
+    c = codigo.upper()
+    for prefix, name in _LOJA_NAME_HINTS.items():
+        if c.startswith(prefix):
+            return name
+    if c.isdigit() and len(c) >= 10:
+        return "Shopee"  # códigos numéricos longos são padrão Shopee
+    return f"Loja ({c[:6]})"
+
+
+async def list_bling_lojas() -> List[dict]:
+    """Lista marketplaces conectados ao Bling via API `/categorias/lojas`.
+
+    Não depende de Playwright. Agrupa por `loja.id`, infere nome pelo
+    prefixo do código e conta quantos vínculos já existem.
+    """
+    import bling_service
+    aggregated: dict = {}
+    pagina = 1
+    while pagina < 50:  # safety cap
+        r = await bling_service.bling_request(
+            "GET", "/categorias/lojas", params={"pagina": pagina, "limite": 100},
+        )
+        if r.status_code >= 400:
+            break
+        items = (r.json() or {}).get("data") or []
+        if not items:
+            break
+        for it in items:
+            loja_id = (it.get("loja") or {}).get("id")
+            if not loja_id:
+                continue
+            entry = aggregated.setdefault(loja_id, {
+                "loja_id": loja_id,
+                "mapping_count": 0,
+                "sample_code": it.get("codigo") or "",
+                "linked_bling_ids": set(),
+            })
+            entry["mapping_count"] += 1
+            cat_id = (it.get("categoriaProduto") or {}).get("id")
+            if cat_id:
+                entry["linked_bling_ids"].add(cat_id)
+            if not entry["sample_code"]:
+                entry["sample_code"] = it.get("codigo") or ""
+        if len(items) < 100:
+            break
+        pagina += 1
+
+    out: List[dict] = []
+    for loja_id, e in aggregated.items():
+        out.append({
+            "loja_id": loja_id,
+            "name": _guess_marketplace_name(e["sample_code"]),
+            "sample_code": e["sample_code"],
+            "mapping_count": e["mapping_count"],
+            "linked_count": len(e["linked_bling_ids"]),
+        })
+    out.sort(key=lambda x: x["name"])
+    return out
+
+
+async def list_gaps() -> dict:
+    """Categorias Bling que estão SEM vínculo em alguma loja conectada.
+
+    Retorna {lojas: [...], gaps: {loja_id: [{id, descricao}]}}.
+    """
+    lojas = await list_bling_lojas()
+    all_cats = await _get_bling_categories_from_api()
+
+    # Para cada loja, quais Bling category ids já têm link?
+    linked_by_loja: dict = {loja["loja_id"]: set() for loja in lojas}
+    import bling_service
+    pagina = 1
+    while pagina < 50:
+        r = await bling_service.bling_request(
+            "GET", "/categorias/lojas", params={"pagina": pagina, "limite": 100},
+        )
+        if r.status_code >= 400 or not (r.json() or {}).get("data"):
+            break
+        for it in r.json()["data"]:
+            lid = (it.get("loja") or {}).get("id")
+            cid = (it.get("categoriaProduto") or {}).get("id")
+            if lid in linked_by_loja and cid:
+                linked_by_loja[lid].add(cid)
+        if len(r.json()["data"]) < 100:
+            break
+        pagina += 1
+
+    gaps: dict = {}
+    for loja in lojas:
+        lid = loja["loja_id"]
+        missing = [
+            {"id": c["id"], "descricao": c["descricao"]}
+            for c in all_cats if c["id"] not in linked_by_loja.get(lid, set())
+        ]
+        gaps[lid] = missing
+    return {
+        "lojas": lojas,
+        "total_bling_categories": len(all_cats),
+        "gaps_by_loja": gaps,
+    }
+
+
 async def list_previews(marketplace: Optional[str] = None, limit: int = 500) -> List[dict]:
     q: dict = {}
     if marketplace:
