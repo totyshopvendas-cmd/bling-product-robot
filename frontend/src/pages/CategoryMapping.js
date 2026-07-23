@@ -257,10 +257,12 @@ export default function CategoryMappingPage() {
             <strong>Como funciona:</strong> ao clicar em{" "}
             <span className="text-emerald-700 font-semibold">Sincronizar via API Bling</span>{" "}
             usamos a API oficial do Bling (<code>/categorias/lojas</code>) — sem Playwright,
-            sem timeouts, sem login web. A IA analisa vínculos existentes em cada loja
-            e cria os novos automaticamente. Marque{" "}
-            <strong>&quot;Incluir subcategorias&quot;</strong> para processar categorias raiz + filhas,
-            ou desmarque para apenas raízes.
+            sem timeouts. A IA faz <strong>classificação semântica</strong> (ex: &quot;Barbeador&quot; →
+            &quot;Beleza e Cuidados Pessoais&quot;, não &quot;Eletrônicos&quot;) contra os vínculos que
+            você já tem em cada loja. Só cria o vínculo real no Bling quando a{" "}
+            <strong>confiança ≥ 60%</strong> — categorias sem match adequado ficam marcadas
+            como &quot;Sem sugestão IA&quot; para você revisar. Marque{" "}
+            <strong>&quot;Incluir subcategorias&quot;</strong> para processar filhas também.
           </p>
         </div>
         <div className="flex flex-col gap-2 items-end">

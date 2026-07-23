@@ -104,13 +104,17 @@ async def _llm_pick_best_match(
             system_message="Você é um especialista em taxonomia de e-commerce.",
         ).with_model("anthropic", "claude-haiku-4-5-20251001")
         reply = await chat.send_message(UserMessage(text=prompt))
-        m = re.match(r"(\d+)\s*\|\s*([\d.]+)", (reply or "").strip())
-        if not m:
+        matches = re.findall(r"(\d+)\s*\|\s*([\d.]+)", (reply or "").strip())
+        if not matches:
             best = shortlist[0]
             return {"id": best.get("id"), "name": best.get("name"),
                     "confidence": best["_s"], "reason": f"llm parse falhou: {reply[:60]}"}
-        idx = int(m.group(1)) - 1
-        conf = float(m.group(2))
+        num_str, conf_str = matches[-1]
+        idx = int(num_str) - 1
+        try:
+            conf = float(conf_str)
+        except ValueError:
+            return None
         if idx < 0 or idx >= len(shortlist):
             return None
         pick = shortlist[idx]
@@ -555,80 +559,101 @@ async def _fetch_existing_mappings() -> List[dict]:
 async def _llm_pick_from_existing(
     bling_name: str, loja_name: str, existing: List[dict],
 ) -> Optional[dict]:
-    """Escolhe a melhor categoria marketplace EXISTENTE para reutilizar.
+    """Classificação SEMÂNTICA usando LLM.
 
-    Como não temos a árvore completa do marketplace, reusamos códigos de
-    vínculos já criados no Bling. Se o marketplace tem 'Camisetas' → codigo
-    17682366011, e uma nova categoria Bling 'Camiseta Manga Longa' surgir,
-    pode reutilizar o mesmo código.
+    Muda de estratégia: em vez de reranquear top-N por overlap de tokens
+    (que é ruim — 'Barbeador' vs 'Eletrônicos' tem 0 overlap), passamos
+    a lista completa de vínculos existentes e pedimos ao LLM que
+    identifique a categoria semanticamente correta. Ex: 'Barbeador' →
+    'Beleza e Cuidados Pessoais', não 'Eletrônicos'.
+
+    Retorna dict com codigo/descricao/confidence, OU None se LLM
+    concluir que nenhum vínculo existente é semanticamente adequado
+    (confidence < 0.5) — evita criar links errados.
     """
     if not existing:
         return None
-    # Filtrar candidatos por loja
-    candidates = [
-        {"codigo": e.get("codigo"), "descricao": e.get("descricao") or ""}
-        for e in existing
-        if e.get("codigo") and e.get("descricao")
-    ]
+
     # Dedupe por (codigo, descricao)
     seen = set()
-    uniq = []
-    for c in candidates:
-        k = (c["codigo"], c["descricao"])
+    candidates = []
+    for e in existing:
+        codigo = e.get("codigo")
+        desc = (e.get("descricao") or "").strip()
+        if not codigo or not desc:
+            continue
+        k = (codigo, desc)
         if k not in seen:
             seen.add(k)
-            uniq.append(c)
-    if not uniq:
+            candidates.append({"codigo": codigo, "descricao": desc})
+    if not candidates:
         return None
 
-    scored = sorted(
-        [{**c, "_s": _match_score(bling_name, c["descricao"])} for c in uniq],
-        key=lambda c: c["_s"], reverse=True,
-    )
-    # Não descartamos por score 0 — deixamos a LLM decidir sobre TODOS os candidatos.
-    shortlist = scored[:12]
-    # LLM refina escolha entre top-12
+    # Truncate to keep the prompt reasonable (up to 40 candidates)
+    candidates = candidates[:40]
+
     try:
         import os
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         key = os.environ.get("EMERGENT_LLM_KEY", "")
         if not key:
-            best = shortlist[0]
-            return {"codigo": best["codigo"], "descricao": best["descricao"],
-                    "confidence": best["_s"], "reason": "score fallback"}
+            return None  # sem LLM não vale arriscar match por overlap
+
         prompt = (
-            f"Categoria Bling: '{bling_name}'\n"
-            f"Loja: {loja_name}\n"
-            f"Candidatos (id | descrição):\n"
+            f"Você é especialista em taxonomia de e-commerce brasileiro.\n\n"
+            f"CATEGORIA BLING: '{bling_name}'\n"
+            f"MARKETPLACE (loja): {loja_name}\n\n"
+            f"Aqui estão categorias já cadastradas para esse marketplace:\n"
         )
-        for i, c in enumerate(shortlist):
-            prompt += f"  {i+1}. {c['codigo']} | {c['descricao']}\n"
+        for i, c in enumerate(candidates):
+            prompt += f"  {i+1}. {c['descricao']}\n"
         prompt += (
-            "\nResponda APENAS: NUMERO|CONFIANCA (0-1). Ex: 3|0.85\n"
-            "Se nenhum for adequado responda: 0|0.0"
+            f"\nPRIMEIRO reflita: qual é o tipo semântico correto de "
+            f"'{bling_name}'? (Ex: 'Barbeador' → produto de beleza/cuidado pessoal, "
+            f"NÃO eletrônico. 'Fone bluetooth' → áudio/eletrônico. 'Vestido' → moda.)\n\n"
+            f"DEPOIS escolha o número da categoria acima que MELHOR representa esse "
+            f"tipo semântico. Se NENHUMA for adequada semanticamente, responda 0.\n\n"
+            f"Responda APENAS no formato: NUMERO|CONFIANCA(0-1)\n"
+            f"Regras de confiança:\n"
+            f"- 0.9+ = mesma família de produto\n"
+            f"- 0.7-0.9 = parente próximo (ex: 'Camiseta' → 'Roupas')\n"
+            f"- 0.4-0.7 = mesmo departamento amplo\n"
+            f"- <0.4 = forçado, evite\n"
+            f"Ex: 5|0.85"
         )
         chat = LlmChat(
-            api_key=key, session_id=f"catmap-api-{loja_name}",
-            system_message="Você é um especialista em taxonomia de e-commerce.",
+            api_key=key, session_id=f"catmap-sem-{loja_name}",
+            system_message=(
+                "Você é especialista em taxonomia de e-commerce. Você entende "
+                "que barbeadores, aparadores de pelo, secadores de cabelo pertencem "
+                "a Beleza/Cuidados Pessoais mesmo sendo eletrônicos. Priorize "
+                "USO/FUNÇÃO sobre tecnologia."
+            ),
         ).with_model("anthropic", "claude-haiku-4-5-20251001")
         reply = await chat.send_message(UserMessage(text=prompt))
-        m = re.match(r"(\d+)\s*\|\s*([\d.]+)", (reply or "").strip())
-        if not m:
-            best = shortlist[0]
-            return {"codigo": best["codigo"], "descricao": best["descricao"],
-                    "confidence": best["_s"], "reason": "llm parse fail"}
-        idx = int(m.group(1)) - 1
-        conf = float(m.group(2))
-        if idx < 0 or idx >= len(shortlist):
+        # LLM pode responder com reflexão + NUMERO|CONF no final; extrair último padrão
+        matches = re.findall(r"(\d+)\s*\|\s*([\d.]+)", (reply or "").strip())
+        if not matches:
             return None
-        pick = shortlist[idx]
+        num_str, conf_str = matches[-1]  # último padrão é a resposta final
+        idx = int(num_str) - 1
+        try:
+            conf = float(conf_str)
+        except ValueError:
+            return None
+        if idx < 0 or idx >= len(candidates):
+            return None
+        # GATE: só aceita se confiança >= 0.5 (evita match forçado)
+        if conf < 0.5:
+            pick = candidates[idx]
+            return {"codigo": pick["codigo"], "descricao": pick["descricao"],
+                    "confidence": conf, "reason": f"llm baixa conf ({conf:.2f}) — não aplicar"}
+        pick = candidates[idx]
         return {"codigo": pick["codigo"], "descricao": pick["descricao"],
-                "confidence": conf, "reason": "llm"}
+                "confidence": conf, "reason": "llm semantic"}
     except Exception as e:
-        logger.warning("LLM pick failed: %s", e)
-        best = shortlist[0]
-        return {"codigo": best["codigo"], "descricao": best["descricao"],
-                "confidence": best["_s"], "reason": f"fallback:{type(e).__name__}"}
+        logger.warning("LLM semantic pick failed: %s", e)
+        return None
 
 
 async def sync_via_api(
@@ -737,14 +762,15 @@ async def sync_via_api(
                 "suggestion_id": pick["codigo"],
                 "suggestion_name": pick["descricao"],
                 "confidence": pick.get("confidence", 0.0),
-                "reason": pick.get("reason", "llm"),
-                "approved": True,
+                "reason": pick.get("reason", "llm semantic"),
+                "approved": pick.get("confidence", 0.0) >= 0.6,
                 "applied": False,
                 "auto_synced": True,
                 "created_at": now,
             }
 
-            if not dry_run:
+            # Aplica de verdade se confiança >= 0.6 e não for dry_run
+            if not dry_run and pick.get("confidence", 0.0) >= 0.6:
                 try:
                     body = {
                         "descricao": pick["descricao"],
