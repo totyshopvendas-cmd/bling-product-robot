@@ -15,15 +15,15 @@ from db import db
 _bling_rate_limit = asyncio.Semaphore(1)
 
 
-BLING_CLIENT_ID = os.environ["BLING_CLIENT_ID"]
-BLING_CLIENT_SECRET = os.environ["BLING_CLIENT_SECRET"]
-BLING_AUTHORIZE_URL = os.environ["BLING_AUTHORIZE_URL"]
-BLING_TOKEN_URL = os.environ["BLING_TOKEN_URL"]
-BLING_API_BASE_URL = os.environ["BLING_API_BASE_URL"]
+BLING_CLIENT_ID = "05b3f679e6cfc180fa62bcf254932e182aa39ce7"
+BLING_CLIENT_SECRET = "57a4840b83eaccd1c555881ea060f8127d087656f718bac8e76452a36d89"
+BLING_AUTHORIZE_URL = os.environ.get("BLING_AUTHORIZE_URL", "https://bling.com.br/oauth/authorize")
+BLING_TOKEN_URL = os.environ.get("BLING_TOKEN_URL", "https://bling.com.br/oauth/token")
+BLING_API_BASE_URL = os.environ.get("BLING_API_BASE_URL", "https://api.bling.com.br/b/api/v3")
 APP_BASE_URL = os.environ["APP_BASE_URL"]
 APP_SECRET = os.environ["APP_SECRET"]
 
-REDIRECT_URI = f"{APP_BASE_URL}/api/bling/callback"
+REDIRECT_URI = "https://bling-product-robot.preview.emergentagent.com/api/bling/callback"
 ACCOUNT_ID = "default"  # single-account MVP
 
 
@@ -136,18 +136,24 @@ async def get_valid_access_token() -> Tuple[str, str]:
     expires_at = datetime.fromisoformat(doc["expires_at"])
     if expires_at - timedelta(seconds=60) > _now():
         return doc["access_token"], doc.get("token_type", "Bearer")
-    # refresh
-    data: dict = {}
+    
+    # Try to refresh token without deleting it on failure
     try:
         data = await refresh_tokens(doc["refresh_token"])
-    except HTTPException:
-        await disconnect()
-        raise HTTPException(status_code=400, detail="Falha ao renovar token Bling — reconecte")
+        await save_tokens(data)
+        return data["access_token"], data.get("token_type", "Bearer")
+    except HTTPException as he:
+        # Token refresh failed — preserve token in DB for manual reconnection
+        raise HTTPException(
+            status_code=400,
+            detail="Token Bling expirado e não foi possível renovar — vá em Configurações → Bling e reconecte"
+        )
     except Exception as e:
-        await disconnect()
-        raise HTTPException(status_code=400, detail=f"Erro inesperado ao renovar token: {e}")
-    await save_tokens(data)
-    return data["access_token"], data.get("token_type", "Bearer")
+        # Unexpected error — preserve token in DB for manual reconnection
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro ao renovar token Bling: {str(e)[:100]} — reconecte em Configurações"
+        )
 
 
 async def bling_request(method: str, path: str, params=None, json=None) -> httpx.Response:
