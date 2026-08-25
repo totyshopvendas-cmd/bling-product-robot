@@ -15,15 +15,15 @@ from db import db
 _bling_rate_limit = asyncio.Semaphore(1)
 
 
-BLING_CLIENT_ID = "05b3f679e6cfc180fa62bcf254932e182aa39ce7"
-BLING_CLIENT_SECRET = "57a4840b83eaccd1c555881ea060f8127d087656f718bac8e76452a36d89"
+BLING_CLIENT_ID = os.environ.get("BLING_CLIENT_ID", "").strip()
+BLING_CLIENT_SECRET = os.environ.get("BLING_CLIENT_SECRET", "").strip()
 BLING_AUTHORIZE_URL = os.environ.get("BLING_AUTHORIZE_URL", "https://bling.com.br/oauth/authorize")
 BLING_TOKEN_URL = os.environ.get("BLING_TOKEN_URL", "https://bling.com.br/oauth/token")
 BLING_API_BASE_URL = os.environ.get("BLING_API_BASE_URL", "https://api.bling.com.br/b/api/v3")
-APP_BASE_URL = os.environ["APP_BASE_URL"]
-APP_SECRET = os.environ["APP_SECRET"]
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "").strip()
+APP_SECRET = os.environ.get("APP_SECRET", "").strip()
 
-REDIRECT_URI = "https://bling-product-robot.preview.emergentagent.com/api/bling/callback"
+REDIRECT_URI = f"{APP_BASE_URL}/api/bling/callback"
 ACCOUNT_ID = "default"  # single-account MVP
 
 
