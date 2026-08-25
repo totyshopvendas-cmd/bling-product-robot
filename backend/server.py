@@ -24,6 +24,7 @@ import pricing_service
 import bling_service
 import robot_service
 import johndrop_bot
+import shopee_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
 import bulk_enrichment
@@ -66,7 +67,7 @@ async def _startup() -> None:
             logger.warning("Chromium ausente — instalando em background...")
             subprocess.Popen(
                 [sys.executable, "-m", "playwright", "install", "chromium"],
-                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+                env=johndrop_bot.pw_env(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -110,7 +111,7 @@ async def system_install_chromium() -> dict:
         return {"ok": True, "already_installed": True, "path": status["path"]}
     subprocess.Popen(
         [sys.executable, "-m", "playwright", "install", "chromium"],
-        env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+        env=johndrop_bot.pw_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -255,14 +256,42 @@ async def robot_status() -> RobotStatusResponse:
 
 
 @api.get("/robot/logs")
-async def robot_logs(limit: int = 100) -> list:
-    return await robot_service.get_logs(limit)
+async def robot_logs(limit: int = 100, bot: Optional[str] = None) -> list:
+    logs = await robot_service.get_logs(limit)
+    if bot:
+        logs = [log for log in logs if (log.get("bot") or "johndrop") == bot]
+    return logs
 
 
 @api.post("/robot/logs/clear")
 async def robot_logs_clear() -> dict:
     await robot_service.clear_logs()
     return {"ok": True}
+
+
+# ---------- Shopee Robot ----------
+@api.get("/shopee/status", response_model=RobotStatusResponse)
+async def shopee_status() -> RobotStatusResponse:
+    return RobotStatusResponse(**shopee_bot.shopee_robot.to_dict())
+
+
+@api.post("/shopee/start", response_model=RobotStatusResponse)
+async def shopee_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
+    if shopee_bot.shopee_robot.state == "running":
+        raise HTTPException(400, "Robô Shopee já está em execução")
+    await shopee_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**shopee_bot.shopee_robot.to_dict())
+
+
+@api.post("/shopee/stop")
+async def shopee_stop() -> dict:
+    await shopee_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/shopee/creds")
+async def shopee_creds_status() -> dict:
+    return await shopee_bot.get_shopee_credentials_status()
 
 
 # ---------- Bling Enrichment ----------
@@ -764,6 +793,7 @@ async def dashboard_stats() -> DashboardStats:
     pricing_count = await db.pricing.count_documents({})
     bling = await bling_service.status()
     jd = await johndrop_bot.get_johndrop_credentials()
+    shopee_creds = await shopee_bot.get_shopee_credentials_status()
     processed = await robot_service.count_logs_today()
     success = await robot_service.count_logs_today("success")
     failed = await robot_service.count_logs_today("error")
@@ -775,6 +805,8 @@ async def dashboard_stats() -> DashboardStats:
         success_today=success,
         failed_today=failed,
         robot_state=robot_service.robot.state,
+        shopee_configured=shopee_creds.get("configured", False),
+        shopee_state=shopee_bot.shopee_robot.state,
     )
 
 

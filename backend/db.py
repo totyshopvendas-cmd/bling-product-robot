@@ -7,7 +7,7 @@ from pathlib import Path
 load_dotenv(Path(__file__).parent / '.env')
 
 mongo_url: str = os.environ['MONGO_URL']
-client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url)
+client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
 db: AsyncIOMotorDatabase = client[os.environ['DB_NAME']]
 
 

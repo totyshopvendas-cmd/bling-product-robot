@@ -84,6 +84,7 @@ class LogEntry(BaseModel):
     raw_title: Optional[str] = None
     cleaned_title: Optional[str] = None
     sale_price: Optional[int] = None
+    bot: Optional[str] = "johndrop"  # 'johndrop' | 'shopee' | None
     created_at: datetime = Field(default_factory=now_utc)
 
 
@@ -95,3 +96,5 @@ class DashboardStats(BaseModel):
     success_today: int
     failed_today: int
     robot_state: str
+    shopee_configured: bool = False
+    shopee_state: str = "idle"

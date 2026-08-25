@@ -7,6 +7,7 @@ import Dashboard from "@/pages/Dashboard";
 import TitleCleaner from "@/pages/TitleCleaner";
 import Pricing from "@/pages/Pricing";
 import Robot from "@/pages/Robot";
+import ShopeeRobot from "@/pages/ShopeeRobot";
 import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
@@ -29,6 +30,7 @@ function App() {
           <Route path="/limpeza" element={<TitleCleaner />} />
           <Route path="/precos" element={<Pricing />} />
           <Route path="/robo" element={<Robot />} />
+          <Route path="/shopee" element={<ShopeeRobot />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />

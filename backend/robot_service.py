@@ -64,9 +64,11 @@ async def clear_logs():
     await db.robot_logs.delete_many({})
 
 
-async def count_logs_today(level: Optional[str] = None) -> int:
+async def count_logs_today(level: Optional[str] = None, bot: Optional[str] = None) -> int:
     today = datetime.now(timezone.utc).date().isoformat()
     q = {"created_at": {"$gte": today}}
     if level:
         q["level"] = level
+    if bot:
+        q["bot"] = bot
     return await db.robot_logs.count_documents(q)

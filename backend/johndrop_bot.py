@@ -8,10 +8,17 @@ Designed to fail gracefully if Playwright/Chromium is not installed.
 import asyncio
 import os
 import re
+import sys
 
-# Use shared browser cache if container has one (Emergent provides /pw-browsers)
-if os.path.isdir("/pw-browsers") and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/pw-browsers"
+# Shared browser cache used by the Emergent Linux container. On Windows/macOS
+# this path is meaningless, so Playwright's own default cache is used instead.
+_CONTAINER_BROWSERS_PATH = "/pw-browsers"
+if (
+    os.name == "posix"
+    and os.path.isdir(_CONTAINER_BROWSERS_PATH)
+    and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _CONTAINER_BROWSERS_PATH
 
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -48,6 +55,43 @@ async def _get_credentials():
 _EXPECTED_VERSION_CACHE: dict = {"version": None, "checked": False}
 
 
+def browsers_path() -> str:
+    """Directory where Playwright keeps its browsers on this platform."""
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if override:
+        return override
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+        return os.path.join(local, "ms-playwright")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Caches/ms-playwright")
+    return os.path.expanduser("~/.cache/ms-playwright")
+
+
+def pw_env() -> dict:
+    """Environment for `playwright` subprocesses, preserving the platform default."""
+    return dict(os.environ)
+
+
+def _chromium_relative_paths() -> list:
+    """Binary paths inside a chromium package, relative to its version folder."""
+    if os.name == "nt":
+        return [
+            os.path.join("chrome-headless-shell-win64", "chrome-headless-shell.exe"),
+            os.path.join("chrome-win64", "chrome.exe"),
+            os.path.join("chrome-win", "chrome.exe"),
+        ]
+    if sys.platform == "darwin":
+        return [
+            os.path.join("chrome-mac", "headless_shell"),
+            os.path.join("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+        ]
+    return [
+        os.path.join("chrome-linux", "headless_shell"),
+        os.path.join("chrome-linux", "chrome"),
+    ]
+
+
 def _expected_chromium_version() -> Optional[str]:
     """Run `playwright install chromium --dry-run` and parse the version Playwright expects.
     Uses sys.executable (the SAME python the backend is running under) to avoid version
@@ -55,11 +99,10 @@ def _expected_chromium_version() -> Optional[str]:
     if _EXPECTED_VERSION_CACHE["checked"]:
         return _EXPECTED_VERSION_CACHE["version"]
     import subprocess
-    import sys
     try:
         r = subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"],
-            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+            env=pw_env(),
             capture_output=True, text=True, timeout=20,
         )
         for line in (r.stdout or "").splitlines():
@@ -75,12 +118,19 @@ def _expected_chromium_version() -> Optional[str]:
 
 
 def _expected_chromium_path() -> Optional[str]:
-    """Return the exact headless_shell path the current Playwright version expects."""
+    """Return the chromium binary path the current Playwright version expects."""
     version = _expected_chromium_version()
     if not version:
         return None
-    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers")
-    return os.path.join(base, f"chromium_headless_shell-{version}", "chrome-linux", "headless_shell")
+    base = browsers_path()
+    relatives = _chromium_relative_paths()
+    for folder in (f"chromium_headless_shell-{version}", f"chromium-{version}"):
+        for rel in relatives:
+            candidate = os.path.join(base, folder, rel)
+            if os.path.isfile(candidate):
+                return candidate
+    # Not installed yet — report the canonical location so logs stay useful.
+    return os.path.join(base, f"chromium_headless_shell-{version}", relatives[0])
 
 
 def _find_chromium_binary() -> Optional[str]:
@@ -91,16 +141,12 @@ def _find_chromium_binary() -> Optional[str]:
     if expected and os.path.isfile(expected):
         return expected
     import glob
-    base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers")
-    patterns = [
-        os.path.join(base, "chromium_headless_shell-*/chrome-linux/headless_shell"),
-        os.path.join(base, "chromium-*/chrome-linux/headless_shell"),
-        os.path.join(base, "chromium-*/chrome-linux/chrome"),
-    ]
-    for pat in patterns:
-        for m in glob.glob(pat):
-            if os.path.isfile(m):
-                return m
+    base = browsers_path()
+    for folder in ("chromium_headless_shell-*", "chromium-*"):
+        for rel in _chromium_relative_paths():
+            for m in sorted(glob.glob(os.path.join(base, folder, rel)), reverse=True):
+                if os.path.isfile(m):
+                    return m
     return None
 
 
@@ -121,7 +167,7 @@ async def _ensure_chromium_installed() -> bool:
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "playwright", "install", "chromium",
-            env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": "/pw-browsers"},
+            env=pw_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -152,7 +198,7 @@ def chromium_status() -> dict:
         "path": found,
         "expected": expected,
         "matches_expected": bool(expected) and bool(found) and (found == expected),
-        "browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/pw-browsers"),
+        "browsers_path": browsers_path(),
     }
 
 

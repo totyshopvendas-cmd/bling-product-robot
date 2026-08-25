@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import {
-  Activity, Database, KeyRound, Bot, CheckCircle2, AlertTriangle, Cog,
+  Activity, Database, KeyRound, Bot, CheckCircle2, AlertTriangle, Cog, ShoppingBag,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -55,9 +55,20 @@ export default function Dashboard() {
     error: { color: "bg-rose-100 text-rose-700", label: "ERRO" },
   }[stats.robot_state] || { color: "bg-zinc-100 text-zinc-700", label: stats.robot_state };
 
+  const shopeeMeta = {
+    idle: { color: "bg-zinc-200 text-zinc-700", label: "OCIOSO" },
+    running: { color: "bg-emerald-100 text-emerald-700", label: "RODANDO" },
+    paused: { color: "bg-amber-100 text-amber-700", label: "PAUSADO" },
+    error: { color: "bg-rose-100 text-rose-700", label: "ERRO" },
+  }[stats.shopee_state] || { color: "bg-zinc-100 text-zinc-700", label: stats.shopee_state };
+
   const robotTone =
     stats.robot_state === "running" ? "success" :
     stats.robot_state === "error" ? "danger" : "default";
+
+  const shopeeTone =
+    stats.shopee_state === "running" ? "success" :
+    stats.shopee_state === "error" ? "danger" : "default";
 
   return (
     <div className="space-y-8">
@@ -101,9 +112,30 @@ export default function Dashboard() {
           testId="stat-robot"
           icon={Bot}
           tone={robotTone}
-          label="Robô"
+          label="Robô JohnDrop"
           value={<span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-sm ${robotMeta.color}`}>{robotMeta.label}</span>}
           sub={stats.products_processed_today + " processados hoje"}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-0 border border-border bg-white">
+        <div className="border-r border-b sm:border-b lg:border-b-0 border-border">
+          <StatCard
+            testId="stat-shopee-config"
+            icon={ShoppingBag}
+            tone={stats.shopee_configured ? "success" : "danger"}
+            label="Shopee"
+            value={stats.shopee_configured ? "Configurado" : "Falta config."}
+            sub={stats.shopee_configured ? "Usa credenciais JohnDrop" : "Configure credenciais"}
+          />
+        </div>
+        <StatCard
+          testId="stat-shopee-robot"
+          icon={Bot}
+          tone={shopeeTone}
+          label="Robô Shopee"
+          value={<span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-sm ${shopeeMeta.color}`}>{shopeeMeta.label}</span>}
+          sub={stats.shopee_state === "running" ? "Em execução" : "Parado"}
         />
       </div>
 
@@ -142,6 +174,17 @@ export default function Dashboard() {
           <div className="font-display font-bold text-lg mb-1">Executar Robô</div>
           <p className="text-sm text-muted-foreground">
             Inicia o robô que limpa títulos automaticamente, busca preços na tabela e cadastra produtos no JohnDrop.
+          </p>
+        </Link>
+        <Link
+          to="/shopee"
+          data-testid="action-go-shopee"
+          className="border border-border bg-white p-6 hover:border-[#EE7B22] transition-colors"
+        >
+          <ShoppingBag className="h-5 w-5 mb-3 text-[#EE7B22]" strokeWidth={2} />
+          <div className="font-display font-bold text-lg mb-1">Executar Robô Shopee</div>
+          <p className="text-sm text-muted-foreground">
+            Cadastra produtos na integração TotyShop-Shopee, escolhendo automaticamente uma categoria genérica compatível.
           </p>
         </Link>
         <Link
