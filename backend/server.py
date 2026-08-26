@@ -12,7 +12,13 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+PROJECT_ROOT = ROOT_DIR.parent
+
+# A prévia original mantém as variáveis protegidas na raiz do projeto.  O
+# arquivo local de backend continua sendo aceito apenas para chaves ausentes;
+# variáveis injetadas pelo host e valores da raiz sempre têm prioridade.
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(ROOT_DIR / ".env", override=False)
 
 from db import db, init_indexes
 from models import (
