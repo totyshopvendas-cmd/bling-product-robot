@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const [savingBling, setSavingBling] = useState(false);
   const [testing, setTesting] = useState(false);
   const [lastError, setLastError] = useState("");
+  const [oauthUrl, setOauthUrl] = useState("");
 
   useEffect(() => {
     const blingConn = searchParams.get("bling");
@@ -86,13 +87,45 @@ export default function SettingsPage() {
     }
   };
 
+  const openOAuthTab = (url) => {
+    // Arena preview is a cross-origin iframe: it cannot navigate window.top
+    // (SecurityError) and Bling refuses to be framed. A new tab is the only
+    // path that works. Prefer a user-gesture <a target=_blank> over window.open
+    // (noopener window.open always returns null).
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   const connectBling = async () => {
     try {
       const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
       if (!data?.url) throw new Error("URL OAuth vazia");
-      // OAuth cannot run inside the Arena iframe — Bling blocks framing.
-      const target = window.top || window;
-      target.location.href = data.url;
+      setOauthUrl(data.url);
+      setLastError("");
+      openOAuthTab(data.url);
+      toast.info("O login do Bling abre em uma nova aba. Autorize e volte nesta tela.");
+      const started = Date.now();
+      const timer = setInterval(async () => {
+        try {
+          const origin = window.location.origin;
+          const res = await endpoints.blingOAuthConfig(origin);
+          if (res.data?.connected) {
+            clearInterval(timer);
+            toast.success("Bling conectado com sucesso");
+            setOauthUrl("");
+            load();
+          }
+        } catch {
+          /* keep polling */
+        }
+        if (Date.now() - started > 5 * 60 * 1000) clearInterval(timer);
+      }, 3000);
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
       toast.error("Erro ao gerar URL: " + detail);
@@ -293,13 +326,31 @@ export default function SettingsPage() {
         </div>
 
         {!cfg?.connected && (
-          <button
-            data-testid="connect-bling-btn"
-            onClick={connectBling}
-            className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] inline-flex items-center gap-2"
-          >
-            <Link2 className="h-4 w-4" /> Conectar Bling
-          </button>
+          <div className="space-y-2">
+            <button
+              data-testid="connect-bling-btn"
+              onClick={connectBling}
+              className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] inline-flex items-center gap-2"
+            >
+              <Link2 className="h-4 w-4" /> Conectar Bling
+            </button>
+            {oauthUrl && (
+              <div className="text-sm text-zinc-700">
+                Se a nova aba não abriu,{" "}
+                <a
+                  data-testid="bling-oauth-fallback-link"
+                  href={oauthUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#002FA7] underline inline-flex items-center gap-1"
+                >
+                  clique aqui para abrir o login do Bling
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+                . Depois de autorizar, volte nesta tela.
+              </div>
+            )}
+          </div>
         )}
       </div>
 
