@@ -235,9 +235,9 @@ async def bling_callback(
         return RedirectResponse(f"{app_base}{next_path}?bling=connected")
     except HTTPException as he:
         detail = he.detail if isinstance(he.detail, str) else str(he.detail)
-        return _redirect_settings(app_base, bling_error=detail[:180])
+        return _redirect_settings(app_base, bling_error=bling_service.friendly_oauth_error(detail))
     except Exception as e:
-        return _redirect_settings(app_base, bling_error=str(e)[:100])
+        return _redirect_settings(app_base, bling_error=bling_service.friendly_oauth_error(str(e)))
 
 
 @api.get("/bling/status")

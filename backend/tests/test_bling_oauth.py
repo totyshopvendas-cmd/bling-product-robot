@@ -44,6 +44,15 @@ def test_authorize_url_uses_official_v3_path():
     assert payload["redirect_uri"] == "https://app.totyshop.example/api/bling/callback"
 
 
+def test_friendly_oauth_maps_invalid_client():
+    msg = bling_service.friendly_oauth_error(
+        '{"error":{"type":"invalid_client","description":"The client credentials are invalid"}}'
+    )
+    assert "Client ID" in msg
+    assert "Client Secret" in msg
+    assert "invalid_client" not in msg.lower()
+
+
 def test_legacy_oauth_path_is_not_used():
     assert bling_service.DEFAULT_AUTHORIZE_URL.endswith("/Api/v3/oauth/authorize")
     assert "/oauth/authorize" != urlparse(bling_service.DEFAULT_AUTHORIZE_URL).path

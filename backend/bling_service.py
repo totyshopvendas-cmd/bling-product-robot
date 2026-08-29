@@ -217,11 +217,36 @@ def _bling_error_text(resp: httpx.Response) -> str:
     if isinstance(data, dict):
         err = data.get("error_description") or data.get("message") or data.get("error")
         if isinstance(err, dict):
-            err = err.get("message") or err.get("type") or json.dumps(err, ensure_ascii=False)
+            err = err.get("description") or err.get("message") or err.get("type") or json.dumps(err, ensure_ascii=False)
         if err:
             return str(err)[:400]
         return json.dumps(data, ensure_ascii=False)[:400]
     return str(data)[:400]
+
+
+def friendly_oauth_error(raw: str) -> str:
+    """Turn Bling/OAuth JSON into a short Portuguese action for the user."""
+    text = (raw or "").strip()
+    low = text.lower()
+    if "invalid_client" in low or "client credentials are invalid" in low:
+        return (
+            "Client ID ou Client Secret inválidos. No Bling: Central de Extensões → "
+            "Área do Integrador → Informações do app. Copie as duas chaves, cole em "
+            "Configurações, salve e clique Conectar de novo."
+        )
+    if "invalid_grant" in low or "authorization code" in low:
+        return (
+            "Código expirado ou o Link de redirecionamento no Bling é diferente deste painel. "
+            "Copie o link desta tela, cole no aplicativo Bling, salve e conecte de novo."
+        )
+    if "missing_code" in low:
+        return (
+            "O Bling não devolveu o código. Confira se o Link de redirecionamento "
+            "cadastrado no aplicativo é exatamente o desta tela."
+        )
+    if "state inválido" in low:
+        return "Sessão OAuth inválida — clique em Conectar Bling outra vez."
+    return text[:240]
 
 
 async def build_authorize_url(next_path: str = "/configuracoes", app_base: str = "") -> str:
@@ -278,9 +303,9 @@ async def _post_token(data: dict, client_id: str, client_secret: str) -> dict:
                 continue
             raise HTTPException(
                 status_code=400,
-                detail=f"Bling recusou o token ({resp.status_code}): {last_error}",
+                detail=friendly_oauth_error(last_error),
             )
-    raise HTTPException(status_code=400, detail=f"Bling token exchange failed: {last_error}")
+    raise HTTPException(status_code=400, detail=friendly_oauth_error(last_error))
 
 
 async def exchange_code(code: str, callback_uri: str = "") -> dict:

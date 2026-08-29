@@ -17,15 +17,18 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [savingBling, setSavingBling] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [lastError, setLastError] = useState("");
 
   useEffect(() => {
     const blingConn = searchParams.get("bling");
     const blingErr = searchParams.get("bling_error");
     if (blingConn === "connected") {
       toast.success("Bling conectado com sucesso");
+      setLastError("");
       setSearchParams({});
     } else if (blingErr) {
-      toast.error("Erro Bling: " + blingErr);
+      setLastError(blingErr);
+      toast.error(blingErr);
       setSearchParams({});
     }
   }, [searchParams, setSearchParams]);
@@ -160,6 +163,19 @@ export default function SettingsPage() {
           )}
         </div>
 
+        {lastError && (
+          <div
+            data-testid="bling-error-banner"
+            className="flex items-start gap-2 text-sm text-rose-800 bg-rose-50 border border-rose-200 rounded-sm p-3"
+          >
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold mb-1">Não foi possível conectar ao Bling</div>
+              <p>{lastError}</p>
+            </div>
+          </div>
+        )}
+
         {cfg?.issues?.length > 0 && (
           <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-sm p-3">
             <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -168,6 +184,13 @@ export default function SettingsPage() {
             </ul>
           </div>
         )}
+
+        <ol className="text-sm text-zinc-700 list-decimal pl-5 space-y-1 bg-zinc-50 border border-border rounded-sm p-4">
+          <li>No Bling, abra <strong>Central de Extensões → Área do Integrador → Informações do app</strong>.</li>
+          <li>Copie o <strong>Client ID</strong> e o <strong>Client Secret</strong> (ícone de olho) e cole nos campos abaixo. Depois clique em Salvar.</li>
+          <li>Copie o <strong>Link de redirecionamento</strong> desta tela e cole no mesmo aplicativo Bling. Salve no Bling.</li>
+          <li>Volte aqui e clique em <strong>Conectar Bling</strong>.</li>
+        </ol>
 
         {cfg?.connected && (
           <div className="space-y-2">
