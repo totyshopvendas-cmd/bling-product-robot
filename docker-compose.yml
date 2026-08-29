@@ -1,0 +1,22 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - totyshop_mongo:/data/db
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-bling_robot}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+
+volumes:
+  totyshop_mongo:

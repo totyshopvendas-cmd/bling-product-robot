@@ -5,11 +5,12 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel
+from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).parent
 PROJECT_ROOT = ROOT_DIR.parent
@@ -172,31 +173,71 @@ async def pricing_stats() -> dict:
     return await pricing_service.stats()
 
 
+def _public_base(request: Request, origin: str | None = None) -> str:
+    return bling_service.public_base_url(request, origin)
+
+
+def _redirect_settings(app_base: str, **params: str) -> RedirectResponse:
+    qs = urlencode({k: v for k, v in params.items() if v is not None})
+    target = f"{app_base}/configuracoes"
+    if qs:
+        target = f"{target}?{qs}"
+    return RedirectResponse(target)
+
+
 # ---------- Bling OAuth ----------
 @api.get("/bling/authorize-url")
-async def bling_authorize_url(next: str = "/configuracoes") -> dict:
-    return {"url": bling_service.build_authorize_url(next)}
+async def bling_authorize_url(
+    request: Request,
+    next: str = "/configuracoes",
+    origin: str | None = None,
+) -> dict:
+    base = _public_base(request, origin)
+    url = await bling_service.build_authorize_url(next_path=next, app_base=base)
+    return {"url": url, "redirect_uri": bling_service.redirect_uri(base)}
+
+
+@api.get("/bling/oauth-config")
+async def bling_oauth_config(request: Request, origin: str | None = None) -> dict:
+    return await bling_service.oauth_config(_public_base(request, origin))
 
 
 @api.get("/bling/callback")
 async def bling_callback(
-    code: str | None = None, state: str | None = None, error: str | None = None
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
 ) -> RedirectResponse:
-    app_base = os.environ["APP_BASE_URL"]
+    state_data: dict = {}
+    if state:
+        try:
+            state_data = bling_service.parse_state(state)
+        except HTTPException:
+            state_data = {}
+    app_base = (
+        (state_data.get("redirect_uri") or "").rsplit("/api/bling/callback", 1)[0]
+        or _public_base(request)
+    )
     if error:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={error}")
+        return _redirect_settings(app_base, bling_error=error)
     if not code or not state:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error=missing_code")
+        return _redirect_settings(app_base, bling_error="missing_code")
     try:
-        state_data = bling_service.parse_state(state)
-        tokens = await bling_service.exchange_code(code)
+        if not state_data:
+            state_data = bling_service.parse_state(state)
+        callback_uri = state_data.get("redirect_uri") or bling_service.redirect_uri(app_base)
+        tokens = await bling_service.exchange_code(code, callback_uri=callback_uri)
         await bling_service.save_tokens(tokens)
-        next_path = state_data.get("next", "/configuracoes")
+        next_path = state_data.get("next") or "/configuracoes"
+        if not str(next_path).startswith("/"):
+            next_path = "/configuracoes"
         return RedirectResponse(f"{app_base}{next_path}?bling=connected")
     except HTTPException as he:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={he.detail}")
+        detail = he.detail if isinstance(he.detail, str) else str(he.detail)
+        return _redirect_settings(app_base, bling_error=detail[:180])
     except Exception as e:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={str(e)[:100]}")
+        return _redirect_settings(app_base, bling_error=str(e)[:100])
 
 
 @api.get("/bling/status")
@@ -204,10 +245,25 @@ async def bling_status() -> dict:
     return await bling_service.status()
 
 
+@api.get("/bling/ping")
+async def bling_ping() -> dict:
+    return await bling_service.ping()
+
+
 @api.post("/bling/disconnect")
 async def bling_disconnect_ep() -> dict:
     await bling_service.disconnect()
     return {"ok": True}
+
+
+class BlingAppCreds(BaseModel):
+    client_id: str
+    client_secret: str = ""
+
+
+@api.post("/settings/bling-app")
+async def set_bling_app_creds(creds: BlingAppCreds) -> dict:
+    return await bling_service.save_bling_app_creds(creds.client_id, creds.client_secret)
 
 
 @api.get("/bling/products")
@@ -835,3 +891,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+try:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+except Exception:
+    pass
+
+FRONTEND_BUILD = Path(os.environ.get("FRONTEND_BUILD") or (PROJECT_ROOT / "frontend" / "build"))
+
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """Serve the React build so the app runs on a single public URL (no Emergent)."""
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "Not Found")
+    if not FRONTEND_BUILD.exists():
+        raise HTTPException(404, "frontend não compilado")
+    candidate = (FRONTEND_BUILD / full_path).resolve()
+    build_root = FRONTEND_BUILD.resolve()
+    if str(candidate).startswith(str(build_root)) and candidate.is_file():
+        return FileResponse(candidate)
+    index = FRONTEND_BUILD / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    raise HTTPException(404, "frontend não compilado")

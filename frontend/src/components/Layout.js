@@ -65,7 +65,7 @@ export default function Layout({ children }) {
       >
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
           <img
-            src="https://customer-assets.emergentagent.com/job_bling-product-robot/artifacts/r2hhfsdn_TotyShop%20%201080x1080.jpg"
+            src="/logo.svg"
             alt="TotyShop"
             className="h-11 w-11 rounded-sm object-cover"
             data-testid="brand-logo"
