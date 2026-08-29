@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from urllib.parse import urlencode
@@ -884,10 +886,23 @@ api.include_router(image_proxy_router)
 api.include_router(diag_router)
 app.include_router(api)
 
+class _AllowIframe(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        # Do not send X-Frame-Options: ALLOWALL — it is invalid and some
+        # browsers treat it as DENY. CSP frame-ancestors is the allowlist.
+        response.headers["Content-Security-Policy"] = "frame-ancestors *"
+        if "x-frame-options" in response.headers:
+            del response.headers["x-frame-options"]
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+
+app.add_middleware(_AllowIframe)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -900,6 +915,29 @@ except Exception:
     pass
 
 FRONTEND_BUILD = Path(os.environ.get("FRONTEND_BUILD") or (PROJECT_ROOT / "frontend" / "build"))
+_STATIC_DIR = FRONTEND_BUILD / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="frontend-static")
+
+
+def _index_html() -> FileResponse:
+    index = FRONTEND_BUILD / "index.html"
+    if not index.exists():
+        raise HTTPException(404, "frontend não compilado")
+    return FileResponse(
+        index,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "frame-ancestors *",
+            "X-Frame-Options": "ALLOWALL",
+        },
+    )
+
+
+@app.get("/")
+async def spa_root():
+    return _index_html()
 
 
 @app.get("/{full_path:path}")
@@ -913,7 +951,4 @@ async def spa_fallback(full_path: str):
     build_root = FRONTEND_BUILD.resolve()
     if str(candidate).startswith(str(build_root)) and candidate.is_file():
         return FileResponse(candidate)
-    index = FRONTEND_BUILD / "index.html"
-    if index.exists():
-        return FileResponse(index)
-    raise HTTPException(404, "frontend não compilado")
+    return _index_html()

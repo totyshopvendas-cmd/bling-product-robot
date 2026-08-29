@@ -90,7 +90,9 @@ export default function SettingsPage() {
     try {
       const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
       if (!data?.url) throw new Error("URL OAuth vazia");
-      window.location.href = data.url;
+      // OAuth cannot run inside the Arena iframe — Bling blocks framing.
+      const target = window.top || window;
+      target.location.href = data.url;
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
       toast.error("Erro ao gerar URL: " + detail);
