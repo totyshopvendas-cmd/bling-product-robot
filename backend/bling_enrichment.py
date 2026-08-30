@@ -497,9 +497,10 @@ async def pick_or_create_category(raw_title: str, raw_description: str) -> Optio
     return None
 
 
-async def find_bling_product_by_sku(sku: str) -> Optional[dict]:
+async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None) -> Optional[dict]:
     """Find a Bling product by codigo (SKU). Retries to wait for JohnDrop→Bling sync."""
-    for attempt in range(FIND_PRODUCT_MAX_ATTEMPTS):
+    attempts = FIND_PRODUCT_MAX_ATTEMPTS if max_attempts is None else max(1, int(max_attempts))
+    for attempt in range(attempts):
         resp = await bling_service.bling_request("GET", "/produtos", params={"codigo": sku, "limite": 5})
         if resp.status_code < 400:
             body = resp.json()
@@ -775,6 +776,7 @@ async def enrich_product_by_sku(
     johndrop_id: Optional[str] = None,
     cost: Optional[float] = None,
     images: Optional[list] = None,
+    wait_for_product: bool = True,
 ) -> dict:
     """Main enrichment flow. Idempotent — finds product, enriches it, logs result."""
     sku = (sku or "").strip()
@@ -829,7 +831,9 @@ async def enrich_product_by_sku(
     await add_log("info", f"Bling: iniciando enriquecimento para SKU {sku}")
 
     try:
-        product = await find_bling_product_by_sku(sku)
+        product = await find_bling_product_by_sku(
+            sku, max_attempts=FIND_PRODUCT_MAX_ATTEMPTS if wait_for_product else 2,
+        )
     except Exception as e:
         await add_log("error", f"Bling: erro ao buscar produto {sku}: {e}")
         await _save_log(sku, "error", f"busca falhou: {e}")
@@ -847,7 +851,10 @@ async def enrich_product_by_sku(
     _track(sku, "waiting_sync", product_id=product_id)
 
     # Wait for JohnDrop async sync to bring in stock + images.
-    full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
+    if wait_for_product:
+        full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
+    else:
+        full_after_sync = await _fetch_bling_product_full(product_id) or product
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
     bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]

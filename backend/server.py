@@ -126,6 +126,34 @@ async def system_chromium_status() -> dict:
     return johndrop_bot.chromium_status()
 
 
+@api.get("/system/ready")
+async def system_ready() -> dict:
+    """What the robot actually needs before it can cadastre."""
+    jd = await johndrop_bot.get_johndrop_credentials()
+    bling = await bling_service.status()
+    try:
+        pricing_rows = await db.pricing.count_documents({})
+    except Exception:
+        pricing_rows = 0
+    cr = johndrop_bot.chromium_status()
+    johndrop_ok = bool(jd and jd.get("username"))
+    bling_ok = bool(bling.get("connected"))
+    chromium_ok = bool(cr.get("installed"))
+    table_ok = pricing_rows > 0
+    return {
+        "johndrop": johndrop_ok,
+        "johndrop_username": (jd or {}).get("username") or "",
+        "bling": bling_ok,
+        "pricing_rows": pricing_rows,
+        "chromium": chromium_ok,
+        "chromium_path": cr.get("path") or "",
+        "can_test": johndrop_ok,
+        "can_cadastre": johndrop_ok and table_ok and chromium_ok,
+        "can_enrich": bling_ok,
+        "can_stock": johndrop_ok and bling_ok and chromium_ok,
+    }
+
+
 @api.post("/system/install-chromium")
 async def system_install_chromium() -> dict:
     """Trigger a background Chromium install. Idempotent — returns immediately."""
@@ -404,6 +432,16 @@ async def get_johndrop_creds_status() -> dict:
 async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
     if robot_service.robot.state == "running":
         raise HTTPException(400, "Robô já está em execução")
+    creds = await johndrop_bot.get_johndrop_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    if not cfg.dry_run:
+        cr = johndrop_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium nesta tela.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
     await johndrop_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
     return RobotStatusResponse(**robot_service.robot.to_dict())
 
@@ -471,9 +509,13 @@ class EnrichRequest(BaseModel):
 @api.post("/bling/enrich")
 async def bling_enrich_endpoint(payload: EnrichRequest) -> dict:
     """Manually trigger enrichment for a SKU."""
+    st = await bling_service.status()
+    if not st.get("connected"):
+        raise HTTPException(400, "Conecte o Bling em Configurações antes de enriquecer")
     return await bling_enrichment.enrich_product_by_sku(
         payload.sku, payload.raw_title, payload.raw_description,
         johndrop_id=payload.johndrop_id, cost=payload.cost, images=payload.images,
+        wait_for_product=False,
     )
 
 
@@ -665,6 +707,12 @@ async def stock_sync_run() -> dict:
     Returns immediately; consult /stock-sync/status for progress."""
     if _STOCK_SYNC_STATE["running"]:
         return {"ok": False, "running": True, "message": "Sync já em execução"}
+    jd = await johndrop_bot.get_johndrop_credentials()
+    if not jd or not jd.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    st = await bling_service.status()
+    if not st.get("connected"):
+        raise HTTPException(400, "Conecte o Bling em Configurações antes de sincronizar estoque")
     import asyncio as _aio
     _STOCK_SYNC_STATE["running"] = True
     _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()

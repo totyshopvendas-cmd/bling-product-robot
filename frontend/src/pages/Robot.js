@@ -28,18 +28,33 @@ export default function RobotPage() {
   const [chromium, setChromium] = useState(null);
   const [installing, setInstalling] = useState(false);
 
+  const [ready, setReady] = useState(null);
+
   const tick = useCallback(async () => {
     try {
-      const [{ data: s }, { data: l }, { data: c }] = await Promise.all([
-        endpoints.robotStatus(),
-        endpoints.robotLogs(50),
-        api.get("/system/chromium-status"),
-      ]);
+      const { data: s } = await endpoints.robotStatus();
       setStatus(s);
+    } catch (err) {
+      logger.error("robot status:", err);
+    }
+    try {
+      const { data: l } = await endpoints.robotLogs(50);
       setLogs(l);
+    } catch (err) {
+      logger.error("robot logs:", err);
+    }
+    try {
+      const { data: c } = await api.get("/system/chromium-status");
       setChromium(c);
     } catch (err) {
-      logger.error("Failed to fetch robot status/logs:", err);
+      logger.error("chromium status:", err);
+      setChromium((prev) => prev || { installed: false });
+    }
+    try {
+      const { data: r } = await api.get("/system/ready");
+      setReady(r);
+    } catch (err) {
+      logger.error("system ready:", err);
     }
   }, []);
 
@@ -122,6 +137,19 @@ export default function RobotPage() {
         </p>
       </div>
 
+<<<<<<< HEAD
+=======
+      {ready && (
+        <div className="border border-border bg-white p-4 text-sm space-y-1">
+          <div className="label-overline mb-2">Antes de cadastrar de verdade</div>
+          <p>{ready.johndrop ? "✓" : "✗"} JohnDrop (e-mail/senha em Configurações)</p>
+          <p>{ready.pricing_rows > 0 ? "✓" : "✗"} Tabela de preços ({ready.pricing_rows.toLocaleString("pt-BR")} linhas)</p>
+          <p>{ready.chromium ? "✓" : "✗"} Chromium do robô</p>
+          <p>{ready.bling ? "✓" : "✗"} Bling conectado (enriquecimento e estoque)</p>
+        </div>
+      )}
+
+>>>>>>> 5b97acb (fix: mostrar o que falta antes do robô, enriquecimento e estoque)
       {chromium && (
         <div
           data-testid="chromium-status-banner"
