@@ -122,50 +122,33 @@ export default function RobotPage() {
         </p>
       </div>
 
-      {/* Chromium status banner */}
+      {/* Chromium is the server's headless browser — it never opens a window on the user's PC. */}
       {chromium && (
         <div
           data-testid="chromium-status-banner"
-          className={`border p-4 flex items-center justify-between gap-4 ${
+          className={`border p-4 ${
             chromiumReady
               ? "bg-emerald-50 border-emerald-300 text-emerald-900"
-              : "bg-rose-50 border-rose-300 text-rose-900"
+              : "bg-amber-50 border-amber-300 text-amber-950"
           }`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3">
             {chromiumReady ? (
-              <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
-            ) : installing ? (
-              <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
+              <CheckCircle2 className="h-5 w-5 flex-shrink-0 mt-0.5" />
             ) : (
-              <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+              <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
             )}
-            <div className="text-sm">
+            <div className="text-sm space-y-1">
               <div className="font-semibold">
-                {chromiumReady
-                  ? "Chromium pronto"
-                  : installing
-                  ? "Instalando Chromium…"
-                  : "Chromium não instalado"}
+                {chromiumReady ? "Chromium do servidor pronto" : "Chromium do servidor indisponível nesta prévia"}
               </div>
-              <div className="text-xs opacity-80 font-mono">
+              <p className="text-xs leading-relaxed">
                 {chromiumReady
                   ? chromium.path
-                  : "Sem Chromium, o robô cai em modo MOCKED (não cadastra)."}
-              </div>
+                  : "Isso NÃO abre janela no seu computador. É o navegador invisível do robô no servidor. Nesta prévia da Arena o download é bloqueado — o robô fica em modo teste. O login do Bling não usa Chromium."}
+              </p>
             </div>
           </div>
-          {!chromiumReady && (
-            <button
-              data-testid="install-chromium-btn"
-              onClick={installChromium}
-              disabled={installing}
-              className="text-sm font-medium px-4 py-2 rounded-sm bg-rose-700 text-white hover:bg-rose-800 disabled:opacity-60 inline-flex items-center gap-2"
-            >
-              <Download className="h-4 w-4" />
-              {installing ? "Instalando…" : "Instalar Chromium"}
-            </button>
-          )}
         </div>
       )}
 

@@ -1,12 +1,15 @@
 """FastAPI server for TotyShop Automation."""
+import html as html_module
+import json
 import os
+import secrets
 from typing import Optional
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -187,6 +190,82 @@ def _redirect_settings(app_base: str, **params: str) -> RedirectResponse:
     return RedirectResponse(target)
 
 
+# Short-lived tickets so the user can paste a small URL in a real Chrome tab.
+# The Arena preview iframe cannot open pop-ups or navigate the parent window.
+_OAUTH_TICKETS: dict[str, dict] = {}
+_OAUTH_TICKET_TTL = timedelta(minutes=15)
+
+
+def _purge_oauth_tickets() -> None:
+    cutoff = datetime.now(timezone.utc) - _OAUTH_TICKET_TTL
+    dead = [k for k, v in _OAUTH_TICKETS.items() if v.get("created_at", cutoff) < cutoff]
+    for k in dead:
+        _OAUTH_TICKETS.pop(k, None)
+
+
+def _conectar_bling_html(authorize_url: str, copy_url: str, expired: bool = False) -> str:
+    auth_js = json.dumps(authorize_url or "")
+    copy_esc = html_module.escape(copy_url or "")
+    title = "Link expirado" if expired else "Conectar Bling"
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{title} — TotyShop</title>
+<style>
+  body {{ margin:0; font-family: system-ui, sans-serif; background:#FFF7ED; color:#1c1917; }}
+  .box {{ max-width:640px; margin:48px auto; background:#fff; border:1px solid #FDBA74; border-radius:8px; padding:28px; }}
+  h1 {{ margin:0 0 12px; color:#C2410C; font-size:22px; }}
+  p {{ line-height:1.45; }}
+  code {{ display:block; word-break:break-all; background:#FFF7ED; padding:12px; border:1px solid #FDBA74; margin:12px 0; }}
+  button {{ background:#EA580C; color:#fff; border:0; padding:12px 18px; font-size:16px; cursor:pointer; border-radius:4px; }}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1 id="title">{'Este link expirou' if expired else 'Abrindo o login do Bling…'}</h1>
+  <p id="help">{'Volte no TotyShop, clique em Conectar Bling e copie o novo endereço.' if expired else 'Se esta página não redirecionar, copie o endereço abaixo e cole numa nova guia do Chrome (o + no topo).'}</p>
+  <code id="url">{copy_esc}</code>
+  <button type="button" id="go">{'Voltar' if expired else 'Copiar endereço'}</button>
+</div>
+<script>
+const AUTH = {auth_js};
+const EXPIRED = {json.dumps(expired)};
+const inIframe = window.top !== window.self;
+const urlEl = document.getElementById('url');
+const go = document.getElementById('go');
+function copyUrl() {{
+  const text = urlEl.textContent || '';
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text);
+  }} else {{
+    const r = document.createRange(); r.selectNodeContents(urlEl);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    try {{ document.execCommand('copy'); }} catch (e) {{}}
+  }}
+}}
+if (!EXPIRED && !inIframe && AUTH) {{
+  window.location.replace(AUTH);
+}} else if (!EXPIRED && inIframe) {{
+  document.getElementById('title').textContent = 'A Arena não abre o Bling neste quadro';
+  document.getElementById('help').textContent = 'Clique no + no topo do Chrome (Nova guia), cole este endereço e aperte Enter:';
+}}
+go.addEventListener('click', function () {{
+  if (EXPIRED) {{ history.back(); return; }}
+  copyUrl();
+  go.textContent = 'Copiado — cole na nova guia';
+}});
+urlEl.addEventListener('click', function () {{
+  const r = document.createRange(); r.selectNodeContents(urlEl);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  copyUrl();
+}});
+</script>
+</body>
+</html>"""
+
+
 # ---------- Bling OAuth ----------
 @api.get("/bling/authorize-url")
 async def bling_authorize_url(
@@ -196,7 +275,15 @@ async def bling_authorize_url(
 ) -> dict:
     base = _public_base(request, origin)
     url = await bling_service.build_authorize_url(next_path=next, app_base=base)
-    return {"url": url, "redirect_uri": bling_service.redirect_uri(base)}
+    _purge_oauth_tickets()
+    ticket = secrets.token_urlsafe(8)
+    _OAUTH_TICKETS[ticket] = {"url": url, "created_at": datetime.now(timezone.utc)}
+    open_url = f"{base}/conectar-bling/{ticket}"
+    return {
+        "url": url,
+        "open_url": open_url,
+        "redirect_uri": bling_service.redirect_uri(base),
+    }
 
 
 @api.get("/bling/oauth-config")
@@ -933,6 +1020,24 @@ def _index_html() -> FileResponse:
             "X-Frame-Options": "ALLOWALL",
         },
     )
+
+
+@app.get("/conectar-bling/{ticket}")
+async def conectar_bling_launch(request: Request, ticket: str):
+    """Landing page for OAuth. Auto-redirects only outside the Arena iframe."""
+    rec = _OAUTH_TICKETS.get(ticket)
+    copy_url = str(request.base_url).rstrip("/") + f"/conectar-bling/{ticket}"
+    origin = request.headers.get("x-forwarded-proto")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if origin and host:
+        copy_url = f"{origin.split(',')[0].strip()}://{host.split(',')[0].strip()}/conectar-bling/{ticket}"
+    if not rec:
+        return HTMLResponse(_conectar_bling_html("", copy_url, expired=True), status_code=404)
+    created = rec.get("created_at")
+    if created and datetime.now(timezone.utc) - created > _OAUTH_TICKET_TTL:
+        _OAUTH_TICKETS.pop(ticket, None)
+        return HTMLResponse(_conectar_bling_html("", copy_url, expired=True), status_code=410)
+    return HTMLResponse(_conectar_bling_html(rec["url"], copy_url))
 
 
 @app.get("/")

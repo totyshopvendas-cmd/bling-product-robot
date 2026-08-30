@@ -19,6 +19,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [lastError, setLastError] = useState("");
   const [oauthUrl, setOauthUrl] = useState("");
+  const [openUrl, setOpenUrl] = useState("");
 
   useEffect(() => {
     const blingConn = searchParams.get("bling");
@@ -112,12 +113,13 @@ export default function SettingsPage() {
     const timer = setInterval(async () => {
       try {
         const res = await endpoints.blingOAuthConfig(window.location.origin);
-        if (res.data?.connected) {
-          clearInterval(timer);
-          toast.success("Bling conectado com sucesso");
-          setOauthUrl("");
-          load();
-        }
+          if (res.data?.connected) {
+            clearInterval(timer);
+            toast.success("Bling conectado com sucesso");
+            setOauthUrl("");
+            setOpenUrl("");
+            load();
+          }
       } catch {
         /* keep polling */
       }
@@ -128,10 +130,12 @@ export default function SettingsPage() {
   const connectBling = async () => {
     try {
       const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
-      if (!data?.url) throw new Error("URL OAuth vazia");
-      setOauthUrl(data.url);
+      const shortUrl = data?.open_url || data?.url;
+      if (!shortUrl) throw new Error("URL OAuth vazia");
+      setOpenUrl(shortUrl);
+      setOauthUrl(data.url || shortUrl);
       setLastError("");
-      await copyText(data.url, "Link de login copiado — cole numa nova guia do Chrome");
+      await copyText(shortUrl, "Endereço copiado. Cole numa nova guia do Chrome (o + no topo).");
       startOAuthPoll();
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
@@ -228,9 +232,9 @@ export default function SettingsPage() {
         )}
 
         <ol className="text-sm text-zinc-700 list-decimal pl-5 space-y-1 bg-zinc-50 border border-border rounded-sm p-4">
-          <li>No Bling, menu esquerdo → <strong>Dados básicos</strong> (acima de Informações do app). Cole o <strong>Link de redirecionamento</strong> desta tela e salve.</li>
-          <li>Volte aqui e clique em <strong>Conectar Bling</strong>.</li>
-          <li>O Chrome <strong>não abre aba dentro deste quadro</strong>. Clique no <strong>+</strong> no topo do Chrome (nova guia), cole o link de login e autorize.</li>
+          <li>No Bling, menu esquerdo → <strong>Dados básicos</strong>. Cole o <strong>Link de redirecionamento</strong> desta tela e salve.</li>
+          <li>Clique em <strong>Gerar link de login</strong> — a Arena <strong>não abre aba sozinha</strong>.</li>
+          <li>No topo do Chrome clique no <strong>+</strong> (Nova guia), cole o endereço laranja e aperte Enter. Autorize no Bling e volte aqui.</li>
         </ol>
 
         {cfg?.connected && (
