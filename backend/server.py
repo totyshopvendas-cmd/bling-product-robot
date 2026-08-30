@@ -1023,21 +1023,33 @@ def _index_html() -> FileResponse:
 
 
 @app.get("/conectar-bling/{ticket}")
-async def conectar_bling_launch(request: Request, ticket: str):
-    """Landing page for OAuth. Auto-redirects only outside the Arena iframe."""
+async def conectar_bling_launch(request: Request, ticket: str, dl: int = 0):
+    """Landing page for OAuth. Auto-redirects only outside the Arena iframe.
+    ``dl=1`` sends the page as a file so Chrome's download bar can open it."""
     rec = _OAUTH_TICKETS.get(ticket)
     copy_url = str(request.base_url).rstrip("/") + f"/conectar-bling/{ticket}"
     origin = request.headers.get("x-forwarded-proto")
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     if origin and host:
         copy_url = f"{origin.split(',')[0].strip()}://{host.split(',')[0].strip()}/conectar-bling/{ticket}"
+    headers = {}
+    if dl:
+        headers["Content-Disposition"] = 'attachment; filename="conectar-bling.html"'
     if not rec:
-        return HTMLResponse(_conectar_bling_html("", copy_url, expired=True), status_code=404)
+        return HTMLResponse(
+            _conectar_bling_html("", copy_url, expired=True),
+            status_code=404,
+            headers=headers,
+        )
     created = rec.get("created_at")
     if created and datetime.now(timezone.utc) - created > _OAUTH_TICKET_TTL:
         _OAUTH_TICKETS.pop(ticket, None)
-        return HTMLResponse(_conectar_bling_html("", copy_url, expired=True), status_code=410)
-    return HTMLResponse(_conectar_bling_html(rec["url"], copy_url))
+        return HTMLResponse(
+            _conectar_bling_html("", copy_url, expired=True),
+            status_code=410,
+            headers=headers,
+        )
+    return HTMLResponse(_conectar_bling_html(rec["url"], copy_url), headers=headers)
 
 
 @app.get("/")

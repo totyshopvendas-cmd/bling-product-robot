@@ -53,7 +53,35 @@ export default function SettingsPage() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const prepareOAuth = useCallback(async () => {
+    try {
+      const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
+      const shortUrl = data?.open_url || data?.url;
+      if (!shortUrl) return null;
+      setOpenUrl(shortUrl);
+      setOauthUrl(data.url || shortUrl);
+      return { shortUrl, authUrl: data.url || shortUrl };
+    } catch (err) {
+      logger.error("oauth prepare:", err);
+      return null;
+    }
+  }, []);
+
+  useEffect(() => { load(); prepareOAuth(); }, [load, prepareOAuth]);
+
+  const downloadLoginFile = (authUrl) => {
+    if (!authUrl) return;
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Login Bling</title>
+<script>location.replace(${JSON.stringify(authUrl)});</script>
+</head><body><p><a href=${JSON.stringify(authUrl)}>Abrir login do Bling</a></p></body></html>`;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "conectar-bling.html";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 
   const copyText = async (text, okMsg) => {
     if (!text) return false;
@@ -129,13 +157,25 @@ export default function SettingsPage() {
 
   const connectBling = async () => {
     try {
-      const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
-      const shortUrl = data?.open_url || data?.url;
-      if (!shortUrl) throw new Error("URL OAuth vazia");
-      setOpenUrl(shortUrl);
-      setOauthUrl(data.url || shortUrl);
       setLastError("");
-      await copyText(shortUrl, "Endereço copiado. Cole numa nova guia do Chrome (o + no topo).");
+      if (oauthUrl) {
+        downloadLoginFile(oauthUrl);
+        copyText(
+          openUrl || oauthUrl,
+          "Olhe embaixo do Chrome: clique em conectar-bling.html. Ou cole o endereço numa nova guia (+).",
+        );
+        startOAuthPoll();
+        return;
+      }
+      const prepared = await prepareOAuth();
+      const authUrl = prepared?.authUrl || "";
+      const shortUrl = prepared?.shortUrl || "";
+      if (!authUrl) throw new Error("URL OAuth vazia");
+      downloadLoginFile(authUrl);
+      await copyText(
+        shortUrl,
+        "Olhe embaixo do Chrome: clique em conectar-bling.html. Ou cole o endereço numa nova guia (+).",
+      );
       startOAuthPoll();
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
@@ -336,28 +376,57 @@ export default function SettingsPage() {
         </div>
 
         {!cfg?.connected && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <button
               data-testid="connect-bling-btn"
               onClick={connectBling}
               className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] inline-flex items-center gap-2"
             >
-              <Link2 className="h-4 w-4" /> Conectar Bling
+              <Link2 className="h-4 w-4" /> Baixar login do Bling
             </button>
-            {oauthUrl && (
-              <div className="text-sm text-zinc-700">
-                Se a nova aba não abriu,{" "}
-                <a
-                  data-testid="bling-oauth-fallback-link"
-                  href={oauthUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[#002FA7] underline inline-flex items-center gap-1"
-                >
-                  clique aqui para abrir o login do Bling
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-                . Depois de autorizar, volte nesta tela.
+            {openUrl && (
+              <div
+                data-testid="bling-oauth-fallback"
+                className="border-2 border-[#EE7B22] bg-amber-50 rounded-sm p-4 space-y-3"
+              >
+                <div className="font-semibold text-amber-950">
+                  A Arena não abre aba. Use o arquivo baixado ou cole este endereço:
+                </div>
+                <ol className="text-sm text-zinc-800 list-decimal pl-5 space-y-1">
+                  <li>Embaixo do Chrome, clique em <strong>conectar-bling.html</strong>.</li>
+                  <li>Ou clique no <strong>+</strong> no topo do Chrome, cole (Ctrl+V) e Enter.</li>
+                  <li>Autorize no Bling e volte nesta tela.</li>
+                </ol>
+                <input
+                  data-testid="bling-oauth-url"
+                  readOnly
+                  value={openUrl}
+                  onClick={(e) => {
+                    e.currentTarget.select();
+                    copyText(openUrl, "Endereço copiado");
+                  }}
+                  className="w-full text-sm font-mono bg-white border-2 border-[#EE7B22] rounded-sm px-3 py-3"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    data-testid="copy-oauth-url-btn"
+                    onClick={() => copyText(openUrl, "Endereço copiado")}
+                    className="text-sm bg-[#EE7B22] text-white px-4 py-2 rounded-sm hover:bg-[#C9651A] inline-flex items-center gap-2"
+                  >
+                    <Copy className="h-4 w-4" /> Copiar endereço
+                  </button>
+                  {openUrl && (
+                    <a
+                      data-testid="bling-oauth-download-link"
+                      href={`${openUrl}${openUrl.includes("?") ? "&" : "?"}dl=1`}
+                      download="conectar-bling.html"
+                      className="text-sm border border-border bg-white px-4 py-2 rounded-sm hover:bg-zinc-50 inline-flex items-center gap-2"
+                    >
+                      Baixar de novo
+                    </a>
+                  )}
+                </div>
               </div>
             )}
           </div>

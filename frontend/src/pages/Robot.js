@@ -122,11 +122,10 @@ export default function RobotPage() {
         </p>
       </div>
 
-      {/* Chromium is the server's headless browser — it never opens a window on the user's PC. */}
       {chromium && (
         <div
           data-testid="chromium-status-banner"
-          className={`border p-4 ${
+          className={`border p-4 flex items-start justify-between gap-4 ${
             chromiumReady
               ? "bg-emerald-50 border-emerald-300 text-emerald-900"
               : "bg-amber-50 border-amber-300 text-amber-950"
@@ -135,20 +134,37 @@ export default function RobotPage() {
           <div className="flex items-start gap-3">
             {chromiumReady ? (
               <CheckCircle2 className="h-5 w-5 flex-shrink-0 mt-0.5" />
+            ) : installing ? (
+              <Loader2 className="h-5 w-5 flex-shrink-0 mt-0.5 animate-spin" />
             ) : (
               <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
             )}
             <div className="text-sm space-y-1">
               <div className="font-semibold">
-                {chromiumReady ? "Chromium do servidor pronto" : "Chromium do servidor indisponível nesta prévia"}
+                {chromiumReady
+                  ? "Chromium do servidor pronto"
+                  : installing
+                  ? "Instalando Chromium no servidor…"
+                  : "Chromium do servidor não instalado"}
               </div>
               <p className="text-xs leading-relaxed">
                 {chromiumReady
                   ? chromium.path
-                  : "Isso NÃO abre janela no seu computador. É o navegador invisível do robô no servidor. Nesta prévia da Arena o download é bloqueado — o robô fica em modo teste. O login do Bling não usa Chromium."}
+                  : "Necessário para o modo REAL do robô JohnDrop. Roda invisível no servidor — não abre janela no seu PC. O login do Bling é outra tela (Configurações) e não usa Chromium."}
               </p>
             </div>
           </div>
+          {!chromiumReady && (
+            <button
+              data-testid="install-chromium-btn"
+              onClick={installChromium}
+              disabled={installing}
+              className="text-sm font-medium px-4 py-2 rounded-sm bg-[#EE7B22] text-white hover:bg-[#C9651A] disabled:opacity-60 inline-flex items-center gap-2 shrink-0"
+            >
+              <Download className="h-4 w-4" />
+              {installing ? "Instalando…" : "Instalar Chromium"}
+            </button>
+          )}
         </div>
       )}
 
