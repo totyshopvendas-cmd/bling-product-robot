@@ -54,14 +54,34 @@ export default function SettingsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const copyUri = async () => {
-    if (!cfg?.redirect_uri) return;
+  const copyText = async (text, okMsg) => {
+    if (!text) return false;
     try {
-      await navigator.clipboard.writeText(cfg.redirect_uri);
-      toast.success("Link de redirecionamento copiado");
+      await navigator.clipboard.writeText(text);
+      toast.success(okMsg);
+      return true;
     } catch {
-      toast.error("Não foi possível copiar — selecione o texto manualmente");
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        toast.success(okMsg);
+        return true;
+      } catch {
+        toast.error("Selecione o texto e copie com Ctrl+C");
+        return false;
+      }
     }
+  };
+
+  const copyUri = async () => {
+    await copyText(cfg?.redirect_uri, "Link de redirecionamento copiado");
   };
 
   const saveBlingApp = async (e) => {
@@ -87,19 +107,22 @@ export default function SettingsPage() {
     }
   };
 
-  const openOAuthTab = (url) => {
-    // Arena preview is a cross-origin iframe: it cannot navigate window.top
-    // (SecurityError) and Bling refuses to be framed. A new tab is the only
-    // path that works. Prefer a user-gesture <a target=_blank> over window.open
-    // (noopener window.open always returns null).
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  const startOAuthPoll = () => {
+    const started = Date.now();
+    const timer = setInterval(async () => {
+      try {
+        const res = await endpoints.blingOAuthConfig(window.location.origin);
+        if (res.data?.connected) {
+          clearInterval(timer);
+          toast.success("Bling conectado com sucesso");
+          setOauthUrl("");
+          load();
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (Date.now() - started > 5 * 60 * 1000) clearInterval(timer);
+    }, 3000);
   };
 
   const connectBling = async () => {
@@ -108,24 +131,8 @@ export default function SettingsPage() {
       if (!data?.url) throw new Error("URL OAuth vazia");
       setOauthUrl(data.url);
       setLastError("");
-      openOAuthTab(data.url);
-      toast.info("O login do Bling abre em uma nova aba. Autorize e volte nesta tela.");
-      const started = Date.now();
-      const timer = setInterval(async () => {
-        try {
-          const origin = window.location.origin;
-          const res = await endpoints.blingOAuthConfig(origin);
-          if (res.data?.connected) {
-            clearInterval(timer);
-            toast.success("Bling conectado com sucesso");
-            setOauthUrl("");
-            load();
-          }
-        } catch {
-          /* keep polling */
-        }
-        if (Date.now() - started > 5 * 60 * 1000) clearInterval(timer);
-      }, 3000);
+      await copyText(data.url, "Link de login copiado — cole numa nova guia do Chrome");
+      startOAuthPoll();
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
       toast.error("Erro ao gerar URL: " + detail);
@@ -221,10 +228,9 @@ export default function SettingsPage() {
         )}
 
         <ol className="text-sm text-zinc-700 list-decimal pl-5 space-y-1 bg-zinc-50 border border-border rounded-sm p-4">
-          <li>No Bling, abra <strong>Central de Extensões → Área do Integrador → Informações do app</strong>.</li>
-          <li>Copie o <strong>Client ID</strong> e o <strong>Client Secret</strong> (ícone de olho) e cole nos campos abaixo. Depois clique em Salvar.</li>
-          <li>Copie o <strong>Link de redirecionamento</strong> desta tela e cole no mesmo aplicativo Bling. Salve no Bling.</li>
+          <li>No Bling, menu esquerdo → <strong>Dados básicos</strong> (acima de Informações do app). Cole o <strong>Link de redirecionamento</strong> desta tela e salve.</li>
           <li>Volte aqui e clique em <strong>Conectar Bling</strong>.</li>
+          <li>O Chrome <strong>não abre aba dentro deste quadro</strong>. Clique no <strong>+</strong> no topo do Chrome (nova guia), cole o link de login e autorize.</li>
         </ol>
 
         {cfg?.connected && (

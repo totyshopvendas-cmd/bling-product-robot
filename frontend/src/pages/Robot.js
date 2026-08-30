@@ -56,18 +56,23 @@ export default function RobotPage() {
       if (data.already_installed) {
         toast.success("Chromium já está pronto");
       } else {
-        toast.message("Instalação iniciada — aguarde 30-60s");
+        toast.message("Tentando baixar o Chromium no servidor…");
       }
-      // Poll until installed
       const startTs = Date.now();
       const poll = setInterval(async () => {
         try {
           const { data: c } = await api.get("/system/chromium-status");
           setChromium(c);
-          if (c.installed || Date.now() - startTs > 180000) {
+          if (c.installed) {
             clearInterval(poll);
             setInstalling(false);
-            if (c.installed) toast.success("Chromium instalado!");
+            toast.success("Chromium instalado!");
+            return;
+          }
+          if (Date.now() - startTs > 45000) {
+            clearInterval(poll);
+            setInstalling(false);
+            toast.error("Não foi possível baixar o Chromium nesta prévia (rede bloqueada). O login do Bling não depende disso.");
           }
         } catch (err) {
           logger.error("poll chromium:", err);
