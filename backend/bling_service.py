@@ -169,6 +169,11 @@ async def save_bling_app_creds(client_id: str, client_secret: str) -> dict:
     client_secret = (client_secret or "").strip()
     if not client_id:
         raise HTTPException(status_code=400, detail="Client ID é obrigatório")
+    if "@" in client_id or " " in client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Isso parece e-mail ou senha. O Client ID do Bling é a chave longa em Central de Extensões → Informações do app (não é o Gmail).",
+        )
     existing_id, existing_secret = await _load_stored_creds()
     if not client_secret:
         client_secret = existing_secret or BLING_CLIENT_SECRET()

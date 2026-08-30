@@ -110,7 +110,11 @@ export default function SettingsPage() {
               <div className="text-xs text-muted-foreground">Fica conectado depois da primeira autorização</div>
             </div>
           </div>
-          {cfg?.connected ? (
+          {cfg == null ? (
+            <span className="text-xs px-3 py-1 bg-zinc-100 text-zinc-700 border border-zinc-300 rounded-sm uppercase font-semibold">
+              Carregando…
+            </span>
+          ) : cfg.connected ? (
             <span className="text-xs px-3 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-sm uppercase font-semibold inline-flex items-center gap-1.5">
               <CheckCircle2 className="h-3.5 w-3.5" /> Conectado
             </span>
