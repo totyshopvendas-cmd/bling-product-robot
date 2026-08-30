@@ -206,6 +206,8 @@ export default function SettingsPage() {
             <input
               data-testid="jd-username-input"
               type="email"
+              name="johndrop-username"
+              autoComplete="off"
               value={creds.username}
               onChange={(e) => setCreds((c) => ({ ...c, username: e.target.value }))}
               placeholder="email@exemplo.com"
