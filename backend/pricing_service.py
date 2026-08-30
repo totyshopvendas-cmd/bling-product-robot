@@ -408,6 +408,31 @@ async def load_bundled_table(force: bool = False) -> dict:
     return last
 
 
+async def ensure_table() -> dict:
+    """On boot: reuse RAM, else disk, else Google. User should not download Excel."""
+    try:
+        n = await db.pricing.count_documents({})
+    except Exception:
+        n = 0
+    if n > 0:
+        return {"imported": 0, "skipped": True, "errors": [], "source": "memoria"}
+    res = await load_bundled_table(force=True)
+    if res.get("imported"):
+        return {**res, "source": res.get("path") or "arquivo"}
+    try:
+        loop = asyncio.get_running_loop()
+        content, name = await loop.run_in_executor(None, _download_google)
+        got = await import_table(content, name)
+        if got.get("imported"):
+            return {**got, "source": "google"}
+        return got
+    except Exception as exc:
+        logger.warning("download Google da tabela: %s", exc)
+        errors = list(res.get("errors") or [])
+        errors.insert(0, f"Google Planilhas: {exc}")
+        return {"imported": 0, "source": "", "errors": errors[:20]}
+
+
 async def load_now() -> dict:
     """One-click: Google Sheet, then Desktop/Downloads/data. Saves a local copy."""
     errors: list[str] = []

@@ -101,12 +101,14 @@ async def _startup() -> None:
         logger.warning(f"enrich worker start failed: {e}")
     async def _load_prices_bg() -> None:
         try:
-            logger.info("Carregando tabela de preços em segundo plano...")
-            res = await pricing_service.load_bundled_table()
+            logger.info("Carregando tabela de preços sozinha...")
+            res = await pricing_service.ensure_table()
             if res.get("imported"):
-                logger.info("Tabela de preços carregada: %s linhas", res["imported"])
-            elif not res.get("skipped"):
-                logger.info("Tabela de preços: coloque o Excel/CSV em data\\ ou na pasta da calculadora")
+                logger.info("Tabela de preços carregada: %s linhas (%s)", res["imported"], res.get("source") or "arquivo")
+            elif res.get("skipped"):
+                logger.info("Tabela de preços já estava pronta")
+            else:
+                logger.warning("Tabela de preços não entrou: %s", (res.get("errors") or ["sem arquivo"])[:3])
         except Exception as e:
             logger.warning("tabela de preços no startup: %s", e)
 

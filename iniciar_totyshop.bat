@@ -49,10 +49,17 @@ if not exist "backend\.venv" (
   %PY% -m venv "backend\.venv"
 )
 call "backend\.venv\Scripts\activate.bat"
-echo Instalando dependencias Python...
-python -m pip install -q -r "backend\requirements.txt"
-echo Instalando Chromium do robô (primeira vez demora)...
-python -m playwright install chromium
+if not exist "backend\.venv\.req-ok" (
+  echo Instalando dependencias Python (so na primeira vez)...
+  python -m pip install -q -r "backend\requirements.txt"
+  echo. > "backend\.venv\.req-ok"
+)
+if not exist "%LOCALAPPDATA%\ms-playwright" (
+  echo Instalando Chromium do robo (so na primeira vez)...
+  python -m playwright install chromium
+) else (
+  echo Chromium ja esta no computador.
+)
 
 where npm >nul 2>&1
 if errorlevel 1 (
