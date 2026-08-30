@@ -38,18 +38,32 @@ DELAY_BETWEEN_PRODUCTS_S = 25  # pause após cadastrar com sucesso (evita rate-l
 
 
 async def _save_credentials(username: str, password: str):
+    value = {"username": username, "password": password}
     await db.settings.update_one(
         {"key": "johndrop_creds"},
-        {"$set": {"key": "johndrop_creds", "value": {"username": username, "password": password}}},
+        {"$set": {"key": "johndrop_creds", "value": value}},
         upsert=True,
     )
+    try:
+        import secrets_store
+        secrets_store.write("johndrop", value)
+    except Exception:
+        pass
 
 
 async def _get_credentials():
     doc = await db.settings.find_one({"key": "johndrop_creds"}, {"_id": 0})
-    if not doc:
-        return None
-    return doc.get("value")
+    value = (doc or {}).get("value") if doc else None
+    if value and value.get("username"):
+        return value
+    try:
+        import secrets_store
+        stored = secrets_store.read("johndrop")
+        if stored and stored.get("username"):
+            return stored
+    except Exception:
+        pass
+    return None
 
 
 _EXPECTED_VERSION_CACHE: dict = {"version": None, "checked": False}

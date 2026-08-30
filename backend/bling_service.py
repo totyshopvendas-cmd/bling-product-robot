@@ -24,6 +24,7 @@ from fastapi import HTTPException, Request
 from itsdangerous import BadSignature, URLSafeSerializer
 
 from db import db
+import secrets_store
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,14 @@ async def _load_stored_creds() -> Tuple[str, str]:
         doc = await db.settings.find_one({"key": BLING_APP_SETTINGS_KEY}, {"_id": 0})
     except Exception as exc:
         logger.warning("não foi possível ler credenciais Bling no Mongo: %s", exc)
-        return "", ""
+        doc = None
     value = (doc or {}).get("value") or {}
-    return (value.get("client_id") or "").strip(), (value.get("client_secret") or "").strip()
+    cid = (value.get("client_id") or "").strip()
+    secret = (value.get("client_secret") or "").strip()
+    if cid and secret:
+        return cid, secret
+    stored = secrets_store.read("bling_app") or {}
+    return (stored.get("client_id") or cid).strip(), (stored.get("client_secret") or secret).strip()
 
 
 async def get_bling_app_creds() -> Tuple[str, str]:
@@ -168,23 +174,18 @@ async def save_bling_app_creds(client_id: str, client_secret: str) -> dict:
         client_secret = existing_secret or BLING_CLIENT_SECRET()
     if not client_secret:
         raise HTTPException(status_code=400, detail="Client Secret é obrigatório")
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "updated_at": _now().isoformat(),
+    }
     await db.settings.update_one(
         {"key": BLING_APP_SETTINGS_KEY},
-        {
-            "$set": {
-                "key": BLING_APP_SETTINGS_KEY,
-                "value": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "updated_at": _now().isoformat(),
-                },
-            }
-        },
+        {"$set": {"key": BLING_APP_SETTINGS_KEY, "value": payload}},
         upsert=True,
     )
+    secrets_store.write("bling_app", payload)
     return {"ok": True, "client_id": client_id}
-
-
 def _basic_auth_header(client_id: str, client_secret: str) -> str:
     raw = f"{client_id}:{client_secret}".encode()
     return "Basic " + base64.b64encode(raw).decode()
@@ -353,14 +354,30 @@ async def save_tokens(token_data: dict) -> None:
         {"$set": doc, "$setOnInsert": {"created_at": now.isoformat()}},
         upsert=True,
     )
+    secrets_store.write("bling_tokens", doc)
 
 
 async def get_token_doc() -> Optional[dict]:
-    return await db.bling_tokens.find_one({"account_id": ACCOUNT_ID}, {"_id": 0})
+    doc = await db.bling_tokens.find_one({"account_id": ACCOUNT_ID}, {"_id": 0})
+    if doc and doc.get("access_token"):
+        return doc
+    stored = secrets_store.read("bling_tokens")
+    if stored and stored.get("access_token"):
+        try:
+            await db.bling_tokens.update_one(
+                {"account_id": ACCOUNT_ID},
+                {"$set": stored},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning("não restaurou token Bling no Mongo: %s", exc)
+        return stored
+    return None
 
 
 async def disconnect() -> None:
     await db.bling_tokens.delete_one({"account_id": ACCOUNT_ID})
+    secrets_store.delete("bling_tokens")
 
 
 async def get_valid_access_token() -> Tuple[str, str]:

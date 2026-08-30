@@ -103,3 +103,5 @@ data/*.csv
 data/*.xlsx
 data/*.xls
 !data/LEIA-ME.txt
+
+backend/.secrets/
