@@ -80,11 +80,20 @@ if not exist "frontend\build\index.html" (
 
 set "FRONTEND_BUILD=%~dp0frontend\build"
 echo.
-echo Abrindo http://127.0.0.1:8000
-echo A tabela de precos e lida sozinha de data\ ou da pasta da calculadora.
-echo No Bling, Dados basicos, cole:
-echo   http://127.0.0.1:8000/api/bling/callback
+echo ============================================
+echo  NAO FECHE ESTA JANELA PRETA.
+echo  Se fechar, o Chrome mostra "conexao recusada".
+echo  Minimize (traco) se quiser esconder.
+echo  Endereco: http://127.0.0.1:8000
+echo ============================================
 echo.
 start "" "http://127.0.0.1:8000/"
 cd /d "%~dp0backend"
+
+:run
 python -m uvicorn server:app --host 127.0.0.1 --port 8000
+echo.
+echo O painel parou. Religa em 3 segundos...
+echo (Feche esta janela so se quiser desligar de verdade.)
+timeout /t 3 /nobreak >nul
+goto run
