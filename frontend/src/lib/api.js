@@ -20,10 +20,7 @@ export const endpoints = {
   uploadPricing: (file) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/pricing/upload", fd, {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: 180000,
-    });
+    return api.post("/pricing/upload", fd, { timeout: 180000 });
   },
   pricingStats: () => api.get("/pricing/stats"),
   lookupPrice: (cost) => api.get(`/pricing/lookup?cost=${cost}`),

@@ -11,6 +11,7 @@ def test_to_cents_br_and_float():
     assert ps._to_cents("21,99") == 2199
     assert ps._to_cents(21.99) == 2199
     assert ps._to_cents("1,00") == 100
+    assert ps._to_cents("R$ 1,00") == 100
 
 
 def test_sale_int_plain_and_decimal():

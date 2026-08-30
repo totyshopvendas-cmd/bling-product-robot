@@ -81,6 +81,7 @@ if not exist "frontend\build\index.html" (
 set "FRONTEND_BUILD=%~dp0frontend\build"
 echo.
 echo Abrindo http://127.0.0.1:8000
+echo A tabela de precos e lida sozinha de data\ ou da pasta da calculadora.
 echo No Bling, Dados basicos, cole:
 echo   http://127.0.0.1:8000/api/bling/callback
 echo.

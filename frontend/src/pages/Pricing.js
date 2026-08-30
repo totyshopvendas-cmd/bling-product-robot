@@ -64,7 +64,8 @@ export default function PricingPage() {
         <div className="label-overline mb-1">Precificação</div>
         <h1 className="font-display text-3xl font-bold tracking-tighter">Tabela de Preços</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-          Importe o CSV de precificação. O robô consulta o custo do produto JohnDrop e copia o "Preço de Venda" (formato inteiro, sem pontuação).
+          Ao iniciar, o TotyShop lê sozinho o Excel da calculadora JohnDrop
+          (pasta data\ ou D:\Meu Drive\TOTYSHOP\CALCULADORA\). O robô consulta o custo e copia o Preço de Venda.
         </p>
       </div>
 

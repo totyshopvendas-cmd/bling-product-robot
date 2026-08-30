@@ -1,0 +1,11 @@
+Coloque aqui a tabela JohnDrop com um destes nomes:
+
+  tabela_precos.xlsx
+  tabela_precos.csv
+
+Ou deixe o arquivo original em:
+
+  D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx
+
+Ao abrir o TotyShop (iniciar_totyshop.bat), a tabela é carregada sozinha.
+Não precisa do botão laranja.

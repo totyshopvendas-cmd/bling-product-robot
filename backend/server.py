@@ -99,6 +99,14 @@ async def _startup() -> None:
         logger.info("Enrich worker started")
     except Exception as e:
         logger.warning(f"enrich worker start failed: {e}")
+    try:
+        res = await pricing_service.load_bundled_table()
+        if res.get("imported"):
+            logger.info("Tabela de preços carregada: %s linhas", res["imported"])
+        elif not res.get("skipped"):
+            logger.info("Tabela de preços: coloque o Excel/CSV em data\\ ou na pasta da calculadora")
+    except Exception as e:
+        logger.warning("tabela de preços no startup: %s", e)
 
 
 @api.get("/")

@@ -13,17 +13,31 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import os
+import re
 import unicodedata
+from pathlib import Path
 from typing import Any
 
 from db import db
 from models import PriceLookupResponse
+
+logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _norm(text: str) -> str:
     raw = unicodedata.normalize("NFD", str(text or ""))
     raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Mn")
     return raw.lower().strip()
+
+
+def _numeric_str(value: Any) -> str:
+    s = unicodedata.normalize("NFKC", str(value or ""))
+    s = s.replace("R$", "").replace("r$", "")
+    return re.sub(r"[^\d,.\-]", "", s)
 
 
 def _to_cents(value: Any) -> int:
@@ -33,7 +47,9 @@ def _to_cents(value: Any) -> int:
         raise ValueError("custo inválido")
     if isinstance(value, (int, float)):
         return int(round(float(value) * 100))
-    s = str(value).strip().replace("R$", "").replace(" ", "")
+    s = _numeric_str(value)
+    if not s:
+        raise ValueError("custo vazio")
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     elif "," in s:
@@ -60,7 +76,9 @@ def _sale_int(value: Any) -> int:
         if value == int(value):
             return int(value)
         return int(round(value * 100))
-    s = str(value).strip().replace("R$", "").replace(" ", "")
+    s = _numeric_str(value)
+    if not s:
+        raise ValueError("preço de venda vazio")
     if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
         return int(s)
     if "," in s:
@@ -197,6 +215,67 @@ async def import_table(content: bytes, filename: str = "") -> dict:
 async def import_csv(content: bytes) -> dict:
     """Backward-compatible alias used by older tests and the upload endpoint."""
     return await import_table(content, filename="pricing.csv")
+
+
+def _candidate_table_paths() -> list[Path]:
+    names = [
+        "tabela_precos.xlsx",
+        "tabela_precos.csv",
+        "tabela_precos_johndrop.xlsx",
+        "tabela_precos_johndrop.csv",
+        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx",
+        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.csv",
+        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavoUTF.csv",
+    ]
+    paths: list[Path] = []
+    envp = (os.environ.get("PRICING_TABLE_PATH") or "").strip()
+    if envp:
+        paths.append(Path(envp))
+    data = _PROJECT_ROOT / "data"
+    for name in names:
+        paths.append(data / name)
+        paths.append(_PROJECT_ROOT / name)
+    paths.extend(
+        [
+            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx"),
+            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.csv"),
+            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavoUTF.csv"),
+        ]
+    )
+    if data.is_dir():
+        for pattern in ("tabela_precos*", "*.xlsx", "*.csv"):
+            paths.extend(sorted(data.glob(pattern)))
+    return paths
+
+
+async def load_bundled_table(force: bool = False) -> dict:
+    """Load the JohnDrop price table from disk (no browser upload)."""
+    if not force:
+        try:
+            if await db.pricing.count_documents({}) > 0:
+                return {"imported": 0, "skipped": True, "errors": []}
+        except Exception as exc:
+            logger.warning("pricing count: %s", exc)
+    seen: set[str] = set()
+    last: dict = {"imported": 0, "errors": ["Nenhuma tabela de preços encontrada"]}
+    for path in _candidate_table_paths():
+        try:
+            resolved = str(path.resolve())
+        except Exception:
+            resolved = str(path)
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        try:
+            res = await import_table(path.read_bytes(), filename=path.name)
+        except Exception as exc:
+            last = {"imported": 0, "errors": [f"{path.name}: {exc}"]}
+            continue
+        last = {**res, "path": resolved}
+        if res.get("imported"):
+            logger.info("Tabela de preços: %s linhas de %s", res["imported"], resolved)
+            return last
+    return last
 
 
 async def lookup_price(cost: float) -> PriceLookupResponse:

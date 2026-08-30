@@ -98,3 +98,8 @@ credentials.json
 .credentials
 
 logs/
+
+data/*.csv
+data/*.xlsx
+data/*.xls
+!data/LEIA-ME.txt
