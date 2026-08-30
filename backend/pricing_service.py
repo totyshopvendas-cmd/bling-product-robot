@@ -267,6 +267,8 @@ async def load_bundled_table(force: bool = False) -> dict:
             continue
         seen.add(resolved)
         try:
+            size_kb = path.stat().st_size // 1024
+            logger.info("Lendo tabela de preços: %s (%s KB)", resolved, size_kb)
             res = await import_table(path.read_bytes(), filename=path.name)
         except Exception as exc:
             last = {"imported": 0, "errors": [f"{path.name}: {exc}"]}
