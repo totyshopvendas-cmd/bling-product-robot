@@ -141,19 +141,20 @@ def _decode_csv(content: bytes) -> str:
 
 
 def _rows_from_csv(content: bytes) -> list[list]:
-    """Excel pt-BR often uses ';' — never pick ',' just because decimals contain commas."""
+    """Excel pt-BR often uses ';' — sniff only a sample so 99k rows are not parsed 3 times."""
     text = _decode_csv(content)
-    best_rows: list[list] = []
+    sample = text[:12000]
+    best_delim = ";"
     best_score = -1
     for delim in (";", "\t", ","):
-        rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=delim)]
+        rows = list(csv.reader(io.StringIO(sample), delimiter=delim))
         exact3 = sum(1 for r in rows[:40] if len(r) == 3)
         ge3 = sum(1 for r in rows[:40] if len(r) >= 3)
         score = exact3 * 20 + ge3
         if score > best_score:
             best_score = score
-            best_rows = rows
-    return best_rows
+            best_delim = delim
+    return [list(r) for r in csv.reader(io.StringIO(text), delimiter=best_delim)]
 
 
 def _rows_from_xlsx(content: bytes) -> list[list]:

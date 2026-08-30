@@ -100,6 +100,8 @@ async def _startup() -> None:
     except Exception as e:
         logger.warning(f"enrich worker start failed: {e}")
     async def _load_prices_bg() -> None:
+        import asyncio as _sleep
+        await _sleep.sleep(2)
         try:
             logger.info("Carregando tabela de preços sozinha...")
             res = await pricing_service.ensure_table()
