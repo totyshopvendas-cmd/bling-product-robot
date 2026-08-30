@@ -97,12 +97,31 @@ def _is_xlsx(content: bytes, filename: str = "") -> bool:
     return content[:2] == b"PK"
 
 
+def _decode_csv(content: bytes) -> str:
+    if content.startswith(b"\xff\xfe") or content.startswith(b"\xfe\xff"):
+        return content.decode("utf-16")
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return content.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
 def _rows_from_csv(content: bytes) -> list[list]:
-    text = content.decode("utf-8-sig", errors="replace")
-    sample = text[:4000]
-    delimiter = ";" if sample.count(";") >= sample.count(",") else ","
-    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    return [list(r) for r in reader]
+    """Excel pt-BR often uses ';' — never pick ',' just because decimals contain commas."""
+    text = _decode_csv(content)
+    best_rows: list[list] = []
+    best_score = -1
+    for delim in (";", "\t", ","):
+        rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=delim)]
+        exact3 = sum(1 for r in rows[:40] if len(r) == 3)
+        ge3 = sum(1 for r in rows[:40] if len(r) >= 3)
+        score = exact3 * 20 + ge3
+        if score > best_score:
+            best_score = score
+            best_rows = rows
+    return best_rows
 
 
 def _rows_from_xlsx(content: bytes) -> list[list]:
@@ -117,11 +136,12 @@ def _rows_from_xlsx(content: bytes) -> list[list]:
 
 
 async def _store_docs(docs: list[dict], errors: list[str]) -> dict:
+    if not docs:
+        return {"imported": 0, "errors": errors[:20] or ["Nenhuma linha válida. Salve o Excel como CSV com ponto e vírgula (;)."]}
     await db.pricing.delete_many({})
-    if docs:
-        chunk = 5000
-        for i in range(0, len(docs), chunk):
-            await db.pricing.insert_many(docs[i : i + chunk], ordered=False)
+    chunk = 5000
+    for i in range(0, len(docs), chunk):
+        await db.pricing.insert_many(docs[i : i + chunk], ordered=False)
     return {"imported": len(docs), "errors": errors[:20]}
 
 
@@ -137,22 +157,27 @@ async def import_table(content: bytes, filename: str = "") -> dict:
     if not rows:
         return {"imported": 0, "errors": ["Arquivo vazio"]}
 
-    header = [str(c or "") for c in rows[0]]
-    start = 0
-    try:
-        if any("custo" in _norm(c) or "venda" in _norm(c) or "loja" in _norm(c) for c in header):
-            cost_i, store_i, sale_i = _pick_columns(header)
-            start = 1
-        else:
-            cost_i, store_i, sale_i = 0, 1, 2
-    except Exception as exc:
-        return {"imported": 0, "errors": [str(exc)]}
+    header_idx = None
+    cost_i, store_i, sale_i = 0, 1, 2
+    for i, row in enumerate(rows[:20]):
+        header = [str(c or "") for c in row]
+        labs = [_norm(c) for c in header]
+        if any("custo" in x for x in labs) or any("venda" in x for x in labs):
+            try:
+                cost_i, store_i, sale_i = _pick_columns(header)
+                header_idx = i
+                break
+            except Exception:
+                continue
+
+    start = (header_idx + 1) if header_idx is not None else 0
 
     docs: list[dict] = []
     errors: list[str] = []
     for i, row in enumerate(rows[start:], start=start + 1):
         if max(cost_i, store_i, sale_i) >= len(row):
-            errors.append(f"L{i}: colunas insuficientes")
+            if len(errors) < 20:
+                errors.append(f"L{i}: colunas insuficientes")
             continue
         try:
             docs.append(
@@ -163,9 +188,8 @@ async def import_table(content: bytes, filename: str = "") -> dict:
                 }
             )
         except Exception as e:
-            errors.append(f"L{i}: {e}")
-            if len(errors) > 20:
-                break
+            if len(errors) < 20:
+                errors.append(f"L{i}: {e}")
 
     return await _store_docs(docs, errors)
 

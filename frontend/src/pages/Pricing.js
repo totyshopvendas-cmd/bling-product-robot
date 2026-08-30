@@ -8,6 +8,7 @@ export default function PricingPage() {
   const [stats, setStats] = useState(null);
   const [lookup, setLookup] = useState({ cost: "21.99", result: null, loading: false });
   const [uploading, setUploading] = useState(false);
+  const [uploadErrors, setUploadErrors] = useState([]);
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -27,8 +28,13 @@ export default function PricingPage() {
     setUploading(true);
     try {
       const { data } = await endpoints.uploadPricing(file);
-      toast.success(`${data.imported.toLocaleString("pt-BR")} linhas importadas`);
-      if (data.errors?.length) {
+      setUploadErrors(data.errors || []);
+      if (data.imported) {
+        toast.success(`${data.imported.toLocaleString("pt-BR")} linhas importadas`);
+      } else {
+        toast.error("Nenhuma linha importada — veja os avisos abaixo");
+      }
+      if (data.errors?.length && data.imported) {
         toast.warning(`${data.errors.length} avisos`);
       }
       await load();
