@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
-import { Upload, Search, Database } from "lucide-react";
+import { Upload, Search, Database, Download } from "lucide-react";
 import { toast } from "sonner";
 
 export default function PricingPage() {
   const [stats, setStats] = useState(null);
   const [lookup, setLookup] = useState({ cost: "21.99", result: null, loading: false });
   const [uploading, setUploading] = useState(false);
+  const [loadingSheet, setLoadingSheet] = useState(false);
   const [uploadErrors, setUploadErrors] = useState([]);
   const fileRef = useRef(null);
 
@@ -22,24 +23,43 @@ export default function PricingPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const applyImportResult = async (data) => {
+    setUploadErrors(data.errors || []);
+    if (data.imported) {
+      toast.success(`${data.imported.toLocaleString("pt-BR")} linhas importadas`);
+    } else {
+      toast.error("Nenhuma linha importada — veja o recado abaixo");
+    }
+    await load();
+  };
+
+  const onLoadSheet = async () => {
+    setLoadingSheet(true);
+    setUploadErrors([]);
+    try {
+      const { data } = await endpoints.loadPricing();
+      await applyImportResult(data);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message;
+      setUploadErrors([String(msg)]);
+      toast.error("Falha ao carregar tabela: " + msg);
+    } finally {
+      setLoadingSheet(false);
+    }
+  };
+
   const onUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadErrors([]);
     try {
       const { data } = await endpoints.uploadPricing(file);
-      setUploadErrors(data.errors || []);
-      if (data.imported) {
-        toast.success(`${data.imported.toLocaleString("pt-BR")} linhas importadas`);
-      } else {
-        toast.error("Nenhuma linha importada — veja os avisos abaixo");
-      }
-      if (data.errors?.length && data.imported) {
-        toast.warning(`${data.errors.length} avisos`);
-      }
-      await load();
-    } catch (e) {
-      toast.error("Falha no upload: " + (e?.response?.data?.detail || e.message));
+      await applyImportResult(data);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err.message;
+      setUploadErrors([String(msg)]);
+      toast.error("Falha no upload: " + msg);
     } finally {
       setUploading(false);
       e.target.value = "";
@@ -48,15 +68,18 @@ export default function PricingPage() {
 
   const onLookup = async (e) => {
     e?.preventDefault?.();
-    setLookup(l => ({ ...l, loading: true }));
+    setLookup((l) => ({ ...l, loading: true }));
     try {
       const { data } = await endpoints.lookupPrice(parseFloat(lookup.cost));
-      setLookup(l => ({ ...l, result: data, loading: false }));
+      setLookup((l) => ({ ...l, result: data, loading: false }));
     } catch (err) {
       toast.error(err.message);
-      setLookup(l => ({ ...l, loading: false }));
+      setLookup((l) => ({ ...l, loading: false }));
     }
   };
+
+  const busy = uploading || loadingSheet;
+  const rows = stats?.count || 0;
 
   return (
     <div className="space-y-6">
@@ -64,8 +87,8 @@ export default function PricingPage() {
         <div className="label-overline mb-1">Precificação</div>
         <h1 className="font-display text-3xl font-bold tracking-tighter">Tabela de Preços</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-          Baixe o Excel da calculadora para o Desktop (não use o Google Drive) e clique em Selecionar Excel.
-          O robô consulta o custo e copia o Preço de Venda.
+          Um clique baixa a planilha da TotyShop e grava no computador.
+          Sem isso o robô não tem preço de venda.
         </p>
       </div>
 
@@ -76,16 +99,28 @@ export default function PricingPage() {
             <span className="label-overline">Status</span>
           </div>
           <div className="font-display text-4xl font-bold tracking-tighter">
-            {stats?.count?.toLocaleString("pt-BR") || 0}
+            {rows.toLocaleString("pt-BR")}
           </div>
           <div className="text-xs text-muted-foreground">linhas carregadas</div>
+          {rows > 0 && (
+            <div className="mt-2 text-xs font-semibold text-emerald-700">Tabela pronta</div>
+          )}
         </div>
 
-        <div className="border border-border bg-white p-6 lg:col-span-2">
-          <div className="label-overline mb-2">Importar tabela</div>
-          <p className="text-xs text-muted-foreground mb-3">
-            Aceita <strong>Excel (.xlsx)</strong> ou CSV. Colunas: Custo do Catálogo, Preço da Loja, Preço de Venda.
-            Envie pelo painel em <span className="font-mono">127.0.0.1:8000</span> (não pela Arena).
+        <div className="border border-border bg-white p-6 lg:col-span-2 space-y-3">
+          <div className="label-overline">Carregar tabela</div>
+          <button
+            data-testid="pricing-load-btn"
+            onClick={onLoadSheet}
+            disabled={busy}
+            className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            <Download className="h-4 w-4" />
+            {loadingSheet ? "Baixando e importando… (até 1 min)" : "Carregar tabela da TotyShop"}
+          </button>
+          <p className="text-xs text-muted-foreground">
+            O programa baixa a planilha e procura também no Desktop e em Downloads.
+            Não use o arquivo do Google Drive (Meu Drive) — isso trava.
           </p>
           <input
             ref={fileRef}
@@ -98,14 +133,22 @@ export default function PricingPage() {
           <button
             data-testid="pricing-upload-btn"
             onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+            disabled={busy}
+            className="text-sm font-medium px-4 py-2.5 rounded-sm border border-border hover:bg-zinc-50 disabled:opacity-50 inline-flex items-center gap-2"
           >
             <Upload className="h-4 w-4" />
-            {uploading ? "Importando…" : "Selecionar Excel ou CSV"}
+            {uploading ? "Importando…" : "Ou escolher um Excel do computador"}
           </button>
         </div>
       </div>
+
+      {uploadErrors.length > 0 && (
+        <div className="border border-rose-300 bg-rose-50 p-4 text-sm text-rose-900 space-y-1" data-testid="pricing-errors">
+          {uploadErrors.map((err, i) => (
+            <p key={i}>{err}</p>
+          ))}
+        </div>
+      )}
 
       <form
         onSubmit={onLookup}
@@ -121,7 +164,7 @@ export default function PricingPage() {
             type="number"
             step="0.01"
             value={lookup.cost}
-            onChange={(e) => setLookup(l => ({ ...l, cost: e.target.value }))}
+            onChange={(e) => setLookup((l) => ({ ...l, cost: e.target.value }))}
             placeholder="Custo do catálogo (ex: 21.99)"
             className="flex-1 text-sm border border-border rounded-sm px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
           />

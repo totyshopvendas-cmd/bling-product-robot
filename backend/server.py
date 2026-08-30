@@ -209,6 +209,12 @@ async def upload_pricing(file: UploadFile = File(...)) -> dict:
     return res
 
 
+@api.post("/pricing/load")
+async def load_pricing() -> dict:
+    """Baixa a planilha TotyShop (Google) ou lê Desktop/Downloads/data."""
+    return await pricing_service.load_now()
+
+
 @api.get("/pricing/lookup", response_model=PriceLookupResponse)
 async def lookup_price_endpoint(cost: float = Query(...)) -> PriceLookupResponse:
     return await pricing_service.lookup_price(cost)

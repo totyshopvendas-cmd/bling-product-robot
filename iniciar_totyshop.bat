@@ -68,15 +68,19 @@ if not exist "frontend\node_modules" (
   popd
 )
 
-if not exist "frontend\build\index.html" (
-  echo Compilando o painel...
-  pushd frontend
-  set CI=false
-  set DISABLE_ESLINT_PLUGIN=true
-  set GENERATE_SOURCEMAP=false
-  call npm run build
-  popd
-)
+if not exist "frontend\build\index.html" goto dobuild
+if not exist "frontend\build\.stamp-tabela-1" goto dobuild
+goto afterbuild
+:dobuild
+echo Compilando o painel...
+pushd frontend
+set CI=false
+set DISABLE_ESLINT_PLUGIN=true
+set GENERATE_SOURCEMAP=false
+call npm run build
+popd
+echo. > "frontend\build\.stamp-tabela-1"
+:afterbuild
 
 set "FRONTEND_BUILD=%~dp0frontend\build"
 echo.

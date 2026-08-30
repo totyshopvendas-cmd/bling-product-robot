@@ -28,5 +28,30 @@ def test_pick_columns_by_header():
 
 
 def test_is_xlsx_by_name():
-    assert ps._is_xlsx(b"", "tabela_precos_johndrop.xlsx")
+    assert ps._is_xlsx(b"PK\x03\x04", "tabela_precos_johndrop.xlsx")
     assert not ps._is_xlsx(b"Custo;Loja;Venda\n", "tabela.csv")
+
+
+def test_parse_simple_csv():
+    raw = (
+        "Custo do Catálogo;Preço da Loja;Preço de Venda\n"
+        "21,99;50,50;5050\n"
+        "22,00;51,00;5100\n"
+    ).encode("utf-8")
+    docs, errors = ps._parse_table(raw, "tabela.csv")
+    assert errors == []
+    assert len(docs) == 2
+    by = {d["cost_cents"]: d for d in docs}
+    assert by[2199]["sale_price_int"] == 5050
+    assert by[2200]["store_price_brl"] == "51,00"
+
+
+def test_forbidden_drive_path():
+    from pathlib import Path
+    assert ps._is_forbidden_path(Path(r"D:\Meu Drive\TOTYSHOP\tabela.xlsx"))
+    assert not ps._is_forbidden_path(Path(r"C:\Users\limaa\Desktop\tabela.xlsx"))
+
+
+def test_looks_like_html_login():
+    assert ps._looks_like_html(b"<!DOCTYPE html><html><title>Sign in</title>")
+    assert not ps._looks_like_html(b"Custo;Loja;Venda\n1;2;3\n")

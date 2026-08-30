@@ -11,14 +11,16 @@ Preço de Venda is the integer the robot types (5050 = R$ 50,50).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
 import os
 import re
 import unicodedata
+import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from db import db
 from models import PriceLookupResponse
@@ -26,6 +28,18 @@ from models import PriceLookupResponse
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DATA_DIR = _PROJECT_ROOT / "data"
+DEFAULT_SHEET_ID = "1ABXgFvtAy7kKmpUl73yYs_69qQneLZr1"
+
+_TABLE_NAMES = [
+    "tabela_precos.xlsx",
+    "tabela_precos.csv",
+    "tabela_precos_johndrop.xlsx",
+    "tabela_precos_johndrop.csv",
+    "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx",
+    "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.csv",
+    "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavoUTF.csv",
+]
 
 
 def _norm(text: str) -> str:
@@ -109,10 +123,10 @@ def _pick_columns(header: list) -> tuple[int, int, int]:
 
 
 def _is_xlsx(content: bytes, filename: str = "") -> bool:
-    name = (filename or "").lower()
-    if name.endswith(".xlsx") or name.endswith(".xlsm") or name.endswith(".xls"):
+    if content[:2] == b"PK":
         return True
-    return content[:2] == b"PK"
+    name = (filename or "").lower()
+    return name.endswith(".xlsx") or name.endswith(".xlsm") or name.endswith(".xls")
 
 
 def _decode_csv(content: bytes) -> str:
@@ -153,27 +167,36 @@ def _rows_from_xlsx(content: bytes) -> list[list]:
         wb.close()
 
 
-async def _store_docs(docs: list[dict], errors: list[str]) -> dict:
-    if not docs:
-        return {"imported": 0, "errors": errors[:20] or ["Nenhuma linha válida. Salve o Excel como CSV com ponto e vírgula (;)."]}
-    await db.pricing.delete_many({})
-    chunk = 5000
-    for i in range(0, len(docs), chunk):
-        await db.pricing.insert_many(docs[i : i + chunk], ordered=False)
-    return {"imported": len(docs), "errors": errors[:20]}
+def _row_has_value(row: list) -> bool:
+    return bool(row) and any(c is not None and str(c).strip() != "" for c in row)
 
 
-async def import_table(content: bytes, filename: str = "") -> dict:
+def _iter_raw_rows(content: bytes, filename: str = "") -> Iterable[list]:
+    looks_xlsx = _is_xlsx(content, filename)
+    if looks_xlsx:
+        try:
+            for row in _rows_from_xlsx(content):
+                if _row_has_value(row):
+                    yield row
+            return
+        except Exception:
+            if content[:2] == b"PK":
+                raise
+    for row in _rows_from_csv(content):
+        if _row_has_value(row):
+            yield row
+
+
+def _parse_table(content: bytes, filename: str = "") -> tuple[list[dict], list[str]]:
+    """CPU-bound parse used in a thread so FastAPI does not freeze."""
     if not content:
-        return {"imported": 0, "errors": ["Arquivo vazio"]}
+        return [], ["Arquivo vazio"]
     try:
-        raw_rows = _rows_from_xlsx(content) if _is_xlsx(content, filename) else _rows_from_csv(content)
+        rows = list(_iter_raw_rows(content, filename))
     except Exception as exc:
-        return {"imported": 0, "errors": [f"Não foi possível ler o arquivo: {exc}"]}
-
-    rows = [r for r in raw_rows if r and any(c is not None and str(c).strip() != "" for c in r)]
+        return [], [f"Não foi possível ler o arquivo: {exc}"]
     if not rows:
-        return {"imported": 0, "errors": ["Arquivo vazio"]}
+        return [], ["Arquivo vazio"]
 
     header_idx = None
     cost_i, store_i, sale_i = 0, 1, 2
@@ -187,10 +210,9 @@ async def import_table(content: bytes, filename: str = "") -> dict:
                 break
             except Exception:
                 continue
-
     start = (header_idx + 1) if header_idx is not None else 0
 
-    docs: list[dict] = []
+    by_cents: dict[int, dict] = {}
     errors: list[str] = []
     for i, row in enumerate(rows[start:], start=start + 1):
         if max(cost_i, store_i, sale_i) >= len(row):
@@ -198,47 +220,160 @@ async def import_table(content: bytes, filename: str = "") -> dict:
                 errors.append(f"L{i}: colunas insuficientes")
             continue
         try:
-            docs.append(
-                {
-                    "cost_cents": _to_cents(row[cost_i]),
-                    "store_price_brl": _store_brl(row[store_i]),
-                    "sale_price_int": _sale_int(row[sale_i]),
-                }
-            )
+            cost_cents = _to_cents(row[cost_i])
+            by_cents[cost_cents] = {
+                "cost_cents": cost_cents,
+                "store_price_brl": _store_brl(row[store_i]),
+                "sale_price_int": _sale_int(row[sale_i]),
+            }
         except Exception as e:
             if len(errors) < 20:
                 errors.append(f"L{i}: {e}")
+    return list(by_cents.values()), errors
 
-    return await _store_docs(docs, errors)
+
+def _is_forbidden_path(path: Path | str) -> bool:
+    s = str(path).lower().replace("/", "\\")
+    return "meu drive" in s or "google drive" in s
+
+
+def _user_search_dirs() -> list[Path]:
+    home = Path.home()
+    dirs = [
+        home / "Desktop",
+        home / "Downloads",
+        home / "Documents",
+        home / "OneDrive" / "Desktop",
+        home / "OneDrive" / "Downloads",
+        home / "TotyShop",
+    ]
+    out: list[Path] = []
+    for d in dirs:
+        try:
+            if d.is_dir() and not _is_forbidden_path(d):
+                out.append(d)
+        except Exception:
+            continue
+    return out
+
+
+def _candidate_table_paths() -> list[Path]:
+    paths: list[Path] = []
+    envp = (os.environ.get("PRICING_TABLE_PATH") or "").strip()
+    if envp:
+        paths.append(Path(envp))
+    search = [_DATA_DIR, _PROJECT_ROOT, *_user_search_dirs()]
+    for folder in search:
+        for name in _TABLE_NAMES:
+            paths.append(folder / name)
+        try:
+            if folder.is_dir():
+                paths.extend(sorted(folder.glob("tabela_precos*")))
+        except Exception:
+            pass
+    if _DATA_DIR.is_dir():
+        for pattern in ("*.xlsx", "*.csv"):
+            paths.extend(sorted(_DATA_DIR.glob(pattern)))
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for p in paths:
+        if _is_forbidden_path(p):
+            continue
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+
+def _save_local_copy(content: bytes, filename: str = "") -> Path | None:
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        dest = _DATA_DIR / ("tabela_precos.xlsx" if _is_xlsx(content, filename) else "tabela_precos.csv")
+        dest.write_bytes(content)
+        logger.info("Tabela gravada em %s (%s KB)", dest, dest.stat().st_size // 1024)
+        return dest
+    except Exception as exc:
+        logger.warning("não gravou cópia local: %s", exc)
+        return None
+
+
+def _looks_like_html(content: bytes) -> bool:
+    head = content[:200].lstrip().lower()
+    return head.startswith(b"<!doctype") or head.startswith(b"<html") or b"<title>sign in" in head
+
+
+def _sheet_id() -> str:
+    env = (os.environ.get("PRICING_SHEET_ID") or "").strip()
+    if env:
+        return env
+    url = (os.environ.get("PRICING_SHEET_URL") or "").strip()
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
+    if m:
+        return m.group(1)
+    return DEFAULT_SHEET_ID
+
+
+def _download_google() -> tuple[bytes, str]:
+    sheet_id = _sheet_id()
+    urls = [
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx",
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv",
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/pub?output=csv",
+    ]
+    last = "não baixou a planilha"
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "TotyShop/1.0"})
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = resp.read()
+        except Exception as exc:
+            last = str(exc)
+            continue
+        if not data or len(data) < 40:
+            last = "resposta vazia"
+            continue
+        if _looks_like_html(data):
+            last = (
+                "A planilha Google não está pública. "
+                "Em Compartilhar, escolha Qualquer pessoa com o link."
+            )
+            continue
+        name = "tabela_precos.xlsx" if data[:2] == b"PK" else "tabela_precos.csv"
+        logger.info("Tabela baixada do Google (%s, %s KB)", name, len(data) // 1024)
+        return data, name
+    raise RuntimeError(last)
+
+
+async def _store_docs(docs: list[dict], errors: list[str]) -> dict:
+    if not docs:
+        return {
+            "imported": 0,
+            "errors": errors[:20]
+            or ["Nenhuma linha válida. A planilha precisa das colunas Custo, Preço da Loja e Preço de Venda."],
+        }
+    await db.pricing.delete_many({})
+    chunk = 5000
+    for i in range(0, len(docs), chunk):
+        await db.pricing.insert_many(docs[i : i + chunk], ordered=False)
+    return {"imported": len(docs), "errors": errors[:20]}
+
+
+async def import_table(content: bytes, filename: str = "") -> dict:
+    if not content:
+        return {"imported": 0, "errors": ["Arquivo vazio"]}
+    loop = asyncio.get_running_loop()
+    docs, errors = await loop.run_in_executor(None, _parse_table, content, filename)
+    res = await _store_docs(docs, errors)
+    if res.get("imported"):
+        await loop.run_in_executor(None, _save_local_copy, content, filename)
+    return res
 
 
 async def import_csv(content: bytes) -> dict:
     """Backward-compatible alias used by older tests and the upload endpoint."""
     return await import_table(content, filename="pricing.csv")
-
-
-def _candidate_table_paths() -> list[Path]:
-    names = [
-        "tabela_precos.xlsx",
-        "tabela_precos.csv",
-        "tabela_precos_johndrop.xlsx",
-        "tabela_precos_johndrop.csv",
-        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx",
-        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.csv",
-        "tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavoUTF.csv",
-    ]
-    paths: list[Path] = []
-    envp = (os.environ.get("PRICING_TABLE_PATH") or "").strip()
-    if envp:
-        paths.append(Path(envp))
-    data = _PROJECT_ROOT / "data"
-    for name in names:
-        paths.append(data / name)
-        paths.append(_PROJECT_ROOT / name)
-    if data.is_dir():
-        for pattern in ("tabela_precos*", "*.xlsx", "*.csv"):
-            paths.extend(sorted(data.glob(pattern)))
-    return [p for p in paths if "meu drive" not in str(p).lower() and "google drive" not in str(p).lower()]
 
 
 async def load_bundled_table(force: bool = False) -> dict:
@@ -256,7 +391,7 @@ async def load_bundled_table(force: bool = False) -> dict:
             resolved = str(path.resolve())
         except Exception:
             resolved = str(path)
-        if resolved in seen or not path.is_file():
+        if _is_forbidden_path(resolved) or resolved in seen or not path.is_file():
             continue
         seen.add(resolved)
         try:
@@ -271,6 +406,35 @@ async def load_bundled_table(force: bool = False) -> dict:
             logger.info("Tabela de preços: %s linhas de %s", res["imported"], resolved)
             return last
     return last
+
+
+async def load_now() -> dict:
+    """One-click: Google Sheet, then Desktop/Downloads/data. Saves a local copy."""
+    errors: list[str] = []
+    try:
+        loop = asyncio.get_running_loop()
+        content, name = await loop.run_in_executor(None, _download_google)
+        res = await import_table(content, name)
+        if res.get("imported"):
+            return {**res, "source": "google"}
+        errors.extend(res.get("errors") or [])
+    except Exception as exc:
+        errors.append(f"Google Planilhas: {exc}")
+        logger.warning("download Google da tabela: %s", exc)
+
+    res = await load_bundled_table(force=True)
+    if res.get("imported"):
+        return {**res, "source": res.get("path") or "arquivo"}
+    errors.extend(res.get("errors") or [])
+    return {
+        "imported": 0,
+        "source": "",
+        "errors": errors[:20]
+        or [
+            "Não achei a tabela. Coloque o Excel na pasta data do TotyShop "
+            "(não no Google Drive) e clique de novo."
+        ],
+    }
 
 
 async def lookup_price(cost: float) -> PriceLookupResponse:
