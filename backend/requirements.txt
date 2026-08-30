@@ -29,3 +29,4 @@ itsdangerous>=2.2.0
 httpx>=0.28.0
 mongomock-motor>=0.0.34
 playwright>=1.40.0
+openpyxl>=3.1.0

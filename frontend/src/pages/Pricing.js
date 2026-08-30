@@ -75,15 +75,16 @@ export default function PricingPage() {
         </div>
 
         <div className="border border-border bg-white p-6 lg:col-span-2">
-          <div className="label-overline mb-2">Importar CSV</div>
+          <div className="label-overline mb-2">Importar tabela</div>
           <p className="text-xs text-muted-foreground mb-3">
-            Formato: <span className="font-mono">Custo do Catálogo;Preço da Loja;Preço de Venda</span> (separador <span className="font-mono">;</span>)
+            Aceita <strong>Excel (.xlsx)</strong> ou CSV. Colunas: Custo do Catálogo, Preço da Loja, Preço de Venda.
+            Envie pelo painel em <span className="font-mono">127.0.0.1:8000</span> (não pela Arena).
           </p>
           <input
             ref={fileRef}
             data-testid="pricing-upload"
             type="file"
-            accept=".csv"
+            accept=".xlsx,.xlsm,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             onChange={onUpload}
             className="hidden"
           />
@@ -94,7 +95,7 @@ export default function PricingPage() {
             className="bg-[#EE7B22] text-white text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
           >
             <Upload className="h-4 w-4" />
-            {uploading ? "Importando…" : "Selecionar CSV"}
+            {uploading ? "Importando…" : "Selecionar Excel ou CSV"}
           </button>
         </div>
       </div>

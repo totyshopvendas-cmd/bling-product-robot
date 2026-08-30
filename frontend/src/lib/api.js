@@ -22,6 +22,7 @@ export const endpoints = {
     fd.append("file", file);
     return api.post("/pricing/upload", fd, {
       headers: { "Content-Type": "multipart/form-data" },
+      timeout: 180000,
     });
   },
   pricingStats: () => api.get("/pricing/stats"),

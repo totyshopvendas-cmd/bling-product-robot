@@ -164,7 +164,7 @@ async def upload_pricing(file: UploadFile = File(...)) -> dict:
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "Arquivo muito grande (>50MB)")
-    res = await pricing_service.import_csv(content)
+    res = await pricing_service.import_table(content, filename=file.filename or "")
     return res
 
 
