@@ -235,17 +235,10 @@ def _candidate_table_paths() -> list[Path]:
     for name in names:
         paths.append(data / name)
         paths.append(_PROJECT_ROOT / name)
-    paths.extend(
-        [
-            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx"),
-            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.csv"),
-            Path(r"D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavoUTF.csv"),
-        ]
-    )
     if data.is_dir():
         for pattern in ("tabela_precos*", "*.xlsx", "*.csv"):
             paths.extend(sorted(data.glob(pattern)))
-    return paths
+    return [p for p in paths if "meu drive" not in str(p).lower() and "google drive" not in str(p).lower()]
 
 
 async def load_bundled_table(force: bool = False) -> dict:

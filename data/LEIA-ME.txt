@@ -1,11 +1,8 @@
-Coloque aqui a tabela JohnDrop com um destes nomes:
+Coloque neste pasta o Excel da tabela JohnDrop, com o nome:
 
   tabela_precos.xlsx
-  tabela_precos.csv
 
-Ou deixe o arquivo original em:
+Nao use o arquivo do Google Drive (D:\Meu Drive) — ele trava o TotyShop.
 
-  D:\Meu Drive\TOTYSHOP\CALCULADORA\tabela_precos_johndrop_1_00_a_1000_00_centavo_a_centavo.xlsx
-
-Ao abrir o TotyShop (iniciar_totyshop.bat), a tabela é carregada sozinha.
-Não precisa do botão laranja.
+No Google Planilhas: Arquivo → Fazer download → Microsoft Excel (.xlsx)
+Salve aqui, neste pasta data.
