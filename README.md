@@ -2,6 +2,8 @@
 
 Painel independente para cadastro JohnDrop → Bling ERP (API v3). **Não depende da Emergent.**
 
+> A prévia da Arena **não consegue** falar com o Bling nem baixar o Chromium (rede SSL bloqueada). Para o projeto funcionar de verdade, rode no seu PC — veja **[COMO_RODAR.md](COMO_RODAR.md)**. Windows: `iniciar_totyshop.bat`.
+
 ## O que foi corrigido na conexão Bling
 
 O botão **Conectar Bling** usava URLs OAuth antigas (`https://bling.com.br/oauth/authorize` e `/oauth/token`). A API v3 exige:

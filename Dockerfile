@@ -14,7 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_BUILD=/app/frontend/build
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
+ && python -m playwright install --with-deps chromium
 COPY backend /app/backend
 COPY --from=frontend /frontend/build /app/frontend/build
 WORKDIR /app/backend

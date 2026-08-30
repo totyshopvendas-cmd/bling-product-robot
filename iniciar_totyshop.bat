@@ -1,93 +1,89 @@
 @echo off
 setlocal enabledelayedexpansion
-title TotyShop Automacao - Inicializador
-set ROOT=%~dp0
-set LOGDIR=%ROOT%logs
-set MONGOD="C:\Program Files\MongoDB\Server\7.0\bin\mongod.exe"
-set MONGODATA=%USERPROFILE%\.totyshop\mongo-data
-set MONGOLOG=%USERPROFILE%\.totyshop\mongod.log
-if not exist "%LOGDIR%" mkdir "%LOGDIR%"
-if not exist "%USERPROFILE%\.totyshop" mkdir "%USERPROFILE%\.totyshop"
+title TotyShop Automacao
+cd /d "%~dp0"
 
 echo ============================================
-echo   Iniciando TotyShop Automacao...
+echo   TotyShop — instalacao e painel local
 echo ============================================
+echo.
 
-REM ---------- Banco de dados (MongoDB, sem servico e sem admin) ----------
-netstat -ano | findstr ":27017 " | findstr LISTENING >nul
-if errorlevel 1 (
-    REM Garante que o servico antigo nao dispute a porta com dados desatualizados
-    sc query MongoDB | find "RUNNING" >nul
-    if not errorlevel 1 (
-        echo Parando servico MongoDB antigo...
-        sc stop MongoDB >nul 2>&1
-        timeout /t 5 /nobreak >nul
-    )
-    if not exist "%MONGODATA%" mkdir "%MONGODATA%"
-    del "%MONGODATA%\mongod.lock" >nul 2>&1
-    echo Iniciando banco de dados...
-    start "TotyShop MongoDB" /min %MONGOD% --dbpath "%MONGODATA%" --port 27017 --bind_ip 127.0.0.1 --logpath "%MONGOLOG%" --logappend
+where py >nul 2>&1
+if not errorlevel 1 (
+  set "PY=py -3"
 ) else (
-    echo Banco de dados ja esta rodando.
+  where python >nul 2>&1
+  if errorlevel 1 (
+    echo Instale Python 3.11+ em https://www.python.org/downloads/
+    echo Marque "Add python.exe to PATH".
+    pause
+    exit /b 1
+  )
+  set "PY=python"
 )
 
-REM ---------- Backend (porta 8000) ----------
-netstat -ano | findstr ":8000 " | findstr LISTENING >nul
+where node >nul 2>&1
 if errorlevel 1 (
-    echo Iniciando backend...
-    start "TotyShop Backend" /min cmd /c "cd /d %ROOT%backend && python -m uvicorn server:app --host 127.0.0.1 --port 8000 > "%LOGDIR%\backend.log" 2>&1"
-) else (
-    echo Backend ja esta rodando.
+  echo Instale Node.js 18+ em https://nodejs.org/
+  pause
+  exit /b 1
 )
 
-REM ---------- Frontend (porta 3000) ----------
-netstat -ano | findstr ":3000 " | findstr LISTENING >nul
-if errorlevel 1 (
-    echo Iniciando painel...
-    start "TotyShop Frontend" /min cmd /c "cd /d %ROOT%frontend && set BROWSER=none&& npm start > "%LOGDIR%\frontend.log" 2>&1"
-) else (
-    echo Painel ja esta rodando.
+if not exist "backend\.env" (
+  copy "backend\.env.example" "backend\.env" >nul
+  echo Arquivo backend\.env criado. Preencha Client ID / Secret do Bling.
+  echo APP_BASE_URL=http://127.0.0.1:8000
+  echo MONGO_URL=memory://local
+  notepad "backend\.env"
+  echo Salve o arquivo e pressione uma tecla...
+  pause >nul
 )
 
-if "%~1"=="/silencioso" exit
+findstr /b "APP_BASE_URL=" "backend\.env" | findstr /i "127.0.0.1 localhost" >nul
+if errorlevel 1 (
+  echo Dica: para este atalho use APP_BASE_URL=http://127.0.0.1:8000 no .env
+)
 
-echo.
-echo Aguardando o painel ficar pronto (a primeira vez leva 3 a 5 minutos)...
+if not exist "backend\.venv" (
+  echo Criando ambiente Python...
+  %PY% -m venv "backend\.venv"
+)
+call "backend\.venv\Scripts\activate.bat"
+echo Instalando dependencias Python...
+python -m pip install -q -r "backend\requirements.txt"
+echo Instalando Chromium do robô (primeira vez demora)...
+python -m playwright install chromium
 
-REM Espera ate 10 minutos (120 tentativas x 5s)
-set /a TENTATIVAS=0
-:aguardar
-timeout /t 5 /nobreak >nul
-set /a TENTATIVAS+=1
-curl -s -o nul http://127.0.0.1:3000/ 2>nul
-if not errorlevel 1 goto pronto
-REM Se a janela do painel morreu, aborta em vez de esperar para sempre
-tasklist /fi "windowtitle eq TotyShop Frontend*" 2>nul | find /i "cmd.exe" >nul
-if errorlevel 1 goto falhou
-if !TENTATIVAS! GEQ 120 goto falhou
-goto aguardar
+where npm >nul 2>&1
+if errorlevel 1 (
+  echo npm nao encontrado. Reinstale o Node.js.
+  pause
+  exit /b 1
+)
 
-:pronto
-echo.
-echo ============================================
-echo   Tudo pronto! Abrindo o painel...
-echo ============================================
-start http://127.0.0.1:3000/
-timeout /t 3 /nobreak >nul
-exit
+if not exist "frontend\node_modules" (
+  echo Instalando dependencias do painel...
+  pushd frontend
+  call npm install --legacy-peer-deps
+  popd
+)
 
-:falhou
+if not exist "frontend\build\index.html" (
+  echo Compilando o painel...
+  pushd frontend
+  set CI=false
+  set DISABLE_ESLINT_PLUGIN=true
+  set GENERATE_SOURCEMAP=false
+  call npm run build
+  popd
+)
+
+set "FRONTEND_BUILD=%~dp0frontend\build"
 echo.
-echo ============================================
-echo   [ERRO] O painel nao ficou disponivel.
-echo ============================================
-echo Registros de erro:
-echo   %LOGDIR%\frontend.log
-echo   %LOGDIR%\backend.log
-echo   %MONGOLOG%
+echo Abrindo http://127.0.0.1:8000
+echo No Bling, Dados basicos, cole:
+echo   http://127.0.0.1:8000/api/bling/callback
 echo.
-echo Ultimas linhas do painel:
-if exist "%LOGDIR%\frontend.log" powershell -NoProfile -Command "Get-Content '%LOGDIR%\frontend.log' -Tail 15"
-echo.
-pause
-exit /b 1
+start "" "http://127.0.0.1:8000/"
+cd /d "%~dp0backend"
+python -m uvicorn server:app --host 127.0.0.1 --port 8000
