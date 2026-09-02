@@ -158,3 +158,80 @@ def test_parse_singular_cor_apenas_uma_opcao_ignora():
     """'Disponível na cor Preto' com apenas 1 item continua sendo descritivo."""
     raw = "Disponível na cor Preto"
     assert _parse_variations(raw) == []
+
+
+# ---------- Regressões 28/07: URSO fan + AL-T12 ----------
+
+def test_parse_blank_lines_between_bullet_items_urso():
+    """REGRESSÃO 20220A (Mini Fan URSO): linhas em branco ENTRE as cores
+    faziam o parser capturar só a 1ª e colapsar para []."""
+    raw = (
+        "Mini Ventilador Portátil Recarregável de Mesa Mini Fan URSO\n\n"
+        "Marca: Hmaston\n\n"
+        "Disponível nas cores:\n\n"
+        "-Rosa Claro\n\n-Rosa Escuro\n\n-Pink\n\n-Azul Claro\n\n"
+        "-Azul Escuro\n\n-Branco\n\n-Marrom\n\n"
+        "Medidas:\n\nL: 10,0 x C: 7,0 x A: 17,5cm\n\nPeso do Produto: 135g"
+    )
+    out = _parse_variations(raw)
+    assert set(out) == {
+        "Rosa Claro", "Rosa Escuro", "Pink", "Azul Claro",
+        "Azul Escuro", "Branco", "Marrom",
+    }, out
+
+
+def test_parse_esgotado_nao_vira_variacao_alt12():
+    """REGRESSÃO AL-T12: 'Rosa - Esgotado.' gerava variação chamada 'Esgotado'."""
+    raw = (
+        "Fone de Ouvido Intra Auricular AL-T12\n\n"
+        "Disponível nas cores:\n"
+        "Preto\n"
+        "Rosa - Esgotado.\n"
+        "Verde - Esgotado.\n"
+        "Ciano - Esgotado.\n"
+        "Azul - Esgotado.\n"
+        "Branco - Esgotado.\n\n"
+        "Medidas:\nL: 8,5 x C: 3,0 x A: 17,5cm"
+    )
+    out = _parse_variations(raw)
+    assert set(out) == {"Preto", "Rosa", "Verde", "Ciano", "Azul", "Branco"}, out
+    assert not any("esgot" in v.lower() for v in out)
+
+
+def test_parse_trigger_opcoes_de_cores():
+    raw = "Opções de cores:\n- Azul\n- Verde\n\nMedidas: 10cm"
+    out = _parse_variations(raw)
+    assert set(out) == {"Azul", "Verde"}, out
+
+
+def test_parse_trigger_secao_cores_header():
+    raw = "Fone bluetooth premium.\n\nCores:\n- Preto\n- Branco\n\nGarantia: 90 dias"
+    out = _parse_variations(raw)
+    assert set(out) == {"Preto", "Branco"}, out
+
+
+def test_parse_trigger_variacoes():
+    raw = "Variações disponíveis:\n- 110v\n- 220v\n\nPeso: 1kg"
+    out = _parse_variations(raw)
+    assert set(out) == {"110v", "220v"}, out
+
+
+def test_parse_spec_line_cor_unica_nao_vira_variacao():
+    """Linha de spec 'Cor: Preto' (1 item) não é variação."""
+    raw = "Mouse gamer.\nCor: Preto\nPeso: 100g"
+    assert _parse_variations(raw) == []
+
+
+def test_parse_sortidas_bloqueia():
+    raw = "Cores sortidas enviadas aleatoriamente.\nCores: Azul, Verde, Rosa"
+    assert _parse_variations(raw) == []
+
+
+def test_parse_nao_captura_secao_seguinte():
+    """Depois do bloco de cores, 'Medidas' e afins não podem vazar como variação."""
+    raw = (
+        "Disponível nas cores:\n\n-Branco\n\n-Marrom\n\n"
+        "Medidas:\nL: 10,0 x C: 7,0\nPeso: 135g"
+    )
+    out = _parse_variations(raw)
+    assert set(out) == {"Branco", "Marrom"}, out

@@ -14,6 +14,10 @@ from db import db
 # Global semaphore to serialize Bling API calls (Bling rate limit = 3 req/sec)
 _bling_rate_limit = asyncio.Semaphore(1)
 
+# Serializes token refreshes — Bling refresh tokens são de uso único; dois
+# refreshes concorrentes invalidam o token e derrubam a conexão inteira.
+_refresh_lock = asyncio.Lock()
+
 
 BLING_CLIENT_ID = os.environ["BLING_CLIENT_ID"]
 BLING_CLIENT_SECRET = os.environ["BLING_CLIENT_SECRET"]
@@ -113,6 +117,8 @@ async def save_tokens(token_data: dict) -> None:
         "scope": token_data.get("scope"),
         "expires_at": expires_at.isoformat(),
         "updated_at": now.isoformat(),
+        "needs_reconnect": False,
+        "last_refresh_error": None,
     }
     await db.bling_tokens.update_one(
         {"account_id": ACCOUNT_ID},
@@ -129,25 +135,52 @@ async def disconnect():
     await db.bling_tokens.delete_one({"account_id": ACCOUNT_ID})
 
 
+async def _mark_needs_reconnect(reason: str) -> None:
+    """NUNCA apaga o token — apenas marca que o usuário precisa reconectar."""
+    await db.bling_tokens.update_one(
+        {"account_id": ACCOUNT_ID},
+        {"$set": {
+            "needs_reconnect": True,
+            "last_refresh_error": (reason or "")[:300],
+            "updated_at": _now().isoformat(),
+        }},
+    )
+
+
 async def get_valid_access_token() -> Tuple[str, str]:
     doc = await get_token_doc()
     if not doc:
         raise HTTPException(status_code=400, detail="Bling não está conectado")
+    if doc.get("needs_reconnect"):
+        raise HTTPException(status_code=400, detail="Token Bling expirou — reconecte em Configurações")
     expires_at = datetime.fromisoformat(doc["expires_at"])
     if expires_at - timedelta(seconds=60) > _now():
         return doc["access_token"], doc.get("token_type", "Bearer")
-    # refresh
-    data: dict = {}
-    try:
-        data = await refresh_tokens(doc["refresh_token"])
-    except HTTPException:
-        await disconnect()
-        raise HTTPException(status_code=400, detail="Falha ao renovar token Bling — reconecte")
-    except Exception as e:
-        await disconnect()
-        raise HTTPException(status_code=400, detail=f"Erro inesperado ao renovar token: {e}")
-    await save_tokens(data)
-    return data["access_token"], data.get("token_type", "Bearer")
+    async with _refresh_lock:
+        # Re-lê: outra coroutine pode ter renovado enquanto esperávamos o lock
+        doc = await get_token_doc()
+        if not doc:
+            raise HTTPException(status_code=400, detail="Bling não está conectado")
+        expires_at = datetime.fromisoformat(doc["expires_at"])
+        if expires_at - timedelta(seconds=60) > _now():
+            return doc["access_token"], doc.get("token_type", "Bearer")
+        last_err = ""
+        for attempt in range(3):
+            try:
+                data = await refresh_tokens(doc["refresh_token"])
+                await save_tokens(data)
+                return data["access_token"], data.get("token_type", "Bearer")
+            except HTTPException as he:
+                last_err = str(he.detail)
+                if "invalid_grant" in last_err.lower():
+                    # Refresh token definitivamente inválido — marca, não apaga
+                    await _mark_needs_reconnect(last_err)
+                    raise HTTPException(status_code=400, detail="Refresh token Bling expirou — reconecte em Configurações")
+            except Exception as e:
+                last_err = str(e)
+            await asyncio.sleep(2.0 * (attempt + 1))
+        # Falha transitória (rede/5xx): mantém o token salvo e tenta na próxima chamada
+        raise HTTPException(status_code=502, detail=f"Bling refresh temporariamente indisponível: {last_err[:200]}")
 
 
 async def bling_request(method: str, path: str, params=None, json=None) -> httpx.Response:
@@ -164,8 +197,29 @@ async def bling_request(method: str, path: str, params=None, json=None) -> httpx
         # Enforce ~500ms between Bling requests
         await asyncio.sleep(0.5)
     if resp.status_code == 401:
-        await disconnect()
-        raise HTTPException(status_code=401, detail="Bling 401 — reconecte")
+        # Access token revogado — força UM refresh e repete a chamada.
+        # Jamais apaga o token aqui: 401 transitório não é desconexão.
+        async with _refresh_lock:
+            doc = await get_token_doc()
+            if not doc or doc.get("needs_reconnect"):
+                raise HTTPException(status_code=401, detail="Bling 401 — reconecte em Configurações")
+            try:
+                data = await refresh_tokens(doc["refresh_token"])
+                await save_tokens(data)
+            except HTTPException as he:
+                if "invalid_grant" in str(he.detail).lower():
+                    await _mark_needs_reconnect(str(he.detail))
+                raise HTTPException(status_code=401, detail="Bling 401 — reconecte em Configurações")
+            except Exception:
+                raise HTTPException(status_code=401, detail="Bling 401 — falha ao renovar token")
+        async with _bling_rate_limit:
+            access_token, token_type = await get_valid_access_token()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+                resp = await client.request(method, url, params=params, json=json, headers={
+                    "Authorization": f"{token_type} {access_token}",
+                    "Accept": "application/json",
+                })
+            await asyncio.sleep(0.5)
     # Bling sometimes returns 429 even with our throttle — retry once after 2s
     if resp.status_code == 429:
         await asyncio.sleep(2.0)
@@ -184,6 +238,13 @@ async def status() -> dict:
     doc = await get_token_doc()
     if not doc:
         return {"connected": False}
+    if doc.get("needs_reconnect"):
+        return {
+            "connected": False,
+            "needs_reconnect": True,
+            "last_refresh_error": doc.get("last_refresh_error"),
+            "updated_at": doc.get("updated_at"),
+        }
     return {
         "connected": True,
         "expires_at": doc["expires_at"],

@@ -7,6 +7,8 @@ Each step returns:
   - detail: what's wrong / what to do next
   - action: optional CTA the UI can render (link, button id, etc.)
 """
+import os
+
 from fastapi import APIRouter
 import httpx
 

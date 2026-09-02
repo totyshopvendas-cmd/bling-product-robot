@@ -198,6 +198,17 @@ def _parse_variation_quantities(raw_description: str, variations: List[str]) -> 
     return out
 
 
+_NON_VARIATION_WORDS = {
+    "e", "ou", "etc", "...", "esgotado", "esgotada", "esgotados", "esgotadas",
+    "indisponível", "indisponivel", "disponível", "disponivel",
+    "sem estoque", "em estoque", "novo", "nova",
+}
+_STATUS_SUFFIX_RE = re.compile(
+    r"[\s\-–:]*\b(esgotad[oa]s?|indispon[íi]ve\w*|sem\s+estoque|em\s+estoque|dispon[íi]ve\w*)\b\.?\s*$",
+    re.IGNORECASE,
+)
+
+
 def _parse_variations(raw_description: str) -> List[str]:
     """Extract variation names from descriptions following strict TotyShop rules:
 
@@ -222,6 +233,9 @@ def _parse_variations(raw_description: str) -> List[str]:
         r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
         r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
         r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
+        r"\bsortid[ao]s?\b",
+        r"\bcor(?:es)?\s+aleat[óo]ri[ao]s?\b",
+        r"\benvio\s+aleat[óo]rio\b",
     ]
     for dp in global_disclaimers:
         if re.search(dp, raw_description, re.IGNORECASE):
@@ -238,30 +252,69 @@ def _parse_variations(raw_description: str) -> List[str]:
     if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
         blocked_kinds.add("modelos")
 
-    # GATE 2: aceita PLURAL ("cores"/"tamanhos"/"modelos") sempre; aceita
-    # SINGULAR ("cor"/"tamanho"/"modelo") APENAS quando o body tem múltiplos
-    # itens listados abaixo — nesse caso é uma variação real, não descrição.
-    patterns = [
-        # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
-        # Plural sem "Disponível" — "Cores disponíveis:"
-        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
-        # Singular com "Disponível" — só será aceito se body tiver 2+ itens
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
+    # GATE 2: localiza o GATILHO da lista de variações. Ordem = prioridade:
+    # frases explícitas primeiro, cabeçalhos genéricos ("Cores:") depois,
+    # singular por último (só vale com 2+ itens — regra >= 2 no final).
+    trigger_patterns = [
+        r"dispon[ií]ve[il]s?\s+(?:nas?\s+seguintes|nas?|nos?|em)?\s*(cores|tamanhos|modelos)\s*:?",
+        r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?\s*:?",
+        r"op[çc][õo]es?\s+de\s+(cores?|tamanhos?|modelos?)\s*:?",
+        r"escolha\s+(?:entre\s+)?(?:[ao]s?\s+)?(cores?|tamanhos?|modelos?)\s*:?",
+        r"vendid[oa]s?\s+(?:nas?|nos?|em)\s+(cores|tamanhos|modelos)\s*:?",
+        r"varia[çc][õo]es(?:\s+dispon[ií]veis)?\s*:",
+        r"^[ \t]*(cores|tamanhos|modelos)\s*:",
+        r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)\s*:?",
+        r"^[ \t]*(cor|tamanho|modelo)\s*:",
     ]
-    body = ""
+    m = None
     kind = ""
-    for pat, _is_plural in patterns:
-        m = re.search(pat, raw_description, re.IGNORECASE)
+    for pat in trigger_patterns:
+        m = re.search(pat, raw_description, re.IGNORECASE | re.MULTILINE)
         if m:
-            kind = (m.group(1) or "").lower()
-            body = m.group(2)
+            kind = (m.group(1) or "").lower() if m.groups() else ""
             break
-    if not body:
+    if not m:
         return []
     # Normaliza kind singular → plural para bater com blocked_kinds
     kind_normalized = {"cor": "cores", "tamanho": "tamanhos", "modelo": "modelos"}.get(kind, kind)
     if kind_normalized in blocked_kinds:
+        return []
+
+    # Extrai o corpo LINHA A LINHA a partir do gatilho. Suporta:
+    #   - itens com linhas em branco ENTRE eles ("\n\n-Rosa Claro\n\n-Rosa Escuro")
+    #   - itens sem marcador em linhas contíguas ("Preto\nRosa - Esgotado.")
+    #   - itens inline ("Disponível nas cores: Azul, Verde, Vermelho")
+    rest = raw_description[m.end():]
+    lines = rest.split("\n")
+    stop_line = re.compile(
+        r"^(medidas?|dimens|peso|conte[úu]do|especifica|caracter[íi]st|garantia|"
+        r"observa|informa|itens?\b|acompanha|inclui|obs\b|como\s+usar|modo\s+de)",
+        re.IGNORECASE,
+    )
+    bullet_re = re.compile(r"^[-–—•*▪●✔→]+\s*(\S.*)$")
+    item_lines: List[str] = []
+    inline = lines[0].split(".")[0].lstrip(":").strip() if lines else ""
+    if inline:
+        item_lines.append(inline)
+    blank_seen = False
+    for line in lines[1:60]:
+        stripped = line.strip()
+        if not stripped:
+            blank_seen = True
+            continue
+        bm = bullet_re.match(stripped)
+        if bm:
+            item_lines.append(bm.group(1).strip())
+            blank_seen = False
+            continue
+        # Linha sem marcador: só é item se contígua, curta e sem cara de seção
+        no_dot = stripped.rstrip(".").strip()
+        if (blank_seen or ":" in no_dot or "." in no_dot
+                or len(no_dot) > 30 or stop_line.match(no_dot)):
+            break
+        item_lines.append(no_dot)
+    body = "\n".join(item_lines)
+    if not body:
         return []
 
     # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
@@ -276,7 +329,12 @@ def _parse_variations(raw_description: str) -> List[str]:
         # extracted later by _parse_variation_quantities.
         # Remove parenthetical content (e.g. "(esgotado)" or "(5)") for the name itself
         p_clean = re.sub(r"\([^)]*\)", "", p).strip()
-        if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
+        # Remove sufixo de status ("Rosa Esgotado", "Azul: sem estoque") — o
+        # status em si é extraído depois por _parse_variation_quantities.
+        p_clean = _STATUS_SUFFIX_RE.sub("", p_clean).strip(" -–:.")
+        if not p_clean or p_clean.lower() in _NON_VARIATION_WORDS:
+            continue
+        if ":" in p_clean:
             continue
         # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
         # Allow up to 3 words to keep compound colors ("Cinza com preto",
@@ -596,11 +654,15 @@ async def update_bling_product(
             sr = await bling_service.bling_request(
                 "POST", "/produtos/fornecedores", json=supplier_entry,
             )
-            if sr.status_code >= 400 and "j\u00e1" not in sr.text.lower():
-                await add_log(
-                    "info",
-                    f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
-                )
+            if sr.status_code >= 400:
+                low = sr.text.lower()
+                if "duplicad" in low or "j\u00e1" in low or "já" in low:
+                    pass  # fornecedor já vinculado — ok
+                else:
+                    await add_log(
+                        "info",
+                        f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
+                    )
         except Exception as e:
             await add_log("info", f"Bling fornecedor {product_id}: {e}")
 

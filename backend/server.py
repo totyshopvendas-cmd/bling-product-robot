@@ -165,6 +165,23 @@ async def pricing_stats() -> dict:
     return await pricing_service.stats()
 
 
+@api.get("/pricing/export")
+async def pricing_export():
+    """Exporta a tabela de preços atual (importada via CSV) como download CSV."""
+    from fastapi.responses import StreamingResponse
+
+    async def gen():
+        yield "Custo do Catálogo;Preço da Loja;Preço de Venda\n"
+        async for r in db.pricing.find({}, {"_id": 0}).sort("cost_cents", 1):
+            cost = f"{r['cost_cents'] / 100:.2f}".replace(".", ",")
+            yield f"{cost};{r.get('store_price_brl', '')};{r.get('sale_price_int', '')}\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tabela_precos.csv"},
+    )
+
+
 # ---------- Bling OAuth ----------
 @api.get("/bling/authorize-url")
 async def bling_authorize_url(next: str = "/configuracoes") -> dict:
