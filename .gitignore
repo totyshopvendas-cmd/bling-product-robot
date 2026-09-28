@@ -88,3 +88,6 @@ credentials.json
 .credentials
 
 logs/
+
+# Planilhas exportadas da JonhDrop
+backend/exports/

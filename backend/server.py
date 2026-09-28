@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel
@@ -46,6 +46,7 @@ from image_proxy import router as image_proxy_router
 from diag_service import router as diag_router
 import stock_sync
 import stock_sync_bot
+import johndrop_export
 import category_mapping
 import category_mapping_bot
 
@@ -523,6 +524,50 @@ async def stock_sync_status() -> dict:
         "in_memory_summary": _STOCK_SYNC_STATE["last_summary"],
         "last_run": last,
     }
+
+
+# ----- Exportar planilha (JonhDrop "Meus Produtos" → .xlsx) -----------------
+class JohnDropExportRequest(BaseModel):
+    detailed: bool = True
+    max_products: Optional[int] = None
+
+
+@api.post("/johndrop-export/run")
+async def johndrop_export_run(req: Optional[JohnDropExportRequest] = None) -> dict:
+    """Inicia a exportação em background. Somente leitura na JonhDrop."""
+    req = req or JohnDropExportRequest()
+    if johndrop_export.STATE["running"]:
+        return {"ok": False, "running": True, "message": "Exportação já em andamento"}
+    import asyncio as _aio
+    johndrop_export.reset_state(req.detailed)
+    _aio.create_task(johndrop_export.run_export(req.detailed, req.max_products))
+    return {"ok": True, "running": True, "started_at": johndrop_export.STATE["started_at"]}
+
+
+@api.post("/johndrop-export/stop")
+async def johndrop_export_stop() -> dict:
+    """Interrompe e gera a planilha parcial com o que já foi coletado."""
+    if not johndrop_export.STATE["running"]:
+        return {"ok": False, "message": "Nenhuma exportação em andamento"}
+    johndrop_export.STATE["stop_requested"] = True
+    return {"ok": True}
+
+
+@api.get("/johndrop-export/status")
+async def johndrop_export_status() -> dict:
+    return johndrop_export.get_status()
+
+
+@api.get("/johndrop-export/download")
+async def johndrop_export_download(name: Optional[str] = Query(default=None)):
+    path = johndrop_export.resolve_export(name)
+    if not path:
+        raise HTTPException(status_code=404, detail="Nenhuma planilha encontrada")
+    media = (
+        "text/csv" if path.suffix.lower() == ".csv"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 # ----- Category Mapping (Bling → Marketplaces multiloja) -------------------
