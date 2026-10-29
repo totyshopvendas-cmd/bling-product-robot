@@ -10,7 +10,7 @@ Rules for descriptions:
 - No brand names (XLS, Kapbom, etc) or EAN/GTIN
 - Only <b>bold</b> and hyphens (-) allowed
 - Variations (cores/tamanhos/modelos) must be preserved & highlighted in short description
-"""
+ """
 import os
 import re
 import uuid
@@ -24,6 +24,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 import bling_service
 from db import db
 from robot_service import add_log
+from color_variation_guard import filter_variations_by_color
 
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
@@ -59,7 +60,7 @@ SHORT_DESC_SYSTEM = (
     "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
     "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
     "não um redator. Apenas:\n"
-    "  (a) divide em parágrafos com \\n\\n\n"
+    "  (a) divide em parágrafos com \\n\\n\n\n"
     "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
     "  (c) substitui bullets/asteriscos por hífen (- )\n"
     "PROIBIDO ALTERAR:\n"
@@ -102,8 +103,8 @@ CATEGORY_SYSTEM = (
     "Dada a descrição de um produto e uma lista de categorias disponíveis no Bling, "
     "escolha a categoria MAIS APROPRIADA. "
     "Responda APENAS com um JSON válido no formato:\n"
-    '{\"category_id\": <id ou null>, \"category_name\": \"<nome se for criar nova>\", '
-    '\"confidence\": \"high\"|\"medium\"|\"low\"}\n'
+    '{"category_id": <id ou null>, "category_name": "<nome se for criar nova>", '
+    '"confidence": "high"|"medium"|"low"}\n'
     "Use 'category_id' quando uma categoria existente couber bem (confidence=high ou medium). "
     "Use 'category_id: null' e 'category_name' com um nome curto/genérico se NENHUMA categoria existente couber. "
     "Categorias genéricas válidas: 'Eletrônicos', 'Beleza', 'Casa', 'Acessórios', 'Esporte', 'Brinquedos', 'Saúde'."
@@ -243,11 +244,11 @@ def _parse_variations(raw_description: str) -> List[str]:
     # itens listados abaixo — nesse caso é uma variação real, não descrição.
     patterns = [
         # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jog[...]
         # Plural sem "Disponível" — "Cores disponíveis:"
-        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
+        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
         # Singular com "Disponível" — só será aceito se body tiver 2+ itens
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
     ]
     body = ""
     kind = ""
@@ -596,7 +597,7 @@ async def update_bling_product(
             sr = await bling_service.bling_request(
                 "POST", "/produtos/fornecedores", json=supplier_entry,
             )
-            if sr.status_code >= 400 and "j\u00e1" not in sr.text.lower():
+            if sr.status_code >= 400 and "já" not in sr.text.lower():
                 await add_log(
                     "info",
                     f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
@@ -896,7 +897,14 @@ async def enrich_product_by_sku(
         full = full_after_sync or await _fetch_bling_product_full(product_id) or product
         variations = _parse_variations(raw_description)
         if variations:
-            await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
+            filtered_variations = filter_variations_by_color(variations, raw_description, images)
+            if filtered_variations:
+                await add_log("info", f"Variações validadas pela imagem para {sku}: {', '.join(filtered_variations)}")
+            else:
+                await add_log("info", f"Variações ignoradas para {sku}: descrição menciona cor mas a imagem não confirmou a variação.")
+            variations = filtered_variations
+            if variations:
+                await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
         ok = await update_bling_product(
             product_id, full, payload,
             johndrop_id=johndrop_id, cost=cost, variations=variations or None,
