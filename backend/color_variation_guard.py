@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence, Set
 
 from color_analyzer import detect_dominant_colors
 
@@ -61,12 +61,15 @@ def _normalize_color_token(value: str) -> str:
     return token
 
 
+def _is_color_name(value: str) -> bool:
+    return _normalize_color_token(value) in set(COLOR_ALIASES.values())
+
+
 def _contains_color_description(raw_description: str) -> bool:
     if not raw_description:
         return False
     text = raw_description.lower()
-    color_keywords = tuple(COLOR_ALIASES.keys())
-    for keyword in color_keywords:
+    for keyword in COLOR_ALIASES.keys():
         if keyword in text:
             return True
     return False
@@ -87,8 +90,8 @@ def _image_urls_from_source(images: Iterable[object]) -> List[str]:
     return urls
 
 
-def _colors_from_images(images: Optional[Sequence[object]]) -> set[str]:
-    colors: set[str] = set()
+def _colors_from_images(images: Optional[Sequence[object]]) -> Set[str]:
+    colors: Set[str] = set()
     for image_url in _image_urls_from_source(images):
         try:
             detected = detect_dominant_colors(image_url, top_n=4)
@@ -106,25 +109,34 @@ def filter_variations_by_color(
     raw_description: str = "",
     images: Optional[Sequence[object]] = None,
 ) -> List[str]:
-    """Aplica a regra de segurança pedida:
-    - somente valida variações por cor quando a descrição menciona cor;
-    - somente mantém variações cuja cor bate com a imagem;
-    - se não houver descrição de cor ou imagem não confirmar, retorna []
+    """Mantém variações de tamanho/modelo intactas e filtra apenas variações de cor.
+
+    Regra pedida:
+    - somente usa análise visual quando a descrição menciona cor;
+    - só mantém a variação de cor se a imagem confirmar a cor;
+    - outras variações (tamanho/modelo) continuam sem ser alteradas.
     """
     if not variations:
-        return []
-    if not _contains_color_description(raw_description):
         return []
 
     image_colors = _colors_from_images(images)
     if not image_colors:
-        return []
+        return [v for v in variations if not _is_color_name(v)]
 
     filtered: List[str] = []
     for variation in variations:
         variation_text = (variation or "").strip()
         if not variation_text:
             continue
+
+        if not _is_color_name(variation_text):
+            filtered.append(variation_text)
+            continue
+
+        if not _contains_color_description(raw_description):
+            filtered.append(variation_text)
+            continue
+
         normalized_variation = _normalize_color_token(variation_text)
         if normalized_variation in image_colors:
             filtered.append(variation_text)
