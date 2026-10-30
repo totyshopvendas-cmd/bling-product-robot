@@ -49,10 +49,10 @@ if not exist "backend\.venv" (
   %PY% -m venv "backend\.venv"
 )
 call "backend\.venv\Scripts\activate.bat"
-if not exist "backend\.venv\.req-ok" (
+if not exist "backend\.venv\.req-ok-v3" (
   echo Instalando dependencias Python (so na primeira vez)...
   python -m pip install -q -r "backend\requirements.txt"
-  echo. > "backend\.venv\.req-ok"
+  echo. > "backend\.venv\.req-ok-v3"
 )
 if not exist "%LOCALAPPDATA%\ms-playwright" (
   echo Instalando Chromium do robo (so na primeira vez)...
@@ -76,7 +76,7 @@ if not exist "frontend\node_modules" (
 )
 
 if not exist "frontend\build\index.html" goto dobuild
-if not exist "frontend\build\.stamp-tabela-1" goto dobuild
+if not exist "frontend\build\.stamp-v3" goto dobuild
 goto afterbuild
 :dobuild
 echo Compilando o painel...
@@ -86,7 +86,7 @@ set DISABLE_ESLINT_PLUGIN=true
 set GENERATE_SOURCEMAP=false
 call npm run build
 popd
-echo. > "frontend\build\.stamp-tabela-1"
+echo. > "frontend\build\.stamp-v3"
 :afterbuild
 
 set "FRONTEND_BUILD=%~dp0frontend\build"

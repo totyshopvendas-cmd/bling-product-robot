@@ -107,3 +107,6 @@ data/*.xls
 !data/LEIA-ME.txt
 
 backend/.secrets/
+
+# Banco local (modo sem MongoDB) — contém tokens, não versionar
+backend/data/

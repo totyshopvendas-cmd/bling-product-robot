@@ -66,8 +66,24 @@ app = FastAPI(title="TotyShop Automation")
 api = APIRouter(prefix="/api")
 
 
+@app.on_event("shutdown")
+async def _shutdown_local_db() -> None:
+    try:
+        from db import stop_local_persistence
+        stop_local_persistence()
+    except Exception as e:
+        logger.warning(f"banco local (shutdown): {e}")
+
+
 @app.on_event("startup")
 async def _startup() -> None:
+    try:
+        from db import start_local_persistence, local_db_info
+        start_local_persistence()
+        if local_db_info()["local_mode"]:
+            logger.info("Banco local (sem MongoDB): %s", local_db_info())
+    except Exception as e:
+        logger.warning(f"banco local: {e}")
     try:
         await init_indexes()
     except Exception as e:

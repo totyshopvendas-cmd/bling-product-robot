@@ -100,18 +100,4 @@ webpackConfig.devServer = (devServerConfig) => {
   return devServerConfig;
 };
 
-// Optional Emergent overlay — off unless ENABLE_VISUAL_EDITS=true
-if (isDevServer && process.env.ENABLE_VISUAL_EDITS === "true") {
-  try {
-    const { withVisualEdits } = require("@emergentbase/visual-edits/craco");
-    webpackConfig = withVisualEdits(webpackConfig);
-  } catch (err) {
-    if (err.code === "MODULE_NOT_FOUND") {
-      console.warn("[visual-edits] pacote não instalado — ignorado.");
-    } else {
-      throw err;
-    }
-  }
-}
-
 module.exports = webpackConfig;

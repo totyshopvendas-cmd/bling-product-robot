@@ -23,9 +23,9 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - **Imagens**: chegam pelo sync nativo JohnDrop→Bling (não precisamos extrair)
 
 ## Arquitetura
-- **Backend**: FastAPI + MongoDB + Playwright + emergentintegrations
+- **Backend**: FastAPI + MongoDB (ou banco local em arquivo) + Playwright + ai_client.py (IA própria)
 - **Frontend**: React + Shadcn + Tailwind (tema TotyShop laranja)
-- **LLM**: Claude Haiku 4.5 via Emergent LLM Key
+- **LLM**: chave própria — Anthropic, OpenAI, Gemini ou OpenRouter (Configurações → Inteligência Artificial)
 - **Bling API v3** OAuth 2.0
 
 ## Endpoints principais
