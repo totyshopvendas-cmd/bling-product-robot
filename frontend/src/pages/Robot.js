@@ -137,8 +137,6 @@ export default function RobotPage() {
         </p>
       </div>
 
-<<<<<<< HEAD
-=======
       {ready && (
         <div className="border border-border bg-white p-4 text-sm space-y-1">
           <div className="label-overline mb-2">Antes de cadastrar de verdade</div>
@@ -149,7 +147,6 @@ export default function RobotPage() {
         </div>
       )}
 
->>>>>>> 5b97acb (fix: mostrar o que falta antes do robô, enriquecimento e estoque)
       {chromium && (
         <div
           data-testid="chromium-status-banner"

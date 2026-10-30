@@ -10,7 +10,7 @@ Rules for descriptions:
 - No brand names (XLS, Kapbom, etc) or EAN/GTIN
 - Only <b>bold</b> and hyphens (-) allowed
 - Variations (cores/tamanhos/modelos) must be preserved & highlighted in short description
- """
+"""
 import os
 import re
 import uuid
@@ -59,7 +59,7 @@ SHORT_DESC_SYSTEM = (
     "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
     "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
     "não um redator. Apenas:\n"
-    "  (a) divide em parágrafos com \\n\\n\n\n"
+    "  (a) divide em parágrafos com \\n\\n\n"
     "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
     "  (c) substitui bullets/asteriscos por hífen (- )\n"
     "PROIBIDO ALTERAR:\n"
@@ -243,7 +243,7 @@ def _parse_variations(raw_description: str) -> List[str]:
     # itens listados abaixo — nesse caso é uma variação real, não descrição.
     patterns = [
         # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jog[...]
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
         # Plural sem "Disponível" — "Cores disponíveis:"
         (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
         # Singular com "Disponível" — só será aceito se body tiver 2+ itens
