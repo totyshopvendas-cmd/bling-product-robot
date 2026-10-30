@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Sparkles, Tags, Bot, ScrollText, Settings as SettingsIcon,
-  CircleDot, Power, Menu, X, Layers, ListChecks, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2, FileSpreadsheet,
+  CircleDot, Power, Menu, X, Layers, ListChecks, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2, FileSpreadsheet, ShieldAlert,
 } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
@@ -15,6 +15,7 @@ const NAV = [
   { to: "/shopee", icon: Bot, label: "Robô Shopee" },
   { to: "/bling", icon: Layers, label: "Enriquecimento Bling" },
   { to: "/bling-lote", icon: ListChecks, label: "Enriquecer em Lote" },
+  { to: "/auditoria-bling", icon: ShieldAlert, label: "Auditoria Bling" },
   { to: "/estoque-sync", icon: RefreshCw, label: "Sync Estoque" },
   { to: "/exportar-jonhdrop", icon: FileSpreadsheet, label: "Exportar Planilha" },
   { to: "/categorias-multiloja", icon: Link2, label: "Categorias Multiloja" },
@@ -59,7 +60,6 @@ export default function Layout({ children }) {
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
-      {/* Sidebar */}
       <aside
         data-testid="app-sidebar"
         className={`${open ? "fixed inset-y-0 left-0 z-40" : "hidden"} md:flex md:static w-64 flex-col border-r border-border bg-white`}
@@ -110,7 +110,6 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      {/* Main */}
       <div className="flex-1 min-w-0 flex flex-col">
         <header className="h-14 border-b border-border bg-white flex items-center justify-between px-4 md:px-8">
           <button

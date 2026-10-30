@@ -13,6 +13,7 @@ import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
 import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
+import BlingAudit from "@/pages/BlingAudit";
 import StockSync from "@/pages/StockSync";
 import JohnDropExport from "@/pages/JohnDropExport";
 import CategoryMapping from "@/pages/CategoryMapping";
@@ -27,27 +28,28 @@ function App() {
     <BrowserRouter>
       <Toaster position="top-right" richColors closeButton />
       <AuthGate>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/limpeza" element={<TitleCleaner />} />
-          <Route path="/precos" element={<Pricing />} />
-          <Route path="/robo" element={<Robot />} />
-          <Route path="/shopee" element={<ShopeeRobot />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/bling" element={<BlingEnrichment />} />
-          <Route path="/bling-lote" element={<BlingBulkEnrich />} />
-          <Route path="/estoque-sync" element={<StockSync />} />
-          <Route path="/exportar-jonhdrop" element={<JohnDropExport />} />
-          <Route path="/categorias-multiloja" element={<CategoryMapping />} />
-          <Route path="/redes-sociais" element={<SocialSettings />} />
-          <Route path="/criar-anuncio" element={<CreateAd />} />
-          <Route path="/agenda" element={<Schedule />} />
-          <Route path="/setup-redes" element={<Onboarding />} />
-          <Route path="/progresso" element={<EnrichmentProgress />} />
-          <Route path="/configuracoes" element={<Settings />} />
-        </Routes>
-      </Layout>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/limpeza" element={<TitleCleaner />} />
+            <Route path="/precos" element={<Pricing />} />
+            <Route path="/robo" element={<Robot />} />
+            <Route path="/shopee" element={<ShopeeRobot />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/bling" element={<BlingEnrichment />} />
+            <Route path="/bling-lote" element={<BlingBulkEnrich />} />
+            <Route path="/auditoria-bling" element={<BlingAudit />} />
+            <Route path="/estoque-sync" element={<StockSync />} />
+            <Route path="/exportar-jonhdrop" element={<JohnDropExport />} />
+            <Route path="/categorias-multiloja" element={<CategoryMapping />} />
+            <Route path="/redes-sociais" element={<SocialSettings />} />
+            <Route path="/criar-anuncio" element={<CreateAd />} />
+            <Route path="/agenda" element={<Schedule />} />
+            <Route path="/setup-redes" element={<Onboarding />} />
+            <Route path="/progresso" element={<EnrichmentProgress />} />
+            <Route path="/configuracoes" element={<Settings />} />
+          </Routes>
+        </Layout>
       </AuthGate>
     </BrowserRouter>
   );

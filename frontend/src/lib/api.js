@@ -8,10 +8,9 @@ const API_TIMEOUT_MS = 60000;
 export const api = axios.create({
   baseURL: API_BASE,
   timeout: API_TIMEOUT_MS,
-  withCredentials: !BACKEND_URL, // cookie de login só no mesmo domínio
+  withCredentials: !BACKEND_URL,
 });
 
-// Sessão expirou (servidor com APP_PASSWORD) → volta para a tela de login.
 api.interceptors.response.use(
   (res) => res,
   (err) => {
@@ -48,6 +47,8 @@ export const endpoints = {
   blingDisconnect: () => api.post("/bling/disconnect"),
   blingProducts: (pagina = 1, limite = 20) =>
     api.get(`/bling/products?pagina=${pagina}&limite=${limite}`),
+  blingAudit: (limit = 500) => api.get("/bling/audit", { params: { limit } }),
+  blingAuditFixBrands: (product_ids) => api.post("/bling/audit/fix-brands", { product_ids }),
   saveBlingApp: (client_id, client_secret) =>
     api.post("/settings/bling-app", { client_id, client_secret }),
 
