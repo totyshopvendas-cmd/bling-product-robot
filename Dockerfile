@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm install
+RUN npm install --legacy-peer-deps --no-audit --no-fund
 COPY frontend/ ./
 ENV REACT_APP_BACKEND_URL=
 ENV CI=true
@@ -13,6 +13,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_BUILD=/app/frontend/build
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
  && python -m playwright install --with-deps chromium

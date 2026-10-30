@@ -53,6 +53,7 @@ from diag_service import router as diag_router
 import stock_sync
 import stock_sync_bot
 import johndrop_export
+import admin_service
 import category_mapping
 import category_mapping_bot
 
@@ -117,6 +118,7 @@ async def _startup() -> None:
 
     import asyncio as _aio
     _aio.create_task(_load_prices_bg())
+    _aio.create_task(_stock_schedule_loop())
 
 
 @api.get("/")
@@ -739,7 +741,75 @@ async def stock_sync_status() -> dict:
         "started_at": _STOCK_SYNC_STATE["started_at"],
         "in_memory_summary": _STOCK_SYNC_STATE["last_summary"],
         "last_run": last,
+        "schedule": await _get_stock_schedule(),
     }
+
+
+# Agendamento diário do Sync de Estoque (substitui o cron da Emergent).
+# Roda dentro do próprio backend — basta o TotyShop estar ligado no horário.
+_STOCK_SCHEDULE_KEY = "stock_sync_schedule"
+
+
+async def _get_stock_schedule() -> dict:
+    doc = await db.settings.find_one({"key": _STOCK_SCHEDULE_KEY}, {"_id": 0})
+    val = (doc or {}).get("value") or {}
+    return {"enabled": bool(val.get("enabled")), "time": val.get("time") or "07:00",
+            "last_auto_run": val.get("last_auto_run")}
+
+
+class StockScheduleRequest(BaseModel):
+    enabled: bool
+    time: str = "07:00"  # HH:MM, horário de Brasília
+
+
+@api.post("/stock-sync/schedule")
+async def stock_sync_schedule(req: StockScheduleRequest) -> dict:
+    import re as _re
+    if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", req.time or ""):
+        raise HTTPException(400, "Horário inválido (use HH:MM)")
+    cur = await _get_stock_schedule()
+    await db.settings.update_one(
+        {"key": _STOCK_SCHEDULE_KEY},
+        {"$set": {"key": _STOCK_SCHEDULE_KEY, "value": {
+            "enabled": req.enabled, "time": req.time, "last_auto_run": cur.get("last_auto_run")}}},
+        upsert=True,
+    )
+    return await _get_stock_schedule()
+
+
+def due_today(now_local: datetime, hhmm: str, last_run_date: Optional[str]) -> bool:
+    """True se já passou do horário hoje e ainda não rodou hoje (puro/testável)."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    today = now_local.date().isoformat()
+    return last_run_date != today and (now_local.hour, now_local.minute) >= (h, m)
+
+
+async def _stock_schedule_loop() -> None:
+    import asyncio as _aio
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(os.environ.get("TZ_LOCAL") or "America/Sao_Paulo")
+    await _aio.sleep(30)
+    while True:
+        try:
+            sch = await _get_stock_schedule()
+            now = datetime.now(tz)
+            if sch["enabled"] and not _STOCK_SYNC_STATE["running"] and due_today(now, sch["time"], sch.get("last_auto_run")):
+                await db.settings.update_one(
+                    {"key": _STOCK_SCHEDULE_KEY},
+                    {"$set": {"value.last_auto_run": now.date().isoformat()}},
+                )
+                jd = await johndrop_bot.get_johndrop_credentials()
+                st = await bling_service.status()
+                if jd and jd.get("username") and st.get("connected"):
+                    await robot_service.add_log("info", f"Sync de estoque automático ({sch['time']}) iniciado")
+                    _STOCK_SYNC_STATE["running"] = True
+                    _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+                    _aio.create_task(_stock_sync_task())
+                else:
+                    await robot_service.add_log("warning", "Sync automático pulado: JohnDrop ou Bling não conectados")
+        except Exception as e:
+            logger.warning("stock schedule loop: %s", e)
+        await _aio.sleep(60)
 
 
 # ----- Exportar planilha (JonhDrop "Meus Produtos" → .xlsx) -----------------
@@ -1087,6 +1157,7 @@ api.include_router(enrichment_tracker_router)
 api.include_router(enrich_worker_router)
 api.include_router(image_proxy_router)
 api.include_router(diag_router)
+admin_service.setup(app, api)
 app.include_router(api)
 
 class _AllowIframe(BaseHTTPMiddleware):

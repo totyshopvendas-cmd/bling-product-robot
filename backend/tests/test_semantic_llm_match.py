@@ -62,8 +62,8 @@ def test_llm_pick_semantic_barbeador_to_beleza():
             def with_model(self, *_a, **_kw): return self
             async def send_message(self, *_a, **_kw): return mock_reply
 
-        with patch.dict(os.environ, {"EMERGENT_LLM_KEY": "test-key"}), \
-             patch("emergentintegrations.llm.chat.LlmChat", return_value=FakeChat()):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("ai_client.LlmChat", return_value=FakeChat()):
             result = await cm._llm_pick_from_existing(
                 "Barbeador", "Shopee", candidates_raw,
             )
@@ -89,8 +89,8 @@ def test_llm_pick_low_confidence_flagged_not_applied():
             def with_model(self, *_a, **_kw): return self
             async def send_message(self, *_a, **_kw): return mock_reply
 
-        with patch.dict(os.environ, {"EMERGENT_LLM_KEY": "test-key"}), \
-             patch("emergentintegrations.llm.chat.LlmChat", return_value=FakeChat()):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("ai_client.LlmChat", return_value=FakeChat()):
             result = await cm._llm_pick_from_existing(
                 "Categoria Estranha", "Shopee", candidates_raw,
             )
@@ -111,8 +111,8 @@ def test_llm_pick_zero_response_returns_none():
             def with_model(self, *_a, **_kw): return self
             async def send_message(self, *_a, **_kw): return mock_reply
 
-        with patch.dict(os.environ, {"EMERGENT_LLM_KEY": "test-key"}), \
-             patch("emergentintegrations.llm.chat.LlmChat", return_value=FakeChat()):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}), \
+             patch("ai_client.LlmChat", return_value=FakeChat()):
             result = await cm._llm_pick_from_existing(
                 "Something weird", "Shopee", candidates_raw,
             )

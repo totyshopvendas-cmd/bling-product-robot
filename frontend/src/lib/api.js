@@ -8,7 +8,20 @@ const API_TIMEOUT_MS = 60000;
 export const api = axios.create({
   baseURL: API_BASE,
   timeout: API_TIMEOUT_MS,
+  withCredentials: !BACKEND_URL, // cookie de login só no mesmo domínio
 });
+
+// Sessão expirou (servidor com APP_PASSWORD) → volta para a tela de login.
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const url = err?.config?.url || "";
+    if (err?.response?.status === 401 && !url.includes("/auth/")) {
+      window.dispatchEvent(new Event("totyshop:auth-required"));
+    }
+    return Promise.reject(err);
+  },
+);
 
 export const endpoints = {
   dashboardStats: () => api.get("/dashboard/stats"),

@@ -3,6 +3,7 @@ import "@/index.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
+import AuthGate from "@/components/AuthGate";
 import Dashboard from "@/pages/Dashboard";
 import TitleCleaner from "@/pages/TitleCleaner";
 import Pricing from "@/pages/Pricing";
@@ -25,6 +26,7 @@ function App() {
   return (
     <BrowserRouter>
       <Toaster position="top-right" richColors closeButton />
+      <AuthGate>
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -46,6 +48,7 @@ function App() {
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>
+      </AuthGate>
     </BrowserRouter>
   );
 }

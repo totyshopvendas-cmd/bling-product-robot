@@ -1,11 +1,10 @@
-"""LLM-powered fallback for title cleaning using Emergent LLM key (Claude Haiku 4.5)."""
+"""LLM-powered fallback for title cleaning (Claude Haiku 4.5 ou o provedor configurado em ai_client)."""
 import os
 import uuid
 from typing import Optional
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from ai_client import LlmChat, UserMessage, has_text_ai
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
 
 SYSTEM = (
     "Você é um especialista em SEO de marketplaces brasileiros. "
@@ -21,10 +20,9 @@ SYSTEM = (
 
 
 async def llm_clean_title(raw: str, code_hint: Optional[str] = None) -> str:
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY não configurada")
+    if not has_text_ai():
+        raise RuntimeError("Nenhuma chave de IA configurada (Configurações → Inteligência Artificial)")
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"title-clean-{uuid.uuid4()}",
         system_message=SYSTEM,
     ).with_model("anthropic", "claude-haiku-4-5-20251001")

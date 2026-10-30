@@ -10,8 +10,8 @@ import os
 import re
 import sys
 
-# Shared browser cache used by the Emergent Linux container. On Windows/macOS
-# this path is meaningless, so Playwright's own default cache is used instead.
+# Shared browser cache used by some Linux containers (/pw-browsers). On Windows/macOS
+# this path doesn't exist, so Playwright's own default cache is used instead.
 _CONTAINER_BROWSERS_PATH = "/pw-browsers"
 if (
     os.name == "posix"

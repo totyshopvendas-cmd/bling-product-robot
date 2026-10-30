@@ -4,6 +4,8 @@ import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { CheckCircle2, Link2, Save, Unplug, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import AISettings from "@/components/AISettings";
+import BackupSettings from "@/components/BackupSettings";
 
 export default function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -237,6 +239,10 @@ export default function SettingsPage() {
           {saving ? "Salvando…" : "Salvar JohnDrop"}
         </button>
       </form>
+
+      <AISettings />
+
+      <BackupSettings />
     </div>
   );
 }

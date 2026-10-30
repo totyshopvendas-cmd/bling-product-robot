@@ -19,7 +19,7 @@ import asyncio
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from ai_client import LlmChat, UserMessage, has_text_ai
 
 import bling_service
 from db import db
@@ -27,7 +27,6 @@ from robot_service import add_log
 from color_variation_guard import filter_variations_by_color
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-haiku-4-5-20251001"
 
@@ -337,10 +336,9 @@ async def _find_jonh_supplier_id() -> Optional[int]:
 
 
 async def _llm_call(system: str, user_prompt: str) -> str:
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY não configurada")
+    if not has_text_ai():
+        raise RuntimeError("Nenhuma chave de IA configurada (Configurações → Inteligência Artificial)")
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"bling-enrich-{uuid.uuid4()}",
         system_message=system,
     ).with_model(LLM_PROVIDER, LLM_MODEL)
