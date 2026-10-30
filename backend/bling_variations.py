@@ -43,6 +43,19 @@ def _attribute_kind(name: str) -> str:
     return "Tamanho" if SIZE_HINTS.match(name.strip()) else "Cor"
 
 
+async def _count_product_images(product_id: int) -> int:
+    """Return the number of images currently attached to a Bling product."""
+    try:
+        r = await bling_service.bling_request("GET", f"/produtos/{product_id}")
+        if r.status_code >= 400:
+            return 0
+        data = (r.json() or {}).get("data") or {}
+        imgs = (data.get("midia") or {}).get("imagens") or {}
+        return len((imgs.get("internas") or [])) + len((imgs.get("externas") or []))
+    except Exception:
+        return 0
+
+
 async def create_variations(
     parent_id: int,
     parent_current: Optional[dict],
@@ -419,6 +432,19 @@ async def _set_children_stock(child_ids: List[int], qty: int) -> None:
         await add_log("info", f"Estoque definido: {ok}/{len(child_ids)} variações × {qty} unidades")
 
 
+async def _count_variation_images(child_id: int) -> int:
+    """Return how many images a variation child currently has in Bling."""
+    try:
+        r = await bling_service.bling_request("GET", f"/produtos/{child_id}")
+        if r.status_code >= 400:
+            return 0
+        data = (r.json() or {}).get("data") or {}
+        imgs = (data.get("midia") or {}).get("imagens") or {}
+        return len((imgs.get("internas") or [])) + len((imgs.get("externas") or []))
+    except Exception:
+        return 0
+
+
 async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
     """Push parent images onto each child variation so the Bling listing shows
     a thumbnail per variation.
@@ -451,25 +477,29 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
     ok = 0
     failures: List[str] = []
     for cid in child_ids:
-        try:
-            # STEP 1: limpa imagens antigas do child (Bling acumula em vez de
-            # substituir quando se envia `imagensURL`). Sem esse clear, rodar
-            # o enrichment duas vezes duplica as imagens.
-            await bling_service.bling_request(
-                "PATCH", f"/produtos/{cid}",
-                json={"midia": {"imagens": {"imagensURL": [], "internas": [], "externas": []}}},
-            )
-            # STEP 2: aplica as novas
-            r = await bling_service.bling_request(
-                "PATCH", f"/produtos/{cid}",
-                json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
-            )
-            if r.status_code < 400:
-                ok += 1
-            else:
-                failures.append(f"{cid}:HTTP{r.status_code}")
-        except Exception as e:
-            failures.append(f"{cid}:{type(e).__name__}")
+        applied = False
+        for attempt in range(1, 4):
+            try:
+                await bling_service.bling_request(
+                    "PATCH", f"/produtos/{cid}",
+                    json={"midia": {"imagens": {"imagensURL": [], "internas": [], "externas": []}}},
+                )
+                r = await bling_service.bling_request(
+                    "PATCH", f"/produtos/{cid}",
+                    json={"midia": {"imagens": {"imagensURL": payload_imgs}}},
+                )
+                if r.status_code < 400 and await _count_variation_images(cid) > 0:
+                    applied = True
+                    break
+            except Exception as e:
+                failures.append(f"{cid}:{type(e).__name__}")
+                break
+            if not applied and attempt < 3:
+                await add_log("info", f"Retry imagem variação {cid} tentativa {attempt + 1}/3")
+        if applied:
+            ok += 1
+        else:
+            failures.append(f"{cid}:no_image_after_retry")
     if ok:
         await add_log(
             "info",
@@ -505,7 +535,6 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
             pid = it.get("id")
             if not pid:
                 continue
-            # Read full
             full = await bling_service.bling_request("GET", f"/produtos/{pid}")
             if full.status_code >= 400:
                 continue
@@ -515,7 +544,6 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
             children = data.get("variacoes") or []
             if not children:
                 continue
-            # Get parent stock via /saldos
             sr = await bling_service.bling_request("GET", "/estoques/saldos", params={"idsProdutos[]": pid})
             total = 0
             rows = (sr.json() or {}).get("data") or [] if sr.status_code < 400 else []
@@ -523,7 +551,6 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
                 total = int(rows[0].get("saldoVirtualTotal") or 0)
             if total <= 0:
                 continue
-            # Distribute
             dep_id = await _get_default_deposito_id()
             if not dep_id:
                 continue
@@ -539,7 +566,6 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
                     "operacao": "B", "quantidade": qty,
                     "observacoes": "Redistribuição em lote",
                 })
-            # Zero parent
             await bling_service.bling_request("POST", "/estoques", json={
                 "produto": {"id": pid}, "deposito": {"id": dep_id},
                 "operacao": "B", "quantidade": 0,
@@ -552,24 +578,34 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
 
 
 async def fix_existing_variations(parent_id: int) -> dict:
-    """Read existing variations of a parent and report their state.
+    """Read existing variations of a parent and repair image propagation.
 
-    Note: the manual UI trick "disable cloneInfo, save, re-enable, save" to
-    materialize per-variation thumbnails CANNOT be replicated via Bling API.
-    Variations created via API still inherit parent images via cloneInfo on the
-    detail screen. For per-variation thumbnails in the LIST view, the user must
-    perform the toggle manually in the Bling UI.
-
-    This function exists so the UI can show how many children a parent has.
+    For products already created in Bling, ensure each child variation receives
+    the same image set as the parent. This is a manual repair path for products
+    created before the image propagation fix was robust.
     """
     r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
     if r.status_code >= 400:
         return {"ok": False, "reason": "produto não encontrado"}
     parent = (r.json() or {}).get("data") or {}
     children = parent.get("variacoes") or []
+    if not children:
+        return {"ok": True, "fixed": 0, "failed": 0, "total": 0, "note": "pai sem variações"}
+
+    imgs = (parent.get("midia") or {}).get("imagens") or {}
+    media_urls = [(i.get("link") or "") for i in (imgs.get("internas") or []) if i.get("link")]
+    if not media_urls:
+        media_urls = [(i.get("link") or "") for i in (imgs.get("externas") or []) if i.get("link")]
+    child_ids = [c.get("id") for c in children if c.get("id")]
+    copied = 0
+    if media_urls and child_ids:
+        copied = await _copy_images_to_children(child_ids, media_urls)
     return {
-        "ok": True, "fixed": 0, "failed": 0, "total": len(children),
-        "note": "Para materializar thumbnails de variação use a UI do Bling: desabilitar cloneInfo, salvar, reabilitar, salvar.",
+        "ok": True,
+        "fixed": copied,
+        "failed": max(0, len(child_ids) - copied),
+        "total": len(child_ids),
+        "note": "Imagem do pai propagada para as variações quando possível; se Bling continuar ignorando, é necessário reabrir o produto na UI do Bling.",
     }
 
 
@@ -593,7 +629,6 @@ async def find_and_create(parent_sku: str, variations: List[str], total_stock: i
             break
     if not target:
         return {"ok": False, "reason": "produto não encontrado"}
-    # Fetch full for variacoes list
     full_resp = await bling_service.bling_request("GET", f"/produtos/{target['id']}")
     full = (full_resp.json() or {}).get("data") if full_resp.status_code < 400 else target
     result = await create_variations(target["id"], full, variations, total_stock, parent_images=parent_images)
