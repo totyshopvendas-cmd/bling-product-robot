@@ -55,11 +55,68 @@ def _sanitize(text: str, preserve_newlines: bool = False) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _clean_brand_candidate(value: str) -> str:
+    """Normalize a possible brand name from product metadata."""
+    if not value:
+        return ""
+    cleaned = re.sub(r"(?:^|\s)(?:marca|brand|fabricante)\s*[:\-]?\s*", "", value, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^A-Za-zÀ-ÿ0-9&/ .\-]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:,.")
+    return cleaned[:40].strip()
+
+
+def detect_product_brand(raw_title: str, raw_description: str = "") -> str:
+    """Infer a real brand from the product title/description, with a safe fallback.
+
+    The bot should not keep hardcoding "Generico" for every product. This helper
+    tries to detect explicit brand markers first, then a few common brand names
+    from title text, and finally falls back to a generic placeholder only if
+    nothing can be inferred.
+    """
+    text = "\n".join(part for part in [raw_title or "", raw_description or ""] if part)
+    if not text:
+        return "Generico"
+
+    # Explicit markers: "Marca: X", "Brand: X", "Fabricante: X"
+    patterns = [
+        r"(?:marca|brand|fabricante)\s*[:\-]\s*([A-Za-z0-9&/ .\-]{2,40})",
+        r"(?:marca|brand|fabricante)\s*\n\s*([A-Za-z0-9&/ .\-]{2,40})",
+    ]
+    for pat in patterns:
+        match = re.search(pat, text, flags=re.IGNORECASE)
+        if match:
+            candidate = _clean_brand_candidate(match.group(1))
+            if candidate and not re.fullmatch(r"(?:produto|item|kit|acessorio|acessório|geral|varios|vários)", candidate, flags=re.IGNORECASE):
+                return candidate.title()
+
+    # Common brand names often already present in the title/description.
+    known = [
+        "Samsung", "Apple", "Xiaomi", "Motorola", "Philips", "Sony", "JBL", "Logitech",
+        "Huawei", "Lenovo", "Asus", "Dell", "HP", "Acer", "Nikon", "Canon", "Bose",
+        "Eletrolux", "Brastemp", "Midea", "Multilaser", "Realme", "Nubia", "LG", "Coca-Cola",
+        "Adidas", "Nike", "Puma", "Skmei", "Mawas", "Sodimac", "Bic", "Magnum",
+    ]
+    normalized = text.lower()
+    for brand in known:
+        if brand.lower() in normalized:
+            return brand
+
+    # If the title contains a compact token before a product-type word, use it as a brand if
+    # it looks like a brand rather than a generic descriptor.
+    compact = re.search(r"\b([A-Z][A-Za-z0-9&/.-]{2,20})\s+(?:Smartphone|Celular|Fone|Fones|Câmera|Camera|Teclado|Mouse|Monitor|Relógio|Relogio|Kit|Acessório|Acessorio|Produto|Cabo|Carregador|Power Bank|Caixa|Speaker|Headset)\b", raw_title or "", flags=re.IGNORECASE)
+    if compact:
+        candidate = compact.group(1).strip()
+        if candidate and candidate.lower() not in {"produto", "kit", "acessorio", "acessório"}:
+            return candidate.title()
+
+    return "Generico"
+
+
 SHORT_DESC_SYSTEM = (
     "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
     "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
     "não um redator. Apenas:\n"
-    "  (a) divide em parágrafos com \\n\\n\n"
+    "  (a) divide em parágrafos com \\n\\n\n\n"
     "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
     "  (c) substitui bullets/asteriscos por hífen (- )\n"
     "PROIBIDO ALTERAR:\n"
@@ -213,40 +270,34 @@ def _parse_variations(raw_description: str) -> List[str]:
     if not raw_description:
         return []
 
-    # GATE 1: "conforme disponibilidade do estoque" → buyer doesn't choose → no variations
-    # Estes disclaimers bloqueiam qualquer tipo de variação (o vendedor manda
-    # o que tiver, comprador não escolhe).
+    text = raw_description.lower().replace("–", "-")
+
+    # GATE 1: disclaimers that mean no real user choice.
     global_disclaimers = [
         r"conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque",
         r"seguindo\s+(?:a\s+)?disponibilidade",
         r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
         r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
         r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
+        r"(?:ser[ãa]o|s[ãa]o|v[ãa]o)\s+enviad[oa]s?\s+conforme\s+(?:a\s+)?(?:estoque|disponibilidade)",
+        r"(?:cor|tamanho|modelo)\s+(?:ser[áa]|ser[ao]|s[ãa]o)\s+(?:definid[ao]|escolhid[ao])\s+conforme\s+(?:a\s+)?(?:estoque|disponibilidade)",
+        r"(?:sem|sem\s+opção|sem\s+opção\s+de\s+escolha|sem\s+escolha)",
     ]
     for dp in global_disclaimers:
-        if re.search(dp, raw_description, re.IGNORECASE):
+        if re.search(dp, text, re.IGNORECASE):
             return []
 
-    # GATE 1b: disclaimers ESPECÍFICOS por tipo — "cor única" só bloqueia
-    # variações de COR; "tamanho único" só bloqueia TAMANHO; etc.
-    # Um produto pode ter "tamanho único" para adultos MAS ter 5 cores.
     blocked_kinds: set = set()
-    if re.search(r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b", text, re.IGNORECASE):
         blocked_kinds.add("cores")
-    if re.search(r"\btamanho\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\btamanho\s+(?:[úu]nico|fixo|padr[ãa]o)\b", text, re.IGNORECASE):
         blocked_kinds.add("tamanhos")
-    if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", text, re.IGNORECASE):
         blocked_kinds.add("modelos")
 
-    # GATE 2: aceita PLURAL ("cores"/"tamanhos"/"modelos") sempre; aceita
-    # SINGULAR ("cor"/"tamanho"/"modelo") APENAS quando o body tem múltiplos
-    # itens listados abaixo — nesse caso é uma variação real, não descrição.
     patterns = [
-        # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
-        # Plural sem "Disponível" — "Cores disponíveis:"
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
         (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
-        # Singular com "Disponível" — só será aceito se body tiver 2+ itens
         (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
     ]
     body = ""
@@ -259,40 +310,29 @@ def _parse_variations(raw_description: str) -> List[str]:
             break
     if not body:
         return []
-    # Normaliza kind singular → plural para bater com blocked_kinds
+
     kind_normalized = {"cor": "cores", "tamanho": "tamanhos", "modelo": "modelos"}.get(kind, kind)
     if kind_normalized in blocked_kinds:
         return []
 
-    # Split by hyphens, commas, semicolons, line breaks, AND coordinating conjunctions
     parts = re.split(r"\s*(?:[-,;\n]|\s+(?:e|ou)\s+)\s*", body, flags=re.IGNORECASE)
     out: List[str] = []
     for p in parts:
         p = p.strip(" -")
         if not p or len(p) > 30:
             continue
-        # NOTE: we KEEP items marked as "(esgotado)" — variations with 0 stock should be
-        # created in Bling with quantity=0 (per TotyShop manual). The status info is
-        # extracted later by _parse_variation_quantities.
-        # Remove parenthetical content (e.g. "(esgotado)" or "(5)") for the name itself
         p_clean = re.sub(r"\([^)]*\)", "", p).strip()
         if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
             continue
-        # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
-        # Allow up to 3 words to keep compound colors ("Cinza com preto",
-        # "Verde escuro", "Azul claro"). The descriptive_starts filter below
-        # still catches "Ideal Para X", "Compatível com X" etc.
         words = p_clean.split()
         if len(words) > 3:
             continue
-        # FILTER: phrases that start with descriptive adjectives
         descriptive_starts = {
             "ideal", "para", "perfeito", "indicado", "recomendado", "compatível",
             "compatíve", "com", "sem", "voltado", "destinado",
         }
         if words and words[0].lower() in descriptive_starts:
             continue
-        # Normalize case
         p_clean = " ".join(w.capitalize() for w in words)
         out.append(p_clean)
     seen = set()
@@ -302,12 +342,8 @@ def _parse_variations(raw_description: str) -> List[str]:
         if kl not in seen:
             seen.add(kl)
             deduped.append(v)
-    # If only ONE option was extracted, it's a single-color/size product — not a variation
     if len(deduped) <= 1:
         return []
-    # Se o padrão original usava singular ("Disponível na cor"), só aceita
-    # quando de fato há múltiplas opções listadas (o que a regra acima já
-    # garante, pois exige >= 2). Ok, retorna.
     return deduped[:10]
 
 
@@ -335,7 +371,7 @@ async def _find_jonh_supplier_id() -> Optional[int]:
     return None
 
 
-async def _llm_call(system: str, user_prompt: str) -> str:
+def _llm_call(system: str, user_prompt: str) -> str:
     if not has_text_ai():
         raise RuntimeError("Nenhuma chave de IA configurada (Configurações → Inteligência Artificial)")
     chat = LlmChat(
@@ -524,14 +560,12 @@ async def update_bling_product(
     variations: Optional[List[str]] = None,
     images: Optional[list] = None,
 ) -> bool:
-    """PATCH the Bling product, sending ONLY the 7 fields the TotyShop manual asks
-    us to change. Every other field (nome, código, preço, peso, dimensões, imagens,
-    estoque, etc.) stays EXACTLY as it came from JohnDrop — no defaults, no zeroing.
+    """PATCH the Bling product, sending ONLY the safe fields we intentionally modify.
 
     Fields we touch:
       1. descricaoCurta (sanitized + bullets)
       2. descricaoComplementar (8 bullets)
-      3. marca = "Generico"
+      3. marca = inferred brand or fallback "Generico"
       4. condicao = 1 (Novo)
       5. tipoProducao = "T" (Terceiros)
       6. gtin = ""
@@ -539,11 +573,10 @@ async def update_bling_product(
       (+ categoria when LLM matched one, + fornecedor via separate endpoint)
     """
     parent_name = current.get("nome") or ""
+    inferred_brand = payload.get("marca") or detect_product_brand(parent_name, payload.get("descricaoCurta") or "") or "Generico"
 
-    # Build a STRICTLY MINIMAL PATCH — never include nome, código, preço, peso,
-    # dimensões, imagens, estoque, formato, etc.
     patch_payload: dict = {
-        "marca": "Generico",
+        "marca": inferred_brand,
         "condicao": 1,
         "tipoProducao": "T",
         "gtin": "",
@@ -556,16 +589,8 @@ async def update_bling_product(
     if payload.get("categoria"):
         patch_payload["categoria"] = payload["categoria"]
 
-    # IMAGENS: API v3 do Bling NÃO permite upload de imagens via PATCH ou PUT
-    # em produtos existentes (testado e confirmado: status 200 mas Bling
-    # silentemente ignora). Imagens chegam exclusivamente via sync JohnDrop→Bling
-    # (que pode demorar de segundos a minutos). Nossa lógica em
-    # _wait_for_johndrop_sync já aguarda isso. Se sync não completar dentro do
-    # tempo limite, o produto fica sem imagens — único workaround é o usuário
-    # fazer upload manual no Bling Dashboard.
-    _ = images  # kept for API signature compatibility
+    _ = images
 
-    # Supplier collected here, applied AFTER the patch succeeds (separate endpoint)
     supplier_id = await _find_jonh_supplier_id()
     supplier_entry: Optional[dict] = None
     if supplier_id:
@@ -582,7 +607,6 @@ async def update_bling_product(
             supplier_entry["precoCusto"] = round(float(cost), 2)
             supplier_entry["precoCompra"] = round(float(cost), 2)
 
-    # Send PATCH — this is parcial, never overwrites unspecified fields
     resp = await bling_service.bling_request(
         "PATCH", f"/produtos/{product_id}", json=patch_payload,
     )
@@ -590,7 +614,6 @@ async def update_bling_product(
         await add_log("warning", f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
         return False
 
-    # AFTER successful PATCH: link supplier (JONH VARIEDADES) via dedicated endpoint.
     if supplier_entry:
         try:
             sr = await bling_service.bling_request(
@@ -638,7 +661,6 @@ async def _upsert_enriched_cache(product_id: int, sku: str) -> None:
         full = await _fetch_bling_product_full(product_id)
         if not full:
             return
-        # Skip variation children — only cache parents/simples
         if (full.get("produtoPai") or {}).get("id"):
             return
         nome = (full.get("nome") or "").strip()
@@ -727,7 +749,6 @@ async def _wait_for_johndrop_sync(
         imgs = (p.get("midia") or {}).get("imagens") or {}
         return len(imgs.get("internas") or []) + len(imgs.get("externas") or [])
 
-    # First read — many products already have both ready when we get here
     full = await _read_full()
     saldo = await _read_saldo()
     imgs = _img_count(full)
@@ -738,7 +759,6 @@ async def _wait_for_johndrop_sync(
         )
         return full or {}
 
-    # Poll loop
     for attempt in range(1, max_attempts + 1):
         await add_log(
             "info",
@@ -782,10 +802,6 @@ async def enrich_product_by_sku(
     if not sku:
         return {"ok": False, "reason": "sku vazio"}
 
-    # Persist the raw_description AT THE START so bulk re-enrichment can recover it
-    # later (Bling stores enriched HTML in descricaoCurta — the original variation
-    # text from JohnDrop ends up lost otherwise). We upsert by SKU so subsequent
-    # runs don't duplicate the record.
     if raw_description and len(raw_description) > 30:
         try:
             await db.product_raw.update_one(
@@ -804,8 +820,6 @@ async def enrich_product_by_sku(
         except Exception as e:
             await add_log("warning", f"Falhou ao persistir raw para {sku}: {e}")
 
-    # If caller passed empty raw_description (typical of bulk re-enrich after a
-    # restart), try to load the persisted version from Mongo.
     if not raw_description or len(raw_description) < 30:
         try:
             doc = await db.product_raw.find_one({"sku": sku})
@@ -820,7 +834,6 @@ async def enrich_product_by_sku(
         except Exception:
             pass
 
-    # Track for live dashboard
     try:
         from enrichment_tracker import track as _track
         _track(sku, "queued", title=raw_title[:80])
@@ -849,7 +862,6 @@ async def enrich_product_by_sku(
     product_id = product.get("id")
     _track(sku, "waiting_sync", product_id=product_id)
 
-    # Wait for JohnDrop async sync to bring in stock + images.
     if wait_for_product:
         full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
     else:
@@ -874,10 +886,6 @@ async def enrich_product_by_sku(
             pick_or_create_category(raw_title, raw_description),
         )
     except Exception as e:
-        # LLM falhou (saldo esgotado, rate limit, etc). Em vez de abortar tudo,
-        # aplica APENAS os campos que não dependem de LLM (marca, condição,
-        # tipoProducao, fornecedor, variações) — assim o produto não fica com
-        # dados errados de origem (Kapbom / Própria / Não Especificado).
         llm_failed = True
         llm_error = str(e)[:200]
         await add_log("error",
@@ -885,10 +893,11 @@ async def enrich_product_by_sku(
                       f"(marca/condição/produção/fornecedor). Erro: {llm_error}")
         short_desc, bullets, category_id = "", [], None
 
-    # Bling renders HTML in description fields — convert newlines to <br>
     short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>") if short_desc else ""
     complementar_html = "<br>".join(bullets) if bullets else ""
     payload: dict = {}
+    brand_name = detect_product_brand(raw_title, raw_description)
+    payload["marca"] = brand_name
     if short_desc_html:
         payload["descricaoCurta"] = short_desc_html
     if complementar_html:
@@ -897,8 +906,6 @@ async def enrich_product_by_sku(
         payload["categoria"] = {"id": category_id}
 
     try:
-        # Use the post-sync full product instead of an extra GET (the wait
-        # already returned the latest version).
         full = full_after_sync or await _fetch_bling_product_full(product_id) or product
         variations = _parse_variations(raw_description)
         if variations:
@@ -927,7 +934,6 @@ async def enrich_product_by_sku(
             "warning" if llm_failed else "success",
             f"Bling {status_msg}: {sku} (cat={category_id})",
         )
-        # Marca no enrich_pending que este produto precisa retry LLM depois
         if llm_failed:
             try:
                 from db import db as _db
@@ -947,17 +953,12 @@ async def enrich_product_by_sku(
             cost=cost,
             variations=variations,
         )
-        # Cache for fast /ad/products listing
         await _upsert_enriched_cache(product_id, sku)
-        # AFTER successful enrichment: try to create variations (color/size).
-        # This NEVER raises — if Bling rejects, only a warning is logged.
         variations_created = 0
         if variations:
             try:
                 import bling_variations
-                # Re-fetch product to get latest state (after the PUT just done)
                 latest = await _fetch_bling_product_full(product_id) or full
-                # Parse explicit per-variation quantities from description (e.g. "Rosa: 5")
                 explicit_qty = _parse_variation_quantities(raw_description, variations)
                 if explicit_qty:
                     await add_log(
