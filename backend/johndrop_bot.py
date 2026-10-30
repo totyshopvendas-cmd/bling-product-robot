@@ -643,7 +643,7 @@ async def _read_product_fields(page) -> Tuple[str, float]:
     return raw_title, cost
 
 
-async def _read_product_images(page) -> list:
+async def _read_product_images(page, quiet: bool = False) -> list:
     """Extract all image URLs from JohnDrop product creation form.
     Handles: <img src>, <img data-src> (lazy-load), CSS background-image, and
     product carousels. Forces a brief scroll to trigger lazy-load."""
@@ -738,6 +738,8 @@ async def _read_product_images(page) -> list:
         final = final[:15]  # limite razoável de fotos por produto
 
         try:
+            if quiet:
+                return final
             await add_log(
                 "info",
                 f"Imagens extraídas do JohnDrop: {len(final)} "

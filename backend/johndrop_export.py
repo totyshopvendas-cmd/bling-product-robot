@@ -113,6 +113,19 @@ def resolve_export(name: Optional[str]) -> Optional[Path]:
     return p if p.exists() and p.parent == EXPORT_DIR else None
 
 
+async def _save_diag(page, name: str) -> None:
+    """Salva HTML + print da página (sobrescreve). Serve para ajustar o robô
+    caso o layout real da JonhDrop seja diferente do esperado."""
+    try:
+        diag_dir = EXPORT_DIR / "diagnostico"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        html = await page.content()
+        (diag_dir / f"{name}.html").write_text(html, encoding="utf-8")
+        await page.screenshot(path=str(diag_dir / f"{name}.png"), full_page=True)
+    except Exception as e:
+        logger.info("diag %s failed: %s", name, e)
+
+
 # ------------------------------------------------------------- browser -----
 async def _login(page, username: str, password: str) -> None:
     await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
@@ -305,6 +318,8 @@ async def _scrape_list(page, creds: dict) -> List[dict]:
             items.append(it)
             new += 1
         STATE["list_pages"] = page_idx
+        if page_idx == 1:
+            await _save_diag(page, "lista_meus_produtos")
         STATE["total"] = len(items)
         await add_log("info", f"Exportar: listagem página {page_idx} → {new} produtos (total {len(items)})")
         if new == 0:
@@ -445,7 +460,7 @@ async def _read_detail(page, url: str, creds: dict) -> dict:
             (f["value"] for f in raw_fields if sheet.match_field(f.get("label"), f.get("name")) == "descricao"),
             key=len, default="",
         )
-    images = await _read_product_images(page)
+    images = await _read_product_images(page, quiet=True)
     return {"mapped": mapped, "raw_fields": raw_fields, "descricao": desc, "imagens": images}
 
 
@@ -530,6 +545,10 @@ async def run_export(detailed: bool = True, max_products: Optional[int] = None) 
                         if url:
                             try:
                                 d = await _read_detail(page, url, creds)
+                                if i == 0:
+                                    await _save_diag(page, "pagina_produto")
+                                    if len(d["mapped"]) < 2 and not d["descricao"]:
+                                        _warn("A página do produto veio quase vazia — envie a pasta backend/exports/diagnostico para ajuste.")
                                 for k, v in d["mapped"].items():
                                     if k in ("sku", "estoque", "preco") and p.get(k) not in (None, ""):
                                         continue  # listagem é a fonte oficial desses
@@ -583,7 +602,7 @@ async def run_export(detailed: bool = True, max_products: Optional[int] = None) 
                     p.setdefault("link", pick_detail_link(p) or "")
                     p.setdefault("detalhe_status", "não solicitado" if not detailed else "não processado")
                     _apply_variations(p)
-                stamp = datetime.now().strftime("%Y%m%d_%H%M")
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 partial = "_parcial" if (STATE["stop_requested"] or STATE["error"]) else ""
                 path = EXPORT_DIR / f"jonhdrop_meus_produtos_{stamp}{partial}.xlsx"
                 meta = {
