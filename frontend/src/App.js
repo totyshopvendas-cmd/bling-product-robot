@@ -3,6 +3,7 @@ import "@/index.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "sonner";
 import Layout from "@/components/Layout";
+import AuthGate from "@/components/AuthGate";
 import Dashboard from "@/pages/Dashboard";
 import TitleCleaner from "@/pages/TitleCleaner";
 import Pricing from "@/pages/Pricing";
@@ -13,6 +14,7 @@ import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
 import BlingBulkEnrich from "@/pages/BlingBulkEnrich";
 import StockSync from "@/pages/StockSync";
+import JohnDropExport from "@/pages/JohnDropExport";
 import CategoryMapping from "@/pages/CategoryMapping";
 import SocialSettings from "@/pages/SocialSettings";
 import CreateAd from "@/pages/CreateAd";
@@ -24,6 +26,7 @@ function App() {
   return (
     <BrowserRouter>
       <Toaster position="top-right" richColors closeButton />
+      <AuthGate>
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -35,6 +38,7 @@ function App() {
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />
           <Route path="/estoque-sync" element={<StockSync />} />
+          <Route path="/exportar-jonhdrop" element={<JohnDropExport />} />
           <Route path="/categorias-multiloja" element={<CategoryMapping />} />
           <Route path="/redes-sociais" element={<SocialSettings />} />
           <Route path="/criar-anuncio" element={<CreateAd />} />
@@ -44,6 +48,7 @@ function App() {
           <Route path="/configuracoes" element={<Settings />} />
         </Routes>
       </Layout>
+      </AuthGate>
     </BrowserRouter>
   );
 }

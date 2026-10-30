@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
+from ai_client import OpenAITextToSpeech
 
 from db import db
 from robot_service import add_log
@@ -33,7 +33,6 @@ from social_service import _enc, _dec
 
 router = APIRouter(prefix="/social", tags=["youtube-shorts"])
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_BASE_URL = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
 
 YT_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -185,10 +184,8 @@ async def _get_yt_access_token() -> Optional[str]:
 # ---------- TTS + ffmpeg helpers ----------
 
 async def _generate_tts(text: str) -> bytes:
-    """Generate MP3 bytes using OpenAI TTS via Emergent Universal Key."""
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY ausente")
-    tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+    """Generate MP3 bytes using OpenAI TTS (chave OpenAI do usuário)."""
+    tts = OpenAITextToSpeech()
     return await tts.generate_speech(
         text=text[:4000],  # OpenAI limit
         model="tts-1",

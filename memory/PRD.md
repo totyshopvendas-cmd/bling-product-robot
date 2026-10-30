@@ -23,9 +23,9 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - **Imagens**: chegam pelo sync nativo JohnDrop→Bling (não precisamos extrair)
 
 ## Arquitetura
-- **Backend**: FastAPI + MongoDB + Playwright + emergentintegrations
+- **Backend**: FastAPI + MongoDB (ou banco local em arquivo) + Playwright + ai_client.py (IA própria)
 - **Frontend**: React + Shadcn + Tailwind (tema TotyShop laranja)
-- **LLM**: Claude Haiku 4.5 via Emergent LLM Key
+- **LLM**: chave própria — Anthropic, OpenAI, Gemini ou OpenRouter (Configurações → Inteligência Artificial)
 - **Bling API v3** OAuth 2.0
 
 ## Endpoints principais
@@ -337,3 +337,14 @@ Automatizar cadastro de produtos do JohnDrop no Bling ERP + enriquecimento confo
 - **P2**: Progresso em tempo real via WebSocket para o Stock Sync e Category Auto-Sync.
 - **P2**: Refatoração de `server.py` (642 linhas) → dividir em `/app/backend/routes/`.
 
+
+## [2026-09] Exportar Planilha JonhDrop (NOVO MÓDULO ISOLADO — somente leitura)
+
+**Pedido do usuário:** planilha com todos os produtos da JonhDrop. Escolhas: escopo **Meus Produtos**, nível **Completo**, entrega via **botão no app**.
+
+- `johndrop_export.py` (Playwright) + `johndrop_export_sheet.py` (puro: parsing + .xlsx via openpyxl, fallback .csv; auto-instala openpyxl se faltar).
+- Fluxo: login → varre `/dashboard/product` (100/pág, colunas mapeadas pelo cabeçalho) → agrupa mesmo SKU em várias integrações → abre a página de cada produto (link da linha, ou aprende o padrão da URL clicando em "Editar" da 1ª linha) → extrai todos os campos do formulário, descrição, imagens → variações via `_parse_variations`. Fallback para `product_raw` quando a página não traz descrição.
+- Planilha em `backend/exports/` (gitignored). Abas: Produtos, Variações, Imagens, Todos os campos, Resumo. Interromper gera planilha `_parcial`.
+- Endpoints: `POST /api/johndrop-export/run {detailed, max_products}`, `POST /stop`, `GET /status`, `GET /download?name=`.
+- Página `/exportar-jonhdrop` ("Exportar Planilha" no menu).
+- Testes: `tests/test_johndrop_export.py` (8) + e2e contra site JonhDrop simulado (login, paginação, aprendizado da URL de edição, 37 produtos OK).

@@ -24,7 +24,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Response, Request
 from pydantic import BaseModel
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from ai_client import LlmChat, UserMessage, ImageContent, has_text_ai
 
 import bling_service
 from db import db
@@ -35,7 +35,6 @@ from social_service import get_meta_token_and_ids
 router = APIRouter(prefix="/social", tags=["social-ads"])
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 IMAGE_MODEL = "gemini-3.1-flash-image-preview"  # Nano Banana
 COPY_MODEL = "claude-haiku-4-5-20251001"
 
@@ -305,8 +304,8 @@ async def generate_ad(payload: GenerateAdRequest, request: Request) -> dict:
     Stores the generated image in Mongo and returns its public URL plus the
     suggested caption text — UI lets the user review/edit before publishing.
     """
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "EMERGENT_LLM_KEY não configurada")
+    if not has_text_ai():
+        raise HTTPException(500, "Nenhuma chave de IA configurada (Configurações → Inteligência Artificial)")
 
     # 1. Fetch product
     r = await bling_service.bling_request("GET", f"/produtos/{payload.product_id}")
@@ -361,7 +360,6 @@ async def generate_ad(payload: GenerateAdRequest, request: Request) -> dict:
     )
 
     copy_chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"ad-copy-{uuid.uuid4()}",
         system_message=copy_system,
     ).with_model("anthropic", COPY_MODEL)
@@ -386,7 +384,6 @@ async def generate_ad(payload: GenerateAdRequest, request: Request) -> dict:
 
     # 3. Generate ad image (Nano Banana)
     img_chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"ad-img-{uuid.uuid4()}",
         system_message="You are an expert product photographer for social media ads.",
     ).with_model("gemini", IMAGE_MODEL).with_params(modalities=["image", "text"])

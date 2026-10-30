@@ -1,6 +1,6 @@
 """LLM-powered Shopee category selector.
 
-Tries the Emergent LLM key first (same one used for title cleaning) and falls
+Uses the shared ai_client (Claude/OpenAI/Gemini/OpenRouter — first configured) and falls
 back to OPENAI_API_KEY when it isn't configured. If neither works, the caller
 should fall back to the local heuristic map.
 """
@@ -10,7 +10,6 @@ import uuid
 from typing import Optional
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("SHOPEE_CATEGORY_MODEL", "gpt-4o-mini")
 
@@ -71,15 +70,15 @@ def _fuzzy_match(choice: str, options: list) -> Optional[dict]:
     return None
 
 
-async def _ask_emergent(msg: str) -> Optional[str]:
-    """Query the Emergent LLM gateway. Returns raw text or None."""
-    if not EMERGENT_LLM_KEY:
+async def _ask_ai(msg: str) -> Optional[str]:
+    """Query the configured AI provider (ai_client). Returns raw text or None."""
+    from ai_client import has_text_ai
+    if not has_text_ai():
         return None
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from ai_client import LlmChat, UserMessage
 
         chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
             session_id=f"shopee-category-{uuid.uuid4()}",
             system_message=SYSTEM,
         ).with_model("anthropic", "claude-haiku-4-5-20251001")
@@ -113,7 +112,8 @@ async def _ask_openai(msg: str) -> Optional[str]:
 
 def llm_available() -> bool:
     """True when at least one LLM provider is configured."""
-    return bool(EMERGENT_LLM_KEY or OPENAI_API_KEY)
+    from ai_client import has_text_ai
+    return bool(has_text_ai() or OPENAI_API_KEY)
 
 
 async def pick_shopee_category(raw_title: str, options: list) -> Optional[dict]:
@@ -141,7 +141,7 @@ async def pick_shopee_category(raw_title: str, options: list) -> Optional[dict]:
         "Qual categoria da Shopee devo escolher? Responda apenas com o texto exato da categoria."
     )
 
-    raw = await _ask_emergent(msg)
+    raw = await _ask_ai(msg)
     if not raw:
         raw = await _ask_openai(msg)
     if not raw:

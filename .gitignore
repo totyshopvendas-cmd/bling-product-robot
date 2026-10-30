@@ -27,10 +27,17 @@ next-env.d.ts
 
 # Production builds
 /build
+frontend/build/
 dist/
 dist
 
 # Environment files (comprehensive coverage)
+.env
+.env.*
+*.env
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 
 *token.json*
 *credentials.json*
@@ -83,8 +90,23 @@ android-sdk/
 .env
 .env.*
 *.env
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 credentials.json
 *.key
 .credentials
 
 logs/
+
+# Planilhas exportadas da JonhDrop
+backend/exports/
+data/*.csv
+data/*.xlsx
+data/*.xls
+!data/LEIA-ME.txt
+
+backend/.secrets/
+
+# Banco local (modo sem MongoDB) — contém tokens, não versionar
+backend/data/

@@ -81,8 +81,8 @@ async def _llm_pick_best_match(
         return None
     try:
         import os
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY", "")
+        from ai_client import LlmChat, UserMessage, has_text_ai
+        key = has_text_ai()
         if not key:
             return {"id": shortlist[0].get("id"), "name": shortlist[0].get("name"),
                     "confidence": 0.5, "reason": "fallback (no LLM key)"}
@@ -594,8 +594,8 @@ async def _llm_pick_from_existing(
 
     try:
         import os
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY", "")
+        from ai_client import LlmChat, UserMessage, has_text_ai
+        key = has_text_ai()
         if not key:
             return None  # sem LLM não vale arriscar match por overlap
 

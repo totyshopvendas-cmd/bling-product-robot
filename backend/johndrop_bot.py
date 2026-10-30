@@ -10,8 +10,8 @@ import os
 import re
 import sys
 
-# Shared browser cache used by the Emergent Linux container. On Windows/macOS
-# this path is meaningless, so Playwright's own default cache is used instead.
+# Shared browser cache used by some Linux containers (/pw-browsers). On Windows/macOS
+# this path doesn't exist, so Playwright's own default cache is used instead.
 _CONTAINER_BROWSERS_PATH = "/pw-browsers"
 if (
     os.name == "posix"
@@ -38,18 +38,32 @@ DELAY_BETWEEN_PRODUCTS_S = 25  # pause após cadastrar com sucesso (evita rate-l
 
 
 async def _save_credentials(username: str, password: str):
+    value = {"username": username, "password": password}
     await db.settings.update_one(
         {"key": "johndrop_creds"},
-        {"$set": {"key": "johndrop_creds", "value": {"username": username, "password": password}}},
+        {"$set": {"key": "johndrop_creds", "value": value}},
         upsert=True,
     )
+    try:
+        import secrets_store
+        secrets_store.write("johndrop", value)
+    except Exception:
+        pass
 
 
 async def _get_credentials():
     doc = await db.settings.find_one({"key": "johndrop_creds"}, {"_id": 0})
-    if not doc:
-        return None
-    return doc.get("value")
+    value = (doc or {}).get("value") if doc else None
+    if value and value.get("username"):
+        return value
+    try:
+        import secrets_store
+        stored = secrets_store.read("johndrop")
+        if stored and stored.get("username"):
+            return stored
+    except Exception:
+        pass
+    return None
 
 
 _EXPECTED_VERSION_CACHE: dict = {"version": None, "checked": False}
@@ -643,7 +657,7 @@ async def _read_product_fields(page) -> Tuple[str, float]:
     return raw_title, cost
 
 
-async def _read_product_images(page) -> list:
+async def _read_product_images(page, quiet: bool = False) -> list:
     """Extract all image URLs from JohnDrop product creation form.
     Handles: <img src>, <img data-src> (lazy-load), CSS background-image, and
     product carousels. Forces a brief scroll to trigger lazy-load."""
@@ -738,6 +752,8 @@ async def _read_product_images(page) -> list:
         final = final[:15]  # limite razoável de fotos por produto
 
         try:
+            if quiet:
+                return final
             await add_log(
                 "info",
                 f"Imagens extraídas do JohnDrop: {len(final)} "

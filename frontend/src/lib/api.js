@@ -1,14 +1,27 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API_BASE = `${BACKEND_URL}/api`;
+const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
+export const API_BASE = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 const API_TIMEOUT_MS = 60000;
 
 export const api = axios.create({
   baseURL: API_BASE,
   timeout: API_TIMEOUT_MS,
+  withCredentials: !BACKEND_URL, // cookie de login só no mesmo domínio
 });
+
+// Sessão expirou (servidor com APP_PASSWORD) → volta para a tela de login.
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const url = err?.config?.url || "";
+    if (err?.response?.status === 401 && !url.includes("/auth/")) {
+      window.dispatchEvent(new Event("totyshop:auth-required"));
+    }
+    return Promise.reject(err);
+  },
+);
 
 export const endpoints = {
   dashboardStats: () => api.get("/dashboard/stats"),
@@ -20,18 +33,23 @@ export const endpoints = {
   uploadPricing: (file) => {
     const fd = new FormData();
     fd.append("file", file);
-    return api.post("/pricing/upload", fd, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
+    return api.post("/pricing/upload", fd, { timeout: 180000 });
   },
+  loadPricing: () => api.post("/pricing/load", {}, { timeout: 180000 }),
   pricingStats: () => api.get("/pricing/stats"),
   lookupPrice: (cost) => api.get(`/pricing/lookup?cost=${cost}`),
 
-  blingAuthorizeUrl: () => api.get("/bling/authorize-url"),
+  blingAuthorizeUrl: (origin) =>
+    api.get("/bling/authorize-url", { params: origin ? { origin } : {} }),
+  blingOAuthConfig: (origin) =>
+    api.get("/bling/oauth-config", { params: origin ? { origin } : {} }),
   blingStatus: () => api.get("/bling/status"),
+  blingPing: () => api.get("/bling/ping"),
   blingDisconnect: () => api.post("/bling/disconnect"),
   blingProducts: (pagina = 1, limite = 20) =>
     api.get(`/bling/products?pagina=${pagina}&limite=${limite}`),
+  saveBlingApp: (client_id, client_secret) =>
+    api.post("/settings/bling-app", { client_id, client_secret }),
 
   setJohnDropCreds: (username, password) =>
     api.post("/settings/johndrop", { username, password }),

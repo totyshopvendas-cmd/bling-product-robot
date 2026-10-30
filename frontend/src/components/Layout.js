@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Sparkles, Tags, Bot, ScrollText, Settings as SettingsIcon,
-  CircleDot, Power, Menu, X, Layers, ListChecks, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2,
+  CircleDot, Power, Menu, X, Layers, ListChecks, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2, FileSpreadsheet,
 } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
@@ -16,6 +16,7 @@ const NAV = [
   { to: "/bling", icon: Layers, label: "Enriquecimento Bling" },
   { to: "/bling-lote", icon: ListChecks, label: "Enriquecer em Lote" },
   { to: "/estoque-sync", icon: RefreshCw, label: "Sync Estoque" },
+  { to: "/exportar-jonhdrop", icon: FileSpreadsheet, label: "Exportar Planilha" },
   { to: "/categorias-multiloja", icon: Link2, label: "Categorias Multiloja" },
   { to: "/progresso", icon: ActivityIcon, label: "Progresso" },
   { to: "/redes-sociais", icon: Share2, label: "Redes Sociais" },
@@ -65,7 +66,7 @@ export default function Layout({ children }) {
       >
         <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
           <img
-            src="https://customer-assets.emergentagent.com/job_bling-product-robot/artifacts/r2hhfsdn_TotyShop%20%201080x1080.jpg"
+            src="/logo.svg"
             alt="TotyShop"
             className="h-11 w-11 rounded-sm object-cover"
             data-testid="brand-logo"

@@ -1,93 +1,177 @@
 @echo off
 setlocal enabledelayedexpansion
-title TotyShop Automacao - Inicializador
-set ROOT=%~dp0
-set LOGDIR=%ROOT%logs
-set MONGOD="C:\Program Files\MongoDB\Server\7.0\bin\mongod.exe"
-set MONGODATA=%USERPROFILE%\.totyshop\mongo-data
-set MONGOLOG=%USERPROFILE%\.totyshop\mongod.log
-if not exist "%LOGDIR%" mkdir "%LOGDIR%"
-if not exist "%USERPROFILE%\.totyshop" mkdir "%USERPROFILE%\.totyshop"
+title TotyShop Automacao
+cd /d "%~dp0"
 
 echo ============================================
-echo   Iniciando TotyShop Automacao...
+echo   TotyShop - instalacao e painel local
 echo ============================================
-
-REM ---------- Banco de dados (MongoDB, sem servico e sem admin) ----------
-netstat -ano | findstr ":27017 " | findstr LISTENING >nul
-if errorlevel 1 (
-    REM Garante que o servico antigo nao dispute a porta com dados desatualizados
-    sc query MongoDB | find "RUNNING" >nul
-    if not errorlevel 1 (
-        echo Parando servico MongoDB antigo...
-        sc stop MongoDB >nul 2>&1
-        timeout /t 5 /nobreak >nul
-    )
-    if not exist "%MONGODATA%" mkdir "%MONGODATA%"
-    del "%MONGODATA%\mongod.lock" >nul 2>&1
-    echo Iniciando banco de dados...
-    start "TotyShop MongoDB" /min %MONGOD% --dbpath "%MONGODATA%" --port 27017 --bind_ip 127.0.0.1 --logpath "%MONGOLOG%" --logappend
-) else (
-    echo Banco de dados ja esta rodando.
-)
-
-REM ---------- Backend (porta 8000) ----------
-netstat -ano | findstr ":8000 " | findstr LISTENING >nul
-if errorlevel 1 (
-    echo Iniciando backend...
-    start "TotyShop Backend" /min cmd /c "cd /d %ROOT%backend && python -m uvicorn server:app --host 127.0.0.1 --port 8000 > "%LOGDIR%\backend.log" 2>&1"
-) else (
-    echo Backend ja esta rodando.
-)
-
-REM ---------- Frontend (porta 3000) ----------
-netstat -ano | findstr ":3000 " | findstr LISTENING >nul
-if errorlevel 1 (
-    echo Iniciando painel...
-    start "TotyShop Frontend" /min cmd /c "cd /d %ROOT%frontend && set BROWSER=none&& npm start > "%LOGDIR%\frontend.log" 2>&1"
-) else (
-    echo Painel ja esta rodando.
-)
-
-if "%~1"=="/silencioso" exit
-
 echo.
-echo Aguardando o painel ficar pronto (a primeira vez leva 3 a 5 minutos)...
+echo Pode demorar alguns minutos na PRIMEIRA vez.
+echo Nas proximas vezes abre em poucos segundos.
+echo.
 
-REM Espera ate 10 minutos (120 tentativas x 5s)
-set /a TENTATIVAS=0
-:aguardar
-timeout /t 5 /nobreak >nul
-set /a TENTATIVAS+=1
-curl -s -o nul http://127.0.0.1:3000/ 2>nul
-if not errorlevel 1 goto pronto
-REM Se a janela do painel morreu, aborta em vez de esperar para sempre
-tasklist /fi "windowtitle eq TotyShop Frontend*" 2>nul | find /i "cmd.exe" >nul
-if errorlevel 1 goto falhou
-if !TENTATIVAS! GEQ 120 goto falhou
-goto aguardar
+rem ---------------------------------------------------------------
+rem  1) Python - instala sozinho se faltar
+rem ---------------------------------------------------------------
+call :findpython
+if not defined PY (
+  echo Python nao encontrado. Instalando automaticamente...
+  call :wingetinstall Python.Python.3.11
+  set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%LOCALAPPDATA%\Programs\Python\Launcher;%ProgramFiles%\Python311;%PATH%"
+  call :findpython
+)
+if not defined PY goto needrestart
 
-:pronto
+rem ---------------------------------------------------------------
+rem  2) Node.js - instala sozinho se faltar
+rem ---------------------------------------------------------------
+where node >nul 2>&1
+if errorlevel 1 (
+  echo Node.js nao encontrado. Instalando automaticamente...
+  call :wingetinstall OpenJS.NodeJS.LTS
+  set "PATH=%ProgramFiles%\nodejs;%PATH%"
+)
+where node >nul 2>&1
+if errorlevel 1 goto needrestart
+
+rem ---------------------------------------------------------------
+rem  3) Configuracao - criada sozinha (Bling e IA sao feitos no painel)
+rem ---------------------------------------------------------------
+if not exist "backend\.env" (
+  echo Criando configuracao inicial...
+  > "backend\.env" echo # Criado automaticamente pelo iniciar_totyshop.bat
+  >> "backend\.env" echo # Client ID/Secret do Bling e chave de IA: preencha no painel, em Configuracoes.
+  >> "backend\.env" echo APP_BASE_URL=http://127.0.0.1:8000
+  >> "backend\.env" echo MONGO_URL=memory://local
+  >> "backend\.env" echo DB_NAME=bling_robot
+  >> "backend\.env" echo APP_SECRET=totyshop-!RANDOM!-!RANDOM!-!RANDOM!-!RANDOM!
+  >> "backend\.env" echo APP_PASSWORD=
+  >> "backend\.env" echo TZ_LOCAL=America/Sao_Paulo
+)
+
+rem ---------------------------------------------------------------
+rem  4) Dependencias Python + navegador do robo
+rem ---------------------------------------------------------------
+if not exist "backend\.venv\Scripts\activate.bat" (
+  echo Criando ambiente Python...
+  %PY% -m venv "backend\.venv"
+)
+call "backend\.venv\Scripts\activate.bat"
+if not exist "backend\.venv\.req-ok-v3" (
+  echo Instalando dependencias Python - so na primeira vez...
+  python -m pip install -q --upgrade pip
+  python -m pip install -q -r "backend\requirements.txt"
+  if errorlevel 1 (
+    echo.
+    echo ERRO ao instalar as dependencias Python. Verifique a internet e rode de novo.
+    pause
+    exit /b 1
+  )
+  echo. > "backend\.venv\.req-ok-v3"
+)
+if not exist "%LOCALAPPDATA%\ms-playwright" (
+  echo Instalando o navegador do robo - so na primeira vez...
+  python -m playwright install chromium
+) else (
+  echo Navegador do robo ja instalado.
+)
+
+rem ---------------------------------------------------------------
+rem  5) Painel (tela)
+rem ---------------------------------------------------------------
+if not exist "frontend\node_modules" (
+  echo Instalando dependencias do painel - so na primeira vez...
+  pushd frontend
+  call npm install --legacy-peer-deps --no-audit --no-fund
+  popd
+)
+
+if not exist "frontend\build\index.html" goto dobuild
+if not exist "frontend\build\.stamp-v3" goto dobuild
+goto afterbuild
+:dobuild
+echo Montando o painel...
+pushd frontend
+set CI=false
+set DISABLE_ESLINT_PLUGIN=true
+set GENERATE_SOURCEMAP=false
+call npm run build
+popd
+if not exist "frontend\build\index.html" (
+  echo.
+  echo ERRO ao montar o painel. Tire um print desta janela e envie para o suporte.
+  pause
+  exit /b 1
+)
+echo. > "frontend\build\.stamp-v3"
+:afterbuild
+
+rem Atalho na Area de Trabalho (so na primeira vez)
+if not exist "%USERPROFILE%\Desktop\TotyShop.lnk" (
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop')+'\TotyShop.lnk');$s.TargetPath='%~f0';$s.WorkingDirectory='%~dp0';$s.Save()" >nul 2>&1
+)
+
+set "FRONTEND_BUILD=%~dp0frontend\build"
 echo.
 echo ============================================
-echo   Tudo pronto! Abrindo o painel...
+echo  PRONTO! O Chrome vai abrir sozinho.
+echo  Endereco: http://127.0.0.1:8000
+echo.
+echo  NAO FECHE ESTA JANELA PRETA.
+echo  Se fechar, o painel desliga.
+echo  Pode minimizar.
 echo ============================================
-start http://127.0.0.1:3000/
+echo.
+
+rem Abre o navegador so quando o painel estiver respondendo
+start "" /b powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=0;$i -lt 90;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8000/ | Out-Null; break}catch{Start-Sleep 2}}; Start-Process 'http://127.0.0.1:8000/'"
+
+cd /d "%~dp0backend"
+
+:run
+python -m uvicorn server:app --host 127.0.0.1 --port 8000
+echo.
+echo O painel parou. Religa em 3 segundos...
+echo Feche esta janela so se quiser desligar de verdade.
 timeout /t 3 /nobreak >nul
-exit
+goto run
 
-:falhou
+
+rem ===============================================================
+rem  Sub-rotinas
+rem ===============================================================
+:findpython
+set "PY="
+py -3 --version >nul 2>&1
+if not errorlevel 1 (
+  set "PY=py -3"
+  goto :eof
+)
+python --version >nul 2>&1
+if not errorlevel 1 set "PY=python"
+goto :eof
+
+:wingetinstall
+where winget >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo Nao consegui instalar sozinho neste Windows.
+  echo Instale manualmente e rode este arquivo de novo:
+  echo   Python: https://www.python.org/downloads/   - marque "Add python.exe to PATH"
+  echo   Node.js: https://nodejs.org/
+  pause
+  exit
+)
+winget install -e --id %1 --silent --accept-package-agreements --accept-source-agreements
+goto :eof
+
+:needrestart
 echo.
 echo ============================================
-echo   [ERRO] O painel nao ficou disponivel.
+echo  Instalacao do Python/Node concluida.
+echo  FECHE esta janela e de dois cliques
+echo  em iniciar_totyshop.bat DE NOVO.
 echo ============================================
-echo Registros de erro:
-echo   %LOGDIR%\frontend.log
-echo   %LOGDIR%\backend.log
-echo   %MONGOLOG%
-echo.
-echo Ultimas linhas do painel:
-if exist "%LOGDIR%\frontend.log" powershell -NoProfile -Command "Get-Content '%LOGDIR%\frontend.log' -Tail 15"
-echo.
 pause
-exit /b 1
+exit /b 0

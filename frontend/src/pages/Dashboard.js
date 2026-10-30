@@ -78,6 +78,13 @@ export default function Dashboard() {
         <p className="text-sm text-muted-foreground mt-1">Visão geral de cadastros, robô e integrações.</p>
       </div>
 
+      <div className="border border-border bg-white p-5 text-sm space-y-1">
+        <div className="label-overline mb-2">O que falta para as engrenagens girarem</div>
+        <p>{stats.pricing_rows > 0 ? "✓" : "✗"} Tabela de preços — {stats.pricing_rows.toLocaleString("pt-BR")} linhas</p>
+        <p>{stats.johndrop_configured ? "✓" : "✗"} JohnDrop — e-mail e senha em Configurações</p>
+        <p>{stats.bling_connected ? "✓" : "✗"} Bling — um clique em Configurações → Conectar Bling</p>
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-0 border border-border bg-white">
         <div className="border-r border-b sm:border-b lg:border-b-0 border-border">
           <StatCard

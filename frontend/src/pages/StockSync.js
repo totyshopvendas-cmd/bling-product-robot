@@ -48,7 +48,7 @@ export default function StockSyncPage() {
       }
     } catch (err) {
       logger.error("stock-sync run:", err);
-      toast.error("Falha ao iniciar sincronização");
+      toast.error(err?.response?.data?.detail || "Falha ao iniciar sincronização");
     } finally {
       setStarting(false);
     }
@@ -111,6 +111,8 @@ export default function StockSyncPage() {
           )}
         </button>
       </div>
+
+      <ScheduleCard schedule={status?.schedule} onSaved={loadStatus} />
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -321,6 +323,68 @@ function Card({ testid, icon, label, value, tone = "default" }) {
         <span>{label}</span>
       </div>
       <div className="text-2xl font-mono font-semibold mt-1">{value}</div>
+    </div>
+  );
+}
+
+function ScheduleCard({ schedule, onSaved }) {
+  const [enabled, setEnabled] = useState(false);
+  const [time, setTime] = useState("07:00");
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (schedule && !dirty) {
+      setEnabled(Boolean(schedule.enabled));
+      setTime(schedule.time || "07:00");
+    }
+  }, [schedule, dirty]);
+
+  const save = async (nextEnabled = enabled, nextTime = time) => {
+    setSaving(true);
+    try {
+      await api.post("/stock-sync/schedule", { enabled: nextEnabled, time: nextTime });
+      toast.success(nextEnabled ? `Sync automático todo dia às ${nextTime}` : "Sync automático desligado");
+      setDirty(false);
+      onSaved && onSaved();
+    } catch (err) {
+      logger.error("schedule:", err);
+      toast.error(err?.response?.data?.detail || "Falha ao salvar agendamento");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border border-border bg-white px-4 py-3 flex flex-wrap items-center gap-3 text-sm" data-testid="stock-schedule">
+      <label className="inline-flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => { setEnabled(e.target.checked); setDirty(true); save(e.target.checked, time); }}
+          className="h-4 w-4 accent-[#EE7B22]"
+        />
+        <span className="font-medium">Rodar sozinho todo dia às</span>
+      </label>
+      <input
+        type="time"
+        value={time}
+        onChange={(e) => { setTime(e.target.value); setDirty(true); }}
+        className="border border-border rounded-sm px-2 py-1 text-sm"
+      />
+      {dirty && (
+        <button
+          onClick={() => save()}
+          disabled={saving}
+          className="text-xs px-3 py-1.5 bg-zinc-900 text-white rounded-sm disabled:opacity-50"
+        >
+          {saving ? "Salvando..." : "Salvar horário"}
+        </button>
+      )}
+      <span className="text-xs text-muted-foreground">
+        (horário de Brasília — o TotyShop precisa estar ligado)
+        {schedule?.last_auto_run ? ` · última automática: ${schedule.last_auto_run}` : ""}
+      </span>
     </div>
   );
 }

@@ -10,7 +10,7 @@ Rules for descriptions:
 - No brand names (XLS, Kapbom, etc) or EAN/GTIN
 - Only <b>bold</b> and hyphens (-) allowed
 - Variations (cores/tamanhos/modelos) must be preserved & highlighted in short description
- """
+"""
 import os
 import re
 import uuid
@@ -19,7 +19,7 @@ import asyncio
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from ai_client import LlmChat, UserMessage, has_text_ai
 
 import bling_service
 from db import db
@@ -27,7 +27,6 @@ from robot_service import add_log
 from color_variation_guard import filter_variations_by_color
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-haiku-4-5-20251001"
 
@@ -60,7 +59,7 @@ SHORT_DESC_SYSTEM = (
     "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
     "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
     "não um redator. Apenas:\n"
-    "  (a) divide em parágrafos com \\n\\n\n\n"
+    "  (a) divide em parágrafos com \\n\\n\n"
     "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
     "  (c) substitui bullets/asteriscos por hífen (- )\n"
     "PROIBIDO ALTERAR:\n"
@@ -244,7 +243,7 @@ def _parse_variations(raw_description: str) -> List[str]:
     # itens listados abaixo — nesse caso é uma variação real, não descrição.
     patterns = [
         # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jog[...]
+        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
         # Plural sem "Disponível" — "Cores disponíveis:"
         (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
         # Singular com "Disponível" — só será aceito se body tiver 2+ itens
@@ -337,10 +336,9 @@ async def _find_jonh_supplier_id() -> Optional[int]:
 
 
 async def _llm_call(system: str, user_prompt: str) -> str:
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY não configurada")
+    if not has_text_ai():
+        raise RuntimeError("Nenhuma chave de IA configurada (Configurações → Inteligência Artificial)")
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
         session_id=f"bling-enrich-{uuid.uuid4()}",
         system_message=system,
     ).with_model(LLM_PROVIDER, LLM_MODEL)
@@ -498,9 +496,10 @@ async def pick_or_create_category(raw_title: str, raw_description: str) -> Optio
     return None
 
 
-async def find_bling_product_by_sku(sku: str) -> Optional[dict]:
+async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None) -> Optional[dict]:
     """Find a Bling product by codigo (SKU). Retries to wait for JohnDrop→Bling sync."""
-    for attempt in range(FIND_PRODUCT_MAX_ATTEMPTS):
+    attempts = FIND_PRODUCT_MAX_ATTEMPTS if max_attempts is None else max(1, int(max_attempts))
+    for attempt in range(attempts):
         resp = await bling_service.bling_request("GET", "/produtos", params={"codigo": sku, "limite": 5})
         if resp.status_code < 400:
             body = resp.json()
@@ -776,6 +775,7 @@ async def enrich_product_by_sku(
     johndrop_id: Optional[str] = None,
     cost: Optional[float] = None,
     images: Optional[list] = None,
+    wait_for_product: bool = True,
 ) -> dict:
     """Main enrichment flow. Idempotent — finds product, enriches it, logs result."""
     sku = (sku or "").strip()
@@ -830,7 +830,9 @@ async def enrich_product_by_sku(
     await add_log("info", f"Bling: iniciando enriquecimento para SKU {sku}")
 
     try:
-        product = await find_bling_product_by_sku(sku)
+        product = await find_bling_product_by_sku(
+            sku, max_attempts=FIND_PRODUCT_MAX_ATTEMPTS if wait_for_product else 2,
+        )
     except Exception as e:
         await add_log("error", f"Bling: erro ao buscar produto {sku}: {e}")
         await _save_log(sku, "error", f"busca falhou: {e}")
@@ -848,7 +850,10 @@ async def enrich_product_by_sku(
     _track(sku, "waiting_sync", product_id=product_id)
 
     # Wait for JohnDrop async sync to bring in stock + images.
-    full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
+    if wait_for_product:
+        full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
+    else:
+        full_after_sync = await _fetch_bling_product_full(product_id) or product
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
     bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]

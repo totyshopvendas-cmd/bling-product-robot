@@ -1,0 +1,10 @@
+.git
+**/node_modules
+frontend/build
+backend/.secrets
+backend/exports
+backend/.venv
+**/__pycache__
+.env
+backend/.env
+logs
