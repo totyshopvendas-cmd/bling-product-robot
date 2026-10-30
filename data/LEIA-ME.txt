@@ -1,0 +1,8 @@
+Coloque neste pasta o Excel da tabela JohnDrop, com o nome:
+
+  tabela_precos.xlsx
+
+No painel, o botao "Carregar tabela da TotyShop" baixa a planilha sozinho
+e grava uma copia aqui — assim a tabela nao some quando a janela preta fecha.
+
+Nao use o arquivo do Google Drive (D:\Meu Drive) — ele trava o TotyShop.

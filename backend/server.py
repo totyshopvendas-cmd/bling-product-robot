@@ -1,15 +1,21 @@
 """FastAPI server for TotyShop Automation."""
+import html as html_module
+import json
 import os
+import secrets
 from typing import Optional
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel
+from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).parent
 PROJECT_ROOT = ROOT_DIR.parent
@@ -94,6 +100,23 @@ async def _startup() -> None:
         logger.info("Enrich worker started")
     except Exception as e:
         logger.warning(f"enrich worker start failed: {e}")
+    async def _load_prices_bg() -> None:
+        import asyncio as _sleep
+        await _sleep.sleep(2)
+        try:
+            logger.info("Carregando tabela de preços sozinha...")
+            res = await pricing_service.ensure_table()
+            if res.get("imported"):
+                logger.info("Tabela de preços carregada: %s linhas (%s)", res["imported"], res.get("source") or "arquivo")
+            elif res.get("skipped"):
+                logger.info("Tabela de preços já estava pronta")
+            else:
+                logger.warning("Tabela de preços não entrou: %s", (res.get("errors") or ["sem arquivo"])[:3])
+        except Exception as e:
+            logger.warning("tabela de preços no startup: %s", e)
+
+    import asyncio as _aio
+    _aio.create_task(_load_prices_bg())
 
 
 @api.get("/")
@@ -106,6 +129,34 @@ async def system_chromium_status() -> dict:
     """Returns whether Playwright Chromium is installed & ready. Used by the UI
     to disable the 'Iniciar Robô (REAL)' button when the browser isn't ready."""
     return johndrop_bot.chromium_status()
+
+
+@api.get("/system/ready")
+async def system_ready() -> dict:
+    """What the robot actually needs before it can cadastre."""
+    jd = await johndrop_bot.get_johndrop_credentials()
+    bling = await bling_service.status()
+    try:
+        pricing_rows = await db.pricing.count_documents({})
+    except Exception:
+        pricing_rows = 0
+    cr = johndrop_bot.chromium_status()
+    johndrop_ok = bool(jd and jd.get("username"))
+    bling_ok = bool(bling.get("connected"))
+    chromium_ok = bool(cr.get("installed"))
+    table_ok = pricing_rows > 0
+    return {
+        "johndrop": johndrop_ok,
+        "johndrop_username": (jd or {}).get("username") or "",
+        "bling": bling_ok,
+        "pricing_rows": pricing_rows,
+        "chromium": chromium_ok,
+        "chromium_path": cr.get("path") or "",
+        "can_test": johndrop_ok,
+        "can_cadastre": johndrop_ok and table_ok and chromium_ok,
+        "can_enrich": bling_ok,
+        "can_stock": johndrop_ok and bling_ok and chromium_ok,
+    }
 
 
 @api.post("/system/install-chromium")
@@ -159,8 +210,14 @@ async def upload_pricing(file: UploadFile = File(...)) -> dict:
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "Arquivo muito grande (>50MB)")
-    res = await pricing_service.import_csv(content)
+    res = await pricing_service.import_table(content, filename=file.filename or "")
     return res
+
+
+@api.post("/pricing/load")
+async def load_pricing() -> dict:
+    """Baixa a planilha TotyShop (Google) ou lê Desktop/Downloads/data."""
+    return await pricing_service.load_now()
 
 
 @api.get("/pricing/lookup", response_model=PriceLookupResponse)
@@ -173,31 +230,155 @@ async def pricing_stats() -> dict:
     return await pricing_service.stats()
 
 
+def _public_base(request: Request, origin: str | None = None) -> str:
+    return bling_service.public_base_url(request, origin)
+
+
+def _redirect_settings(app_base: str, **params: str) -> RedirectResponse:
+    qs = urlencode({k: v for k, v in params.items() if v is not None})
+    target = f"{app_base}/configuracoes"
+    if qs:
+        target = f"{target}?{qs}"
+    return RedirectResponse(target)
+
+
+# Short-lived tickets so the user can paste a small URL in a real Chrome tab.
+# The Arena preview iframe cannot open pop-ups or navigate the parent window.
+_OAUTH_TICKETS: dict[str, dict] = {}
+_OAUTH_TICKET_TTL = timedelta(minutes=15)
+
+
+def _purge_oauth_tickets() -> None:
+    cutoff = datetime.now(timezone.utc) - _OAUTH_TICKET_TTL
+    dead = [k for k, v in _OAUTH_TICKETS.items() if v.get("created_at", cutoff) < cutoff]
+    for k in dead:
+        _OAUTH_TICKETS.pop(k, None)
+
+
+def _conectar_bling_html(authorize_url: str, copy_url: str, expired: bool = False) -> str:
+    auth_js = json.dumps(authorize_url or "")
+    copy_esc = html_module.escape(copy_url or "")
+    title = "Link expirado" if expired else "Conectar Bling"
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{title} — TotyShop</title>
+<style>
+  body {{ margin:0; font-family: system-ui, sans-serif; background:#FFF7ED; color:#1c1917; }}
+  .box {{ max-width:640px; margin:48px auto; background:#fff; border:1px solid #FDBA74; border-radius:8px; padding:28px; }}
+  h1 {{ margin:0 0 12px; color:#C2410C; font-size:22px; }}
+  p {{ line-height:1.45; }}
+  code {{ display:block; word-break:break-all; background:#FFF7ED; padding:12px; border:1px solid #FDBA74; margin:12px 0; }}
+  button {{ background:#EA580C; color:#fff; border:0; padding:12px 18px; font-size:16px; cursor:pointer; border-radius:4px; }}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1 id="title">{'Este link expirou' if expired else 'Abrindo o login do Bling…'}</h1>
+  <p id="help">{'Volte no TotyShop, clique em Conectar Bling e copie o novo endereço.' if expired else 'Se esta página não redirecionar, copie o endereço abaixo e cole numa nova guia do Chrome (o + no topo).'}</p>
+  <code id="url">{copy_esc}</code>
+  <button type="button" id="go">{'Voltar' if expired else 'Copiar endereço'}</button>
+</div>
+<script>
+const AUTH = {auth_js};
+const EXPIRED = {json.dumps(expired)};
+const inIframe = window.top !== window.self;
+const urlEl = document.getElementById('url');
+const go = document.getElementById('go');
+function copyUrl() {{
+  const text = urlEl.textContent || '';
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text);
+  }} else {{
+    const r = document.createRange(); r.selectNodeContents(urlEl);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    try {{ document.execCommand('copy'); }} catch (e) {{}}
+  }}
+}}
+if (!EXPIRED && !inIframe && AUTH) {{
+  window.location.replace(AUTH);
+}} else if (!EXPIRED && inIframe) {{
+  document.getElementById('title').textContent = 'A Arena não abre o Bling neste quadro';
+  document.getElementById('help').textContent = 'Clique no + no topo do Chrome (Nova guia), cole este endereço e aperte Enter:';
+}}
+go.addEventListener('click', function () {{
+  if (EXPIRED) {{ history.back(); return; }}
+  copyUrl();
+  go.textContent = 'Copiado — cole na nova guia';
+}});
+urlEl.addEventListener('click', function () {{
+  const r = document.createRange(); r.selectNodeContents(urlEl);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  copyUrl();
+}});
+</script>
+</body>
+</html>"""
+
+
 # ---------- Bling OAuth ----------
 @api.get("/bling/authorize-url")
-async def bling_authorize_url(next: str = "/configuracoes") -> dict:
-    return {"url": bling_service.build_authorize_url(next)}
+async def bling_authorize_url(
+    request: Request,
+    next: str = "/configuracoes",
+    origin: str | None = None,
+) -> dict:
+    base = _public_base(request, origin)
+    url = await bling_service.build_authorize_url(next_path=next, app_base=base)
+    _purge_oauth_tickets()
+    ticket = secrets.token_urlsafe(8)
+    _OAUTH_TICKETS[ticket] = {"url": url, "created_at": datetime.now(timezone.utc)}
+    open_url = f"{base}/conectar-bling/{ticket}"
+    return {
+        "url": url,
+        "open_url": open_url,
+        "redirect_uri": bling_service.redirect_uri(base),
+    }
+
+
+@api.get("/bling/oauth-config")
+async def bling_oauth_config(request: Request, origin: str | None = None) -> dict:
+    return await bling_service.oauth_config(_public_base(request, origin))
 
 
 @api.get("/bling/callback")
 async def bling_callback(
-    code: str | None = None, state: str | None = None, error: str | None = None
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
 ) -> RedirectResponse:
-    app_base = os.environ["APP_BASE_URL"]
+    state_data: dict = {}
+    if state:
+        try:
+            state_data = bling_service.parse_state(state)
+        except HTTPException:
+            state_data = {}
+    app_base = (
+        (state_data.get("redirect_uri") or "").rsplit("/api/bling/callback", 1)[0]
+        or _public_base(request)
+    )
     if error:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={error}")
+        return _redirect_settings(app_base, bling_error=error)
     if not code or not state:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error=missing_code")
+        return _redirect_settings(app_base, bling_error="missing_code")
     try:
-        state_data = bling_service.parse_state(state)
-        tokens = await bling_service.exchange_code(code)
+        if not state_data:
+            state_data = bling_service.parse_state(state)
+        callback_uri = state_data.get("redirect_uri") or bling_service.redirect_uri(app_base)
+        tokens = await bling_service.exchange_code(code, callback_uri=callback_uri)
         await bling_service.save_tokens(tokens)
-        next_path = state_data.get("next", "/configuracoes")
+        next_path = state_data.get("next") or "/configuracoes"
+        if not str(next_path).startswith("/"):
+            next_path = "/configuracoes"
         return RedirectResponse(f"{app_base}{next_path}?bling=connected")
     except HTTPException as he:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={he.detail}")
+        detail = he.detail if isinstance(he.detail, str) else str(he.detail)
+        return _redirect_settings(app_base, bling_error=bling_service.friendly_oauth_error(detail))
     except Exception as e:
-        return RedirectResponse(f"{app_base}/configuracoes?bling_error={str(e)[:100]}")
+        return _redirect_settings(app_base, bling_error=bling_service.friendly_oauth_error(str(e)))
 
 
 @api.get("/bling/status")
@@ -205,10 +386,25 @@ async def bling_status() -> dict:
     return await bling_service.status()
 
 
+@api.get("/bling/ping")
+async def bling_ping() -> dict:
+    return await bling_service.ping()
+
+
 @api.post("/bling/disconnect")
 async def bling_disconnect_ep() -> dict:
     await bling_service.disconnect()
     return {"ok": True}
+
+
+class BlingAppCreds(BaseModel):
+    client_id: str
+    client_secret: str = ""
+
+
+@api.post("/settings/bling-app")
+async def set_bling_app_creds(creds: BlingAppCreds) -> dict:
+    return await bling_service.save_bling_app_creds(creds.client_id, creds.client_secret)
 
 
 @api.get("/bling/products")
@@ -247,6 +443,16 @@ async def get_johndrop_creds_status() -> dict:
 async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
     if robot_service.robot.state == "running":
         raise HTTPException(400, "Robô já está em execução")
+    creds = await johndrop_bot.get_johndrop_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    if not cfg.dry_run:
+        cr = johndrop_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium nesta tela.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
     await johndrop_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
     return RobotStatusResponse(**robot_service.robot.to_dict())
 
@@ -314,9 +520,13 @@ class EnrichRequest(BaseModel):
 @api.post("/bling/enrich")
 async def bling_enrich_endpoint(payload: EnrichRequest) -> dict:
     """Manually trigger enrichment for a SKU."""
+    st = await bling_service.status()
+    if not st.get("connected"):
+        raise HTTPException(400, "Conecte o Bling em Configurações antes de enriquecer")
     return await bling_enrichment.enrich_product_by_sku(
         payload.sku, payload.raw_title, payload.raw_description,
         johndrop_id=payload.johndrop_id, cost=payload.cost, images=payload.images,
+        wait_for_product=False,
     )
 
 
@@ -508,6 +718,12 @@ async def stock_sync_run() -> dict:
     Returns immediately; consult /stock-sync/status for progress."""
     if _STOCK_SYNC_STATE["running"]:
         return {"ok": False, "running": True, "message": "Sync já em execução"}
+    jd = await johndrop_bot.get_johndrop_credentials()
+    if not jd or not jd.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    st = await bling_service.status()
+    if not st.get("connected"):
+        raise HTTPException(400, "Conecte o Bling em Configurações antes de sincronizar estoque")
     import asyncio as _aio
     _STOCK_SYNC_STATE["running"] = True
     _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -873,10 +1089,99 @@ api.include_router(image_proxy_router)
 api.include_router(diag_router)
 app.include_router(api)
 
+class _AllowIframe(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        # Do not send X-Frame-Options: ALLOWALL — it is invalid and some
+        # browsers treat it as DENY. CSP frame-ancestors is the allowlist.
+        response.headers["Content-Security-Policy"] = "frame-ancestors *"
+        if "x-frame-options" in response.headers:
+            del response.headers["x-frame-options"]
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+
+app.add_middleware(_AllowIframe)
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+try:
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+except Exception:
+    pass
+
+FRONTEND_BUILD = Path(os.environ.get("FRONTEND_BUILD") or (PROJECT_ROOT / "frontend" / "build"))
+_STATIC_DIR = FRONTEND_BUILD / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="frontend-static")
+
+
+def _index_html() -> FileResponse:
+    index = FRONTEND_BUILD / "index.html"
+    if not index.exists():
+        raise HTTPException(404, "frontend não compilado")
+    return FileResponse(
+        index,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "frame-ancestors *",
+            "X-Frame-Options": "ALLOWALL",
+        },
+    )
+
+
+@app.get("/conectar-bling/{ticket}")
+async def conectar_bling_launch(request: Request, ticket: str, dl: int = 0):
+    """Landing page for OAuth. Auto-redirects only outside the Arena iframe.
+    ``dl=1`` sends the page as a file so Chrome's download bar can open it."""
+    rec = _OAUTH_TICKETS.get(ticket)
+    copy_url = str(request.base_url).rstrip("/") + f"/conectar-bling/{ticket}"
+    origin = request.headers.get("x-forwarded-proto")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if origin and host:
+        copy_url = f"{origin.split(',')[0].strip()}://{host.split(',')[0].strip()}/conectar-bling/{ticket}"
+    headers = {}
+    if dl:
+        headers["Content-Disposition"] = 'attachment; filename="conectar-bling.html"'
+    if not rec:
+        return HTMLResponse(
+            _conectar_bling_html("", copy_url, expired=True),
+            status_code=404,
+            headers=headers,
+        )
+    created = rec.get("created_at")
+    if created and datetime.now(timezone.utc) - created > _OAUTH_TICKET_TTL:
+        _OAUTH_TICKETS.pop(ticket, None)
+        return HTMLResponse(
+            _conectar_bling_html("", copy_url, expired=True),
+            status_code=410,
+            headers=headers,
+        )
+    return HTMLResponse(_conectar_bling_html(rec["url"], copy_url), headers=headers)
+
+
+@app.get("/")
+async def spa_root():
+    return _index_html()
+
+
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """Serve the React build so the app runs on a single public URL (no Emergent)."""
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "Not Found")
+    if not FRONTEND_BUILD.exists():
+        raise HTTPException(404, "frontend não compilado")
+    candidate = (FRONTEND_BUILD / full_path).resolve()
+    build_root = FRONTEND_BUILD.resolve()
+    if str(candidate).startswith(str(build_root)) and candidate.is_file():
+        return FileResponse(candidate)
+    return _index_html()

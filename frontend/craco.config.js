@@ -37,17 +37,20 @@ let webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      webpackConfig.plugins = (webpackConfig.plugins || []).filter((plugin) => {
+        const name = plugin?.constructor?.name || "";
+        return !["ForkTsCheckerWebpackPlugin", "ESLintWebpackPlugin"].includes(name);
+      });
 
-      // Add ignored patterns to reduce watched directories
-        webpackConfig.watchOptions = {
-          ...webpackConfig.watchOptions,
-          ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
-            '**/build/**',
-            '**/dist/**',
-            '**/coverage/**',
-            '**/public/**',
+      webpackConfig.watchOptions = {
+        ...webpackConfig.watchOptions,
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/build/**',
+          '**/dist/**',
+          '**/coverage/**',
+          '**/public/**',
         ],
       };
 
@@ -61,19 +64,35 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Add health check endpoints if enabled
+  devServerConfig.host = "0.0.0.0";
+  devServerConfig.allowedHosts = "all";
+  devServerConfig.historyApiFallback = true;
+  devServerConfig.headers = {
+    ...(devServerConfig.headers || {}),
+    "Access-Control-Allow-Origin": "*",
+  };
+  if (devServerConfig.client) {
+    devServerConfig.client.webSocketURL = "auto://0.0.0.0:0/ws";
+  } else {
+    devServerConfig.client = { webSocketURL: "auto://0.0.0.0:0/ws" };
+  }
+  const backend = process.env.BACKEND_PROXY_TARGET || "http://127.0.0.1:8000";
+  devServerConfig.proxy = {
+    ...(typeof devServerConfig.proxy === "object" ? devServerConfig.proxy : {}),
+    "/api": {
+      target: backend,
+      changeOrigin: true,
+    },
+  };
+
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
 
     devServerConfig.setupMiddlewares = (middlewares, devServer) => {
-      // Call original setup if exists
       if (originalSetupMiddlewares) {
         middlewares = originalSetupMiddlewares(middlewares, devServer);
       }
-
-      // Setup health endpoints
       setupHealthEndpoints(devServer, healthPluginInstance);
-
       return middlewares;
     };
   }
@@ -81,16 +100,14 @@ webpackConfig.devServer = (devServerConfig) => {
   return devServerConfig;
 };
 
-// Wrap with visual edits (automatically adds babel plugin, dev server, and overlay in dev mode)
-if (isDevServer) {
+// Optional Emergent overlay — off unless ENABLE_VISUAL_EDITS=true
+if (isDevServer && process.env.ENABLE_VISUAL_EDITS === "true") {
   try {
     const { withVisualEdits } = require("@emergentbase/visual-edits/craco");
     webpackConfig = withVisualEdits(webpackConfig);
   } catch (err) {
-    if (err.code === 'MODULE_NOT_FOUND' && err.message.includes('@emergentbase/visual-edits/craco')) {
-      console.warn(
-        "[visual-edits] @emergentbase/visual-edits not installed — visual editing disabled."
-      );
+    if (err.code === "MODULE_NOT_FOUND") {
+      console.warn("[visual-edits] pacote não instalado — ignorado.");
     } else {
       throw err;
     }

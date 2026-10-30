@@ -28,18 +28,33 @@ export default function RobotPage() {
   const [chromium, setChromium] = useState(null);
   const [installing, setInstalling] = useState(false);
 
+  const [ready, setReady] = useState(null);
+
   const tick = useCallback(async () => {
     try {
-      const [{ data: s }, { data: l }, { data: c }] = await Promise.all([
-        endpoints.robotStatus(),
-        endpoints.robotLogs(50),
-        api.get("/system/chromium-status"),
-      ]);
+      const { data: s } = await endpoints.robotStatus();
       setStatus(s);
+    } catch (err) {
+      logger.error("robot status:", err);
+    }
+    try {
+      const { data: l } = await endpoints.robotLogs(50);
       setLogs(l);
+    } catch (err) {
+      logger.error("robot logs:", err);
+    }
+    try {
+      const { data: c } = await api.get("/system/chromium-status");
       setChromium(c);
     } catch (err) {
-      logger.error("Failed to fetch robot status/logs:", err);
+      logger.error("chromium status:", err);
+      setChromium((prev) => prev || { installed: false });
+    }
+    try {
+      const { data: r } = await api.get("/system/ready");
+      setReady(r);
+    } catch (err) {
+      logger.error("system ready:", err);
     }
   }, []);
 
@@ -56,18 +71,23 @@ export default function RobotPage() {
       if (data.already_installed) {
         toast.success("Chromium já está pronto");
       } else {
-        toast.message("Instalação iniciada — aguarde 30-60s");
+        toast.message("Tentando baixar o Chromium no servidor…");
       }
-      // Poll until installed
       const startTs = Date.now();
       const poll = setInterval(async () => {
         try {
           const { data: c } = await api.get("/system/chromium-status");
           setChromium(c);
-          if (c.installed || Date.now() - startTs > 180000) {
+          if (c.installed) {
             clearInterval(poll);
             setInstalling(false);
-            if (c.installed) toast.success("Chromium instalado!");
+            toast.success("Chromium instalado!");
+            return;
+          }
+          if (Date.now() - startTs > 45000) {
+            clearInterval(poll);
+            setInstalling(false);
+            toast.error("Não foi possível baixar o Chromium nesta prévia (rede bloqueada). O login do Bling não depende disso.");
           }
         } catch (err) {
           logger.error("poll chromium:", err);
@@ -117,37 +137,49 @@ export default function RobotPage() {
         </p>
       </div>
 
-      {/* Chromium status banner */}
+<<<<<<< HEAD
+=======
+      {ready && (
+        <div className="border border-border bg-white p-4 text-sm space-y-1">
+          <div className="label-overline mb-2">Antes de cadastrar de verdade</div>
+          <p>{ready.johndrop ? "✓" : "✗"} JohnDrop (e-mail/senha em Configurações)</p>
+          <p>{ready.pricing_rows > 0 ? "✓" : "✗"} Tabela de preços ({ready.pricing_rows.toLocaleString("pt-BR")} linhas)</p>
+          <p>{ready.chromium ? "✓" : "✗"} Chromium do robô</p>
+          <p>{ready.bling ? "✓" : "✗"} Bling conectado (enriquecimento e estoque)</p>
+        </div>
+      )}
+
+>>>>>>> 5b97acb (fix: mostrar o que falta antes do robô, enriquecimento e estoque)
       {chromium && (
         <div
           data-testid="chromium-status-banner"
-          className={`border p-4 flex items-center justify-between gap-4 ${
+          className={`border p-4 flex items-start justify-between gap-4 ${
             chromiumReady
               ? "bg-emerald-50 border-emerald-300 text-emerald-900"
-              : "bg-rose-50 border-rose-300 text-rose-900"
+              : "bg-amber-50 border-amber-300 text-amber-950"
           }`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3">
             {chromiumReady ? (
-              <CheckCircle2 className="h-5 w-5 flex-shrink-0" />
+              <CheckCircle2 className="h-5 w-5 flex-shrink-0 mt-0.5" />
             ) : installing ? (
-              <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
+              <Loader2 className="h-5 w-5 flex-shrink-0 mt-0.5 animate-spin" />
             ) : (
-              <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+              <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
             )}
-            <div className="text-sm">
+            <div className="text-sm space-y-1">
               <div className="font-semibold">
                 {chromiumReady
-                  ? "Chromium pronto"
+                  ? "Chromium do servidor pronto"
                   : installing
-                  ? "Instalando Chromium…"
-                  : "Chromium não instalado"}
+                  ? "Instalando Chromium no servidor…"
+                  : "Chromium do servidor não instalado"}
               </div>
-              <div className="text-xs opacity-80 font-mono">
+              <p className="text-xs leading-relaxed">
                 {chromiumReady
                   ? chromium.path
-                  : "Sem Chromium, o robô cai em modo MOCKED (não cadastra)."}
-              </div>
+                  : "Necessário para o modo REAL do robô JohnDrop. Roda invisível no servidor — não abre janela no seu PC. O login do Bling é outra tela (Configurações) e não usa Chromium."}
+              </p>
             </div>
           </div>
           {!chromiumReady && (
@@ -155,7 +187,7 @@ export default function RobotPage() {
               data-testid="install-chromium-btn"
               onClick={installChromium}
               disabled={installing}
-              className="text-sm font-medium px-4 py-2 rounded-sm bg-rose-700 text-white hover:bg-rose-800 disabled:opacity-60 inline-flex items-center gap-2"
+              className="text-sm font-medium px-4 py-2 rounded-sm bg-[#EE7B22] text-white hover:bg-[#C9651A] disabled:opacity-60 inline-flex items-center gap-2 shrink-0"
             >
               <Download className="h-4 w-4" />
               {installing ? "Instalando…" : "Instalar Chromium"}

@@ -48,7 +48,7 @@ export default function StockSyncPage() {
       }
     } catch (err) {
       logger.error("stock-sync run:", err);
-      toast.error("Falha ao iniciar sincronização");
+      toast.error(err?.response?.data?.detail || "Falha ao iniciar sincronização");
     } finally {
       setStarting(false);
     }

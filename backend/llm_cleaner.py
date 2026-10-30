@@ -5,7 +5,7 @@ from typing import Optional
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY") or os.environ.get("OPENAI_API_KEY")
 
 SYSTEM = (
     "Você é um especialista em SEO de marketplaces brasileiros. "
