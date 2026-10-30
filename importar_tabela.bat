@@ -1,5 +1,5 @@
 @echo off
-title TotyShop — importar tabela de precos
+title TotyShop - importar tabela de precos
 cd /d "%~dp0"
 if not exist "backend\.venv\Scripts\python.exe" (
   echo Rode primeiro iniciar_totyshop.bat
