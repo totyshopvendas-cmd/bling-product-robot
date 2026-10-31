@@ -43,6 +43,28 @@ def _attribute_kind(name: str) -> str:
     return "Tamanho" if SIZE_HINTS.match(name.strip()) else "Cor"
 
 
+def _normalize_variation_label(value: str) -> str:
+    """Normalize values like 'Cor:Azul' or 'Azul' to a comparable label."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    return text.split(":", 1)[-1].strip() if ":" in text else text.strip()
+
+
+def _dedupe_image_urls(image_urls: Optional[List[str]]) -> List[str]:
+    """Keep only valid URLs and remove duplicates by basename."""
+    seen = set()
+    deduped: List[str] = []
+    for u in image_urls or []:
+        if not u or u.startswith(("data:", "blob:")):
+            continue
+        key = u.split("?")[0].split("#")[0].rsplit("/", 1)[-1]
+        if key not in seen:
+            seen.add(key)
+            deduped.append(u)
+    return deduped
+
+
 async def _count_product_images(product_id: int) -> int:
     """Return the number of images currently attached to a Bling product."""
     try:
@@ -63,22 +85,23 @@ async def create_variations(
     total_stock: int = 0,
     parent_images: Optional[List[str]] = None,
     explicit_quantities: Optional[dict] = None,
+    variation_images: Optional[dict] = None,
 ) -> dict:
     """Create variations on a Bling parent. Single PATCH call.
 
     Returns {created, per_child_stock}.
 
-    If `parent_images` is given (URLs from JohnDrop), each child variation will
-    receive a copy of those images via a follow-up PATCH using `imagensURL`.
+    `variation_images` supports a per-variation image map such as:
+      {"Cor:Azul": [url1, url2], "Cor:Rosa": [url3]}
+    or simply:
+      {"Azul": [url1], "Rosa": [url3]}
 
-    If `explicit_quantities` is given (e.g. {"Rosa": 5, "Azul": 3}), each variation
-    receives its specified amount. Variations not in the dict receive the equal
-    split of remaining stock (Regra de Distribuição Balanceada).
+    When present, each child variation receives only the images mapped to its
+    variation label; otherwise it falls back to the parent images list.
     """
     if not variations:
         return {"created": 0, "per_child_stock": 0}
 
-    # Fetch current parent state (we need name, code, price)
     if not parent_current:
         r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
         if r.status_code >= 400:
@@ -92,14 +115,6 @@ async def create_variations(
     if not parent_sku:
         return {"created": 0, "per_child_stock": 0}
 
-    # READ parent's CURRENT stock so we can redistribute when total_stock isn't given.
-    # Important: JohnDrop syncs the product to Bling in TWO phases — the product
-    # data first (which lets us find it), and the stock saldo a few moments later.
-    # If we PATCH formato=V before stock arrives, actionEstoque="Z" zeros it and
-    # we permanently lose the count.
-    #
-    # Solution: poll /estoques/saldos with backoff for up to ~60 seconds. Only
-    # proceed once we've captured a real number (or definitively given up).
     if not total_stock or total_stock <= 0:
         total_stock = await _read_parent_stock_with_retry(parent_id, parent_current)
         await add_log(
@@ -108,10 +123,6 @@ async def create_variations(
             f"(será dividido entre {len(variations)} variações)",
         )
 
-    # Build variation list. The user wants Bling to receive per-variation codes
-    # like `<parent_sku>-<sigla>` (ex: SUPORTE-AZ for Azul, SUPORTE-VD for Verde).
-    # We derive a deterministic 2-letter abbreviation from the variation name so
-    # the codes are stable across re-runs.
     existing_names = set()
     for v in (parent_current.get("variacoes") or []):
         nome_var = (v.get("variacao") or {}).get("nome") or ""
@@ -136,12 +147,10 @@ async def create_variations(
             "codigo": child_sku,
             "preco": float(parent_price) if parent_price else 0.0,
             "tipo": "P",
-            "situacao": "A",  # toggle "Situação do produto" ATIVO
+            "situacao": "A",
             "formato": "S",
             "variacao": {
                 "nome": var_label,
-                # toggle "Utilizar informações do produto pai" ATIVO — herda imagens,
-                # descrição, categoria, marca, peso, dimensões do pai
                 "produtoPai": {"cloneInfo": True},
             },
         })
@@ -149,12 +158,11 @@ async def create_variations(
     if not new_vars:
         return {"created": 0, "per_child_stock": 0, "skipped": skipped}
 
-    # Single PATCH — formato change + variations in one shot
     is_already_v = (parent_current.get("formato") or "").upper() == "V"
     payload: dict = {"variacoes": new_vars}
     if not is_already_v:
         payload["formato"] = "V"
-        payload["actionEstoque"] = "Z"  # Z = zera estoque antigo do simples
+        payload["actionEstoque"] = "Z"
 
     try:
         resp = await bling_service.bling_request(
@@ -182,22 +190,18 @@ async def create_variations(
     except Exception:
         created = len(new_vars)
 
-    # Build map: saved variation id → its name (Rosa, Azul, P, M etc) from the response
     name_to_id: dict = {}
     try:
         body_data = (resp.json() or {}).get("data") or {}
         for s in (body_data.get("variations") or {}).get("saved") or []:
             sid = s.get("id")
             nome_var = s.get("nomeVariacao") or ""
-            # nomeVariacao format: "Cor:Rosa" → take after the colon
             label = nome_var.split(":", 1)[-1].strip() if ":" in nome_var else nome_var.strip()
             if sid and label:
                 name_to_id[label] = sid
     except Exception:
         pass
 
-    # Distribute stock — explicit quantities first (including ZEROS for out-of-stock),
-    # then equal split for the remaining ones.
     per_child = 0
     if saved_ids:
         explicit_map = explicit_quantities or {}
@@ -207,11 +211,9 @@ async def create_variations(
             if not sid:
                 continue
             qty_int = max(0, int(qty))
-            # Apply absolute (including 0 to ensure out-of-stock variations show 0)
             await _set_children_stock([sid], qty_int)
             if sid in remaining_ids:
                 remaining_ids.remove(sid)
-        # Equal split between the ones NOT explicitly quantified
         if total_stock and total_stock > 0 and remaining_ids:
             per_child = total_stock // len(remaining_ids)
             remainder = total_stock - per_child * len(remaining_ids)
@@ -219,8 +221,6 @@ async def create_variations(
                 qty = per_child + (1 if i < remainder else 0)
                 await _set_children_stock([sid], qty)
 
-        # After distributing, ZERO the parent's stock — Bling tracks parent + children
-        # as separate totals. If we don't zero the parent, the dashboard shows DOUBLE.
         if total_stock and total_stock > 0:
             dep_id = await _get_default_deposito_id()
             if dep_id:
@@ -238,13 +238,8 @@ async def create_variations(
                 except Exception:
                     pass
 
-    # Copy parent images onto each child variation so the Bling listing shows
-    # a thumbnail for each variation. We RE-FETCH the parent here so we can pull
-    # the freshly-hosted Bling URLs (after our PATCH uploaded them) instead of
-    # the original JohnDrop S3 presigned URLs (Bling rejects external URLs in
-    # variation children with HTTP 500).
     if saved_ids:
-        urls_to_copy = parent_images or []
+        fallback_urls = _dedupe_image_urls(parent_images or [])
         try:
             r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
             if r.status_code < 400:
@@ -252,10 +247,30 @@ async def create_variations(
                 imgs = (refreshed.get("midia") or {}).get("imagens") or {}
                 internal = [(i.get("link") or "") for i in (imgs.get("internas") or []) if i.get("link")]
                 if internal:
-                    urls_to_copy = internal[:12]
+                    fallback_urls = _dedupe_image_urls(internal[:12])
         except Exception:
             pass
-        await _copy_images_to_children(saved_ids, urls_to_copy)
+
+        per_child_images: dict[int, List[str]] = {}
+        if isinstance(variation_images, dict):
+            for label, urls in variation_images.items():
+                if not isinstance(urls, list):
+                    continue
+                target_urls = _dedupe_image_urls(urls)
+                if not target_urls:
+                    continue
+                child_id = name_to_id.get(label)
+                if child_id is None:
+                    normalized_label = _normalize_variation_label(label)
+                    child_id = name_to_id.get(normalized_label)
+                if child_id is not None:
+                    per_child_images[int(child_id)] = target_urls
+
+        for sid in saved_ids:
+            if sid not in per_child_images:
+                per_child_images[sid] = fallback_urls
+
+        await _copy_images_to_children(saved_ids, fallback_urls, per_child_images)
 
     flat = ", ".join(variations[:6]) + ("…" if len(variations) > 6 else "")
     await add_log(
@@ -268,7 +283,6 @@ async def create_variations(
 _DEPOSITO_CACHE: dict = {"id": None, "checked": False}
 
 
-# Map of common Portuguese color names → 2-letter abbreviations
 _SIGLA_MAP = {
     "azul": "AZ", "amarelo": "AM", "amarela": "AM",
     "branco": "BR", "branca": "BR",
@@ -279,34 +293,24 @@ _SIGLA_MAP = {
     "laranja": "LJ", "marrom": "MR",
     "cinza": "CZ", "prata": "PR", "dourado": "DR", "dourada": "DR",
     "bege": "BG", "lilas": "LL", "ciano": "CN",
-    # Sizes
     "pequeno": "P", "pequena": "P",
     "medio": "M", "media": "M", "médio": "M", "média": "M",
     "grande": "G",
     "pp": "PP", "p": "P", "m": "M", "g": "G", "gg": "GG", "xg": "XG", "xgg": "XGG",
-    # Voltage
     "110v": "110", "220v": "220", "bivolt": "BV",
 }
 
 
 def _variation_sigla(name: str) -> str:
-    """Return a 2-char abbreviation for a variation name.
-
-    Examples:
-      Azul → AZ, Verde → VD, Branco → BR, Pequeno → P, 110v → 110.
-    For unknown names, takes first 2 alphanumeric chars uppercase.
-    """
+    """Return a 2-char abbreviation for a variation name."""
     clean = (name or "").strip().lower()
     if not clean:
         return "XX"
-    # Exact match first
     if clean in _SIGLA_MAP:
         return _SIGLA_MAP[clean]
-    # Strip common suffixes/prefixes
     for k, v in _SIGLA_MAP.items():
         if clean.startswith(k) or clean.endswith(k):
             return v
-    # Fallback: first 2 alphanumeric uppercase
     alnum = "".join(c for c in clean if c.isalnum())
     return (alnum[:2] or "XX").upper()
 
@@ -315,14 +319,7 @@ async def _read_parent_stock_with_retry(
     parent_id: int, parent_current: Optional[dict] = None,
     max_attempts: int = 6, delay_s: float = 10.0,
 ) -> int:
-    """Read parent product's current stock from Bling with retry/backoff.
-
-    JohnDrop pushes the product to Bling, then a few moments later pushes the
-    stock saldo (separate API call inside JohnDrop). We poll
-    `/estoques/saldos` until we either capture a real positive value or exhaust
-    `max_attempts × delay_s` seconds.
-
-    Returns the captured quantity (0 if nothing arrived in time)."""
+    """Read parent product's current stock from Bling with retry/backoff."""
     import asyncio as _asyncio
 
     async def _try_saldos() -> int:
@@ -340,12 +337,10 @@ async def _read_parent_stock_with_retry(
         except Exception:
             return 0
 
-    # Quick first read — many products already have stock at this point
     qty = await _try_saldos()
     if qty > 0:
         return qty
 
-    # Embedded fallback (sometimes stock comes inside GET /produtos but not saldos)
     if parent_current:
         est = parent_current.get("estoque") or {}
         captured = est.get("saldoVirtualTotal") or est.get("saldoFisicoTotal") or 0
@@ -356,7 +351,6 @@ async def _read_parent_stock_with_retry(
         if qty > 0:
             return qty
 
-    # Poll with backoff — JohnDrop sync can lag up to ~45s after product creation
     for attempt in range(1, max_attempts + 1):
         await add_log(
             "info",
@@ -396,15 +390,7 @@ async def _get_default_deposito_id() -> Optional[int]:
 
 
 async def _set_children_stock(child_ids: List[int], qty: int) -> None:
-    """Set each child variation's stock to absolute `qty` via POST /estoques.
-
-    Accepts qty=0 to explicitly mark out-of-stock variations (per TotyShop manual:
-    variações esgotadas devem ser criadas com saldo zero).
-
-    The PATCH /produtos/{id} endpoint silently ignores stock updates on variations
-    (Bling returns 200 but doesn't persist). Must use the dedicated /estoques
-    endpoint with operacao="B" (Balanço = define saldo absoluto).
-    """
+    """Set each child variation's stock to absolute `qty` via POST /estoques."""
     if not child_ids or qty < 0:
         return
     dep_id = await _get_default_deposito_id()
@@ -445,38 +431,28 @@ async def _count_variation_images(child_id: int) -> int:
         return 0
 
 
-async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) -> int:
-    """Push parent images onto each child variation so the Bling listing shows
-    a thumbnail per variation.
+async def _copy_images_to_children(
+    child_ids: List[int],
+    image_urls: List[str],
+    per_child_images: Optional[dict[int, List[str]]] = None,
+) -> int:
+    """Push parent images onto each child variation.
 
-    HISTÓRICO: testes anteriores indicaram que Bling com `cloneInfo=true`
-    silenciosamente ignora PATCHes em `midia.imagens` de filhos. Porém o
-    usuário relata que ANTES funcionava — provavelmente porque a versão
-    inicial usava `imagensURL` (URL list) e o Bling baixa o asset no momento
-    da chamada. Restauramos essa tentativa: se a Bling aceitar, ótimo
-    (variação fica com a mesma imagem do pai); se rejeitar, logamos.
-
-    Estratégia: replica TODAS as imagens do pai em CADA variação
-    (não específica por cor). O usuário escolhe depois qual é a "capa"
-    correta de cada cor manualmente no painel Bling.
+    When `per_child_images` is supplied, each child receives its own mapped list
+    of images; otherwise, the generic parent image list is applied to all.
     """
-    # Dedupe URLs pelo nome base do arquivo — evita passar a MESMA imagem
-    # do JohnDrop em duas fontes (meucatalogofacil.com vs jonhdrop.com.br/uploads)
-    seen: set = set()
-    dedup_urls: List[str] = []
-    for u in image_urls or []:
-        if not u or u.startswith(("data:", "blob:")):
-            continue
-        key = u.split("?")[0].split("#")[0].rsplit("/", 1)[-1]
-        if key not in seen:
-            seen.add(key)
-            dedup_urls.append(u)
-    if not dedup_urls or not child_ids:
+    fallback_urls = _dedupe_image_urls(image_urls)
+    if not child_ids:
         return 0
-    payload_imgs = [{"link": u} for u in dedup_urls[:12]]
+
     ok = 0
     failures: List[str] = []
     for cid in child_ids:
+        cid_urls = per_child_images.get(cid, fallback_urls) if per_child_images else fallback_urls
+        cid_urls = _dedupe_image_urls(cid_urls)
+        if not cid_urls:
+            continue
+        payload_imgs = [{"link": u} for u in cid_urls[:12]]
         applied = False
         for attempt in range(1, 4):
             try:
@@ -503,8 +479,7 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
     if ok:
         await add_log(
             "info",
-            f"Imagens replicadas em {ok}/{len(child_ids)} variações "
-            f"({len(dedup_urls)} URLs únicas por variação)",
+            f"Imagens replicadas em {ok}/{len(child_ids)} variações; mapeamento por variação aplicado quando houver imagens específicas.",
         )
     if failures:
         await add_log(
@@ -517,8 +492,7 @@ async def _copy_images_to_children(child_ids: List[int], image_urls: List[str]) 
 
 async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
     """Scan Bling for variation parents (formato=V) where children have 0 stock
-    while parent has stock. Redistribute from parent to children equally.
-    Used to fix products cadastrated before the stock fix landed."""
+    while parent has stock. Redistribute from parent to children equally."""
     import asyncio as _asyncio
     fixed = 0
     scanned = 0
@@ -577,12 +551,12 @@ async def redistribute_all_variation_stocks(max_items: int = 100) -> dict:
     return {"ok": True, "scanned": scanned, "fixed": fixed}
 
 
-async def fix_existing_variations(parent_id: int) -> dict:
-    """Read existing variations of a parent and repair image propagation.
+async def fix_existing_variations(parent_id: int, variation_images: Optional[dict] = None) -> dict:
+    """Repair image propagation for existing variations.
 
-    For products already created in Bling, ensure each child variation receives
-    the same image set as the parent. This is a manual repair path for products
-    created before the image propagation fix was robust.
+    If `variation_images` is supplied with per-variation image maps, each child gets
+    only the images mapped to its variation; otherwise, the parent image list is
+    used as fallback for all children.
     """
     r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
     if r.status_code >= 400:
@@ -593,23 +567,49 @@ async def fix_existing_variations(parent_id: int) -> dict:
         return {"ok": True, "fixed": 0, "failed": 0, "total": 0, "note": "pai sem variações"}
 
     imgs = (parent.get("midia") or {}).get("imagens") or {}
-    media_urls = [(i.get("link") or "") for i in (imgs.get("internas") or []) if i.get("link")]
-    if not media_urls:
-        media_urls = [(i.get("link") or "") for i in (imgs.get("externas") or []) if i.get("link")]
+    fallback_urls = [(i.get("link") or "") for i in (imgs.get("internas") or []) if i.get("link")]
+    if not fallback_urls:
+        fallback_urls = [(i.get("link") or "") for i in (imgs.get("externas") or []) if i.get("link")]
+    fallback_urls = _dedupe_image_urls(fallback_urls)
+
     child_ids = [c.get("id") for c in children if c.get("id")]
+    per_child_images: dict[int, List[str]] = {}
+    if isinstance(variation_images, dict):
+        for label, urls in variation_images.items():
+            if not isinstance(urls, list):
+                continue
+            target_urls = _dedupe_image_urls(urls)
+            if not target_urls:
+                continue
+            # The UI typically exposes "Cor:Azul" names, but sometimes only "Azul".
+            matched = None
+            for child in children:
+                child_label = (child.get("variacao") or {}).get("nome") or ""
+                if child_label == label or _normalize_variation_label(child_label) == _normalize_variation_label(label):
+                    matched = child.get("id")
+                    break
+            if matched is not None:
+                per_child_images[int(matched)] = target_urls
+
     copied = 0
-    if media_urls and child_ids:
-        copied = await _copy_images_to_children(child_ids, media_urls)
+    if child_ids:
+        copied = await _copy_images_to_children(child_ids, fallback_urls, per_child_images)
     return {
         "ok": True,
         "fixed": copied,
         "failed": max(0, len(child_ids) - copied),
         "total": len(child_ids),
-        "note": "Imagem do pai propagada para as variações quando possível; se Bling continuar ignorando, é necessário reabrir o produto na UI do Bling.",
+        "note": "Imagem do pai propagada para as variações quando possível; imagens por variação são aplicadas em primeiro lugar, fallback no pai em segundo lugar.",
     }
 
 
-async def find_and_create(parent_sku: str, variations: List[str], total_stock: int = 0, parent_images: Optional[List[str]] = None) -> dict:
+async def find_and_create(
+    parent_sku: str,
+    variations: List[str],
+    total_stock: int = 0,
+    parent_images: Optional[List[str]] = None,
+    variation_images: Optional[dict] = None,
+) -> dict:
     """Convenience wrapper: fetch parent by SKU, then run full flow."""
     if not parent_sku or not variations:
         return {"ok": False, "reason": "sku ou variações vazios"}
@@ -631,5 +631,12 @@ async def find_and_create(parent_sku: str, variations: List[str], total_stock: i
         return {"ok": False, "reason": "produto não encontrado"}
     full_resp = await bling_service.bling_request("GET", f"/produtos/{target['id']}")
     full = (full_resp.json() or {}).get("data") if full_resp.status_code < 400 else target
-    result = await create_variations(target["id"], full, variations, total_stock, parent_images=parent_images)
+    result = await create_variations(
+        target["id"],
+        full,
+        variations,
+        total_stock,
+        parent_images=parent_images,
+        variation_images=variation_images,
+    )
     return {"ok": True, **result}
