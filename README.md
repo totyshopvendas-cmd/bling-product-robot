@@ -4,6 +4,12 @@ Painel próprio para automatizar a loja **JohnDrop → Bling ERP (API v3)**: cad
 enriquecimento com IA (título, descrição, marca, categoria, cores), sincronização de estoque,
 mapeamento de categorias por marketplace, anúncios para redes sociais e exportação de planilhas.
 
+O painel também possui um **Robô Dropper** independente. Ele usa credenciais próprias do
+`dropper.dropping.com.br`, reaproveita a limpeza de título/SKU e a tabela de preços, e mantém
+o mesmo modo teste/real, logs, limite por execução e fila de acompanhamento do fluxo
+Dropper → Bling. O cadastro acontece somente no Dropper; o enriquecimento começa depois que
+o produto chega ao Bling pela integração nativa.
+
 **100% independente da Emergent.** Roda no seu PC (Windows), num servidor/VPS ou em Docker.
 
 > Para conectar no Bling e no JohnDrop, o painel precisa rodar num lugar com acesso normal à internet

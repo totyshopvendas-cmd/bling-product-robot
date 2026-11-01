@@ -53,6 +53,7 @@ from diag_service import router as diag_router
 import stock_sync
 import stock_sync_bot
 import johndrop_export
+import dropper_bot
 import admin_service
 import category_mapping
 import category_mapping_bot
@@ -456,6 +457,20 @@ async def get_johndrop_creds_status() -> dict:
     return {"configured": True, "username": creds.get("username")}
 
 
+@api.post("/settings/dropper")
+async def set_dropper_creds(creds: JohnDropCreds) -> dict:
+    await dropper_bot.save_dropper_credentials(creds.username, creds.password)
+    return {"ok": True}
+
+
+@api.get("/settings/dropper")
+async def get_dropper_creds_status() -> dict:
+    creds = await dropper_bot.get_dropper_credentials()
+    if not creds:
+        return {"configured": False}
+    return {"configured": True, "username": creds.get("username")}
+
+
 # ---------- Robot ----------
 @api.post("/robot/start", response_model=RobotStatusResponse)
 async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
@@ -512,6 +527,42 @@ async def shopee_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig
         raise HTTPException(400, "Robô Shopee já está em execução")
     await shopee_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
     return RobotStatusResponse(**shopee_bot.shopee_robot.to_dict())
+
+
+# ---------- Dropper Robot ----------
+@api.post("/dropper/start", response_model=RobotStatusResponse)
+async def dropper_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
+    if dropper_bot.dropper_robot.state == "running":
+        raise HTTPException(400, "Robô Dropper já está em execução")
+    creds = await dropper_bot.get_dropper_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha do Dropper em Configurações")
+    if not cfg.dry_run:
+        cr = dropper_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Instale o Chromium antes do modo real.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços antes do modo real")
+    await dropper_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**dropper_bot.dropper_robot.to_dict())
+
+
+@api.post("/dropper/stop")
+async def dropper_stop() -> dict:
+    await dropper_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/dropper/status", response_model=RobotStatusResponse)
+async def dropper_status() -> RobotStatusResponse:
+    return RobotStatusResponse(**dropper_bot.dropper_robot.to_dict())
+
+
+@api.get("/dropper/logs")
+async def dropper_logs(limit: int = 100) -> list:
+    logs = await robot_service.get_logs(limit)
+    return [log for log in logs if log.get("bot") == "dropper"]
 
 
 @api.post("/shopee/stop")

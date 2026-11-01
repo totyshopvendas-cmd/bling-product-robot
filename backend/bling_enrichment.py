@@ -311,27 +311,28 @@ def _parse_variations(raw_description: str) -> List[str]:
     return deduped[:10]
 
 
-async def _find_jonh_supplier_id() -> Optional[int]:
-    """Find Bling supplier (contato) named JONH VARIEDADES. Cached after first lookup.
-    Note: Bling's `pesquisa` param does NOT match multi-word queries verbatim, so we search
-    by the unique single word "JONH" and filter the results client-side."""
-    if _SUPPLIER_CACHE["id"]:
-        return _SUPPLIER_CACHE["id"]
+async def _find_supplier_id(supplier_name: str = "JONH VARIEDADES") -> Optional[int]:
+    """Find a Bling supplier contact by name, with an isolated cache per supplier."""
+    key = (supplier_name or "JONH VARIEDADES").strip().upper()
+    cache = _SUPPLIER_CACHE.setdefault(key, {"id": None, "name": supplier_name})
+    if cache["id"]:
+        return cache["id"]
     try:
+        search_term = key.split()[0] if key.split() else key
         resp = await bling_service.bling_request(
-            "GET", "/contatos", params={"pesquisa": "JONH", "limite": 20}
+            "GET", "/contatos", params={"pesquisa": search_term, "limite": 50}
         )
         if resp.status_code >= 400:
             return None
         items = (resp.json() or {}).get("data") or []
         for it in items:
             nome = (it.get("nome") or "").upper().strip()
-            if "JONH" in nome and "VARIEDADES" in nome:
-                _SUPPLIER_CACHE["id"] = it.get("id")
-                _SUPPLIER_CACHE["name"] = it.get("nome")
-                return _SUPPLIER_CACHE["id"]
+            if nome == key or key in nome or all(part in nome for part in key.split()):
+                cache["id"] = it.get("id")
+                cache["name"] = it.get("nome")
+                return cache["id"]
     except Exception as e:
-        await add_log("warning", f"Bling: falha ao buscar fornecedor JONH: {e}")
+        await add_log("warning", f"Bling: falha ao buscar fornecedor {supplier_name}: {e}")
     return None
 
 
@@ -512,7 +513,7 @@ async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None
     return None
 
 
-_SUPPLIER_CACHE: dict = {"id": None, "name": "JONH VARIEDADES"}
+_SUPPLIER_CACHE: dict = {}
 
 
 async def update_bling_product(
@@ -523,6 +524,7 @@ async def update_bling_product(
     cost: Optional[float] = None,
     variations: Optional[List[str]] = None,
     images: Optional[list] = None,
+    supplier_name: str = "JONH VARIEDADES",
 ) -> bool:
     """PATCH the Bling product, sending ONLY the 7 fields the TotyShop manual asks
     us to change. Every other field (nome, código, preço, peso, dimensões, imagens,
@@ -566,7 +568,7 @@ async def update_bling_product(
     _ = images  # kept for API signature compatibility
 
     # Supplier collected here, applied AFTER the patch succeeds (separate endpoint)
-    supplier_id = await _find_jonh_supplier_id()
+    supplier_id = await _find_supplier_id(supplier_name)
     supplier_entry: Optional[dict] = None
     if supplier_id:
         supplier_entry = {
@@ -590,7 +592,7 @@ async def update_bling_product(
         await add_log("warning", f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
         return False
 
-    # AFTER successful PATCH: link supplier (JONH VARIEDADES) via dedicated endpoint.
+    # AFTER successful PATCH: link the configured supplier via dedicated endpoint.
     if supplier_entry:
         try:
             sr = await bling_service.bling_request(
@@ -776,6 +778,7 @@ async def enrich_product_by_sku(
     cost: Optional[float] = None,
     images: Optional[list] = None,
     wait_for_product: bool = True,
+    supplier_name: Optional[str] = None,
 ) -> dict:
     """Main enrichment flow. Idempotent — finds product, enriches it, logs result."""
     sku = (sku or "").strip()
@@ -787,6 +790,7 @@ async def enrich_product_by_sku(
     # text from JohnDrop ends up lost otherwise). We upsert by SKU so subsequent
     # runs don't duplicate the record.
     if raw_description and len(raw_description) > 30:
+        supplier_name = (supplier_name or "JONH VARIEDADES").strip()
         try:
             await db.product_raw.update_one(
                 {"sku": sku},
@@ -797,6 +801,7 @@ async def enrich_product_by_sku(
                     "johndrop_id": johndrop_id,
                     "cost": cost,
                     "images": images,
+                    "supplier_name": supplier_name,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }},
                 upsert=True,
@@ -815,10 +820,13 @@ async def enrich_product_by_sku(
                 cost = cost if cost is not None else doc.get("cost")
                 if not images:
                     images = doc.get("images")
+                supplier_name = supplier_name or doc.get("supplier_name") or "JONH VARIEDADES"
                 if raw_description:
                     await add_log("info", f"Bling: raw recuperado do Mongo para {sku} ({len(raw_description)} chars)")
         except Exception:
             pass
+
+    supplier_name = (supplier_name or "JONH VARIEDADES").strip()
 
     # Track for live dashboard
     try:
@@ -914,6 +922,7 @@ async def enrich_product_by_sku(
             product_id, full, payload,
             johndrop_id=johndrop_id, cost=cost, variations=variations or None,
             images=images,
+            supplier_name=supplier_name,
         )
     except Exception as e:
         await add_log("error", f"Bling: PUT falhou para {sku}: {e}")

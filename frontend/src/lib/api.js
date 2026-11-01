@@ -54,6 +54,9 @@ export const endpoints = {
   setJohnDropCreds: (username, password) =>
     api.post("/settings/johndrop", { username, password }),
   getJohnDropStatus: () => api.get("/settings/johndrop"),
+  setDropperCreds: (username, password) =>
+    api.post("/settings/dropper", { username, password }),
+  getDropperStatus: () => api.get("/settings/dropper"),
 
   robotStart: (max_products, dry_run) =>
     api.post("/robot/start", { max_products, dry_run }),
@@ -61,4 +64,9 @@ export const endpoints = {
   robotStatus: () => api.get("/robot/status"),
   robotLogs: (limit = 100) => api.get(`/robot/logs?limit=${limit}`),
   robotLogsClear: () => api.post("/robot/logs/clear"),
+  dropperStart: (max_products, dry_run) =>
+    api.post("/dropper/start", { max_products, dry_run }),
+  dropperStop: () => api.post("/dropper/stop"),
+  dropperStatus: () => api.get("/dropper/status"),
+  dropperLogs: (limit = 100) => api.get(`/dropper/logs?limit=${limit}`),
 };

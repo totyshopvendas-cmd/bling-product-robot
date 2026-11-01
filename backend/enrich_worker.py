@@ -119,7 +119,7 @@ async def _tick() -> None:
                 item.get("raw_description") or "",
                 johndrop_id=item.get("johndrop_id"),
                 cost=item.get("cost"),
-                images=item.get("images"),
+                supplier_name=item.get("supplier_name"),
             )
             if result.get("ok"):
                 await db.enrich_pending.update_one(
