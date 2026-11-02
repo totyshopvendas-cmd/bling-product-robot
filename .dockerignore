@@ -8,3 +8,7 @@ backend/.venv
 .env
 backend/.env
 logs
+data
+backend/data
+*.log
+*.pyc

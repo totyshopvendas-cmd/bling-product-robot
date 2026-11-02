@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm install --legacy-peer-deps --no-audit --no-fund
+RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY frontend/ ./
 ENV REACT_APP_BACKEND_URL=
 ENV CI=true

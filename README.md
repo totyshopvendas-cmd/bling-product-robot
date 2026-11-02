@@ -10,6 +10,9 @@ o mesmo modo teste/real, logs, limite por execução e fila de acompanhamento do
 Dropper → Bling. O cadastro acontece somente no Dropper; o enriquecimento começa depois que
 o produto chega ao Bling pela integração nativa.
 
+Para rodar sem Emergent, use o guia **[DEPLOY_INDEPENDENTE.md](DEPLOY_INDEPENDENTE.md)**. O
+projeto já inclui Docker Compose com MongoDB persistente e serve React e FastAPI no mesmo endereço.
+
 **100% independente da Emergent.** Roda no seu PC (Windows), num servidor/VPS ou em Docker.
 
 > Para conectar no Bling e no JohnDrop, o painel precisa rodar num lugar com acesso normal à internet
