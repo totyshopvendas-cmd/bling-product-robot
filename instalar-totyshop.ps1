@@ -36,7 +36,21 @@ try {
         )
         $dockerExe = $dockerPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
         if (-not $dockerExe) {
-            throw 'O comando Docker existe, mas o Docker Desktop não foi localizado. Abra o Docker Desktop manualmente e execute novamente.'
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-Host 'Docker Desktop não foi localizado. Vou tentar instalar pelo Windows Package Manager...' -ForegroundColor Yellow
+                winget install --id Docker.DockerDesktop --exact --source winget --accept-package-agreements --accept-source-agreements
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'A instalação automática do Docker Desktop foi interrompida. Aceite a janela do Windows e execute novamente.'
+                }
+                $dockerPaths = @(
+                    (Join-Path ${env:ProgramFiles} 'Docker\Docker\Docker Desktop.exe'),
+                    (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker Desktop.exe')
+                )
+                $dockerExe = $dockerPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (-not $dockerExe) {
+                throw 'O Docker Desktop não foi localizado. O instalador tentou usar o Windows Package Manager, mas o Windows pode exigir a confirmação da instalação ou uma reinicialização.'
+            }
         }
         Write-Host 'O Docker Desktop está fechado. Abrindo agora...' -ForegroundColor Yellow
         Start-Process $dockerExe
