@@ -5,6 +5,26 @@ $RepoZip = 'https://github.com/totyshopvendas-cmd/bling-product-robot/archive/re
 
 function Info($text) { Write-Host "`n$text" -ForegroundColor Cyan }
 function Fail($text) { Write-Host "`nERRO: $text" -ForegroundColor Red; Read-Host 'Pressione Enter para fechar'; exit 1 }
+function Test-DockerReady {
+    try {
+        $dockerCommand = Get-Command docker -ErrorAction Stop
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo.FileName = $dockerCommand.Source
+        $process.StartInfo.Arguments = 'info --format "{{.ServerVersion}}"'
+        $process.StartInfo.UseShellExecute = $false
+        $process.StartInfo.CreateNoWindow = $true
+        $process.StartInfo.RedirectStandardOutput = $true
+        $process.StartInfo.RedirectStandardError = $true
+        [void]$process.Start()
+        if (-not $process.WaitForExit(8000)) {
+            $process.Kill()
+            return $false
+        }
+        return ($process.ExitCode -eq 0)
+    } catch {
+        return $false
+    }
+}
 
 try {
     Info 'Instalador TotyShop - versão independente do Emergent'
@@ -22,13 +42,7 @@ try {
     }
 
     Info 'Verificando se o Docker Desktop está funcionando...'
-    $dockerReady = $false
-    try {
-        docker info *> $null
-        $dockerReady = ($LASTEXITCODE -eq 0)
-    } catch {
-        $dockerReady = $false
-    }
+    $dockerReady = Test-DockerReady
     if (-not $dockerReady) {
         $dockerPaths = @(
             (Join-Path ${env:ProgramFiles} 'Docker\Docker\Docker Desktop.exe'),
@@ -57,8 +71,7 @@ try {
         $deadline = (Get-Date).AddMinutes(3)
         do {
             Start-Sleep -Seconds 5
-            docker info *> $null
-            $dockerReady = ($LASTEXITCODE -eq 0)
+            $dockerReady = Test-DockerReady
             if ($dockerReady) { break }
             Write-Host 'Aguardando o motor do Docker iniciar...'
         } while ((Get-Date) -lt $deadline)
