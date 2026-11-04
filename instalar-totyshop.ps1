@@ -21,6 +21,38 @@ try {
         exit 0
     }
 
+    Info 'Verificando se o Docker Desktop está funcionando...'
+    $dockerReady = $false
+    try {
+        docker info *> $null
+        $dockerReady = ($LASTEXITCODE -eq 0)
+    } catch {
+        $dockerReady = $false
+    }
+    if (-not $dockerReady) {
+        $dockerPaths = @(
+            (Join-Path ${env:ProgramFiles} 'Docker\Docker\Docker Desktop.exe'),
+            (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker Desktop.exe')
+        )
+        $dockerExe = $dockerPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $dockerExe) {
+            throw 'O comando Docker existe, mas o Docker Desktop não foi localizado. Abra o Docker Desktop manualmente e execute novamente.'
+        }
+        Write-Host 'O Docker Desktop está fechado. Abrindo agora...' -ForegroundColor Yellow
+        Start-Process $dockerExe
+        $deadline = (Get-Date).AddMinutes(3)
+        do {
+            Start-Sleep -Seconds 5
+            docker info *> $null
+            $dockerReady = ($LASTEXITCODE -eq 0)
+            if ($dockerReady) { break }
+            Write-Host 'Aguardando o motor do Docker iniciar...'
+        } while ((Get-Date) -lt $deadline)
+        if (-not $dockerReady) {
+            throw 'O Docker Desktop abriu, mas o motor ainda não ficou pronto. Aguarde o ícone da baleia ficar estável e execute novamente.'
+        }
+    }
+
     if (-not (Test-Path (Split-Path $InstallDir))) {
         New-Item -ItemType Directory -Path (Split-Path $InstallDir) -Force | Out-Null
     }
