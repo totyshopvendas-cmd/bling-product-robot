@@ -278,25 +278,25 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
 
     if not await _playwright_available():
         robot.state = "error"
-        robot.message = "Playwright/Chromium não instalado no servidor"
+        robot.message = "Playwright/Chromium não está pronto no servidor"
         robot.finished_at = datetime.now(timezone.utc)
         await add_log(
             "error",
-            "Playwright não está instalado. Modo MOCKED ativo — gerando títulos sem cadastrar."
+            "Playwright/Chromium não está pronto. Nenhum produto foi processado; "
+            "o modo de demonstração MOCKED não será usado.",
         )
-        await _run_mock(max_products)
         return
 
     try:
         await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
     except Exception as e:
-        await add_log("error", f"Playwright falhou ({str(e)[:160]}) — caindo para modo MOCKED")
-        try:
-            await _run_mock(max_products)
-        except Exception as e2:
-            robot.state = "error"
-            robot.message = str(e2)
-            await add_log("error", f"Erro no fallback MOCKED: {e2}")
+        robot.state = "error"
+        robot.message = f"Falha na automação JohnDrop: {str(e)[:120]}"
+        await add_log(
+            "error",
+            f"Playwright falhou ({str(e)[:160]}). Execução encerrada sem fallback MOCKED; "
+            "nenhum sucesso simulado será contado.",
+        )
     finally:
         robot.finished_at = datetime.now(timezone.utc)
         if robot.state == "running":
