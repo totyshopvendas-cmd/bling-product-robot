@@ -14,7 +14,9 @@ export default function SettingsPage() {
   const [creds, setCreds] = useState({ username: "", password: "" });
   const [dropper, setDropper] = useState({ configured: false, username: "" });
   const [dropperCreds, setDropperCreds] = useState({ username: "", password: "" });
+  const [blingClientId, setBlingClientId] = useState("");
   const [blingSecret, setBlingSecret] = useState("");
+  const [savingBling, setSavingBling] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [lastError, setLastError] = useState("");
@@ -42,6 +44,7 @@ export default function SettingsPage() {
         endpoints.getDropperStatus(),
       ]);
       setCfg(b.data);
+      if (b.data.client_id) setBlingClientId(b.data.client_id);
       setJd(j.data);
       if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
       setDropper(d.data);
@@ -53,13 +56,29 @@ export default function SettingsPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const saveBlingCredentials = async () => {
+    if (!blingClientId.trim() || !blingSecret.trim()) {
+      toast.error("Preencha o Client ID e o Client Secret do aplicativo Bling");
+      return;
+    }
+    setSavingBling(true);
+    try {
+      await endpoints.saveBlingApp(blingClientId.trim(), blingSecret.trim());
+      setBlingSecret("");
+      await load();
+      toast.success("Credenciais do aplicativo salvas com segurança neste computador");
+    } catch (e) {
+      const detail = e.response?.data?.detail || e.message;
+      toast.error(typeof detail === "string" ? detail : "Falha ao salvar credenciais");
+    } finally {
+      setSavingBling(false);
+    }
+  };
+
   const connectBling = async () => {
     setConnecting(true);
     setLastError("");
     try {
-      if (blingSecret.trim()) {
-        await endpoints.saveBlingApp(cfg?.client_id || "", blingSecret.trim());
-      }
       const { data } = await endpoints.blingAuthorizeUrl(window.location.origin);
       const authUrl = data?.url;
       if (!authUrl) throw new Error("Não foi possível abrir o Bling");
@@ -96,7 +115,6 @@ export default function SettingsPage() {
   };
 
   const keysOk = Boolean(cfg?.configured);
-  const needSecret = lastError?.toLowerCase().includes("secret") || lastError?.toLowerCase().includes("client id");
 
   const saveDropper = async (e) => {
     e.preventDefault();
@@ -170,18 +188,48 @@ export default function SettingsPage() {
             <Unplug className="h-4 w-4" /> Desconectar
           </button>
         ) : (
-          <div className="space-y-3">
-            {needSecret && (
-              <div>
-                <label className="label-overline">Client Secret do Bling</label>
-                <input
-                  type="password"
-                  value={blingSecret}
-                  onChange={(e) => setBlingSecret(e.target.value)}
-                  placeholder="Cole o Client Secret uma vez"
-                  className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 font-mono focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
-                />
+          <div className="space-y-4">
+            {!keysOk && (
+              <div className="space-y-3 rounded-sm border border-blue-200 bg-blue-50 p-4">
+                <p className="text-sm text-blue-900">
+                  Primeiro, crie um aplicativo na Central de Extensões do Bling e copie o Client ID e o Client Secret. Eles são diferentes do seu e-mail e senha de login.
+                </p>
+                <div>
+                  <label className="label-overline">Client ID</label>
+                  <input
+                    type="text"
+                    value={blingClientId}
+                    onChange={(e) => setBlingClientId(e.target.value)}
+                    placeholder="Cole o Client ID do aplicativo Bling"
+                    autoComplete="off"
+                    className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 font-mono focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+                  />
+                </div>
+                <div>
+                  <label className="label-overline">Client Secret</label>
+                  <input
+                    type="password"
+                    value={blingSecret}
+                    onChange={(e) => setBlingSecret(e.target.value)}
+                    placeholder="Cole o Client Secret do aplicativo Bling"
+                    autoComplete="new-password"
+                    className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 font-mono focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={saveBlingCredentials}
+                  disabled={savingBling || !blingClientId.trim() || !blingSecret.trim()}
+                  className="text-sm border border-blue-300 bg-white px-4 py-2 rounded-sm hover:bg-blue-100 disabled:opacity-50"
+                >
+                  {savingBling ? "Salvando…" : "Salvar credenciais do aplicativo"}
+                </button>
               </div>
+            )}
+            {cfg?.redirect_uri && (
+              <p className="text-xs text-muted-foreground break-all">
+                No cadastro do aplicativo Bling, o endereço de redirecionamento precisa ser exatamente: <code>{cfg.redirect_uri}</code>
+              </p>
             )}
             <button
               data-testid="connect-bling-btn"
@@ -192,11 +240,6 @@ export default function SettingsPage() {
               <Link2 className="h-4 w-4" />
               {connecting ? "Abrindo o Bling…" : "Conectar Bling"}
             </button>
-            {!keysOk && (
-              <p className="text-xs text-rose-700">
-                Falta Client ID ou Secret no arquivo backend\.env. Copie as duas linhas do Bling para lá, salve e rode o .bat de novo.
-              </p>
-            )}
           </div>
         )}
       </div>
