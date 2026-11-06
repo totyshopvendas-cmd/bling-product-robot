@@ -65,7 +65,8 @@ export default function SettingsPage() {
     try {
       await endpoints.saveBlingApp(blingClientId.trim(), blingSecret.trim());
       setBlingSecret("");
-      await load();
+      const { data } = await endpoints.blingOAuthConfig(window.location.origin);
+      setCfg(data);
       toast.success("Credenciais do aplicativo salvas com segurança neste computador");
     } catch (e) {
       const detail = e.response?.data?.detail || e.message;
@@ -95,7 +96,8 @@ export default function SettingsPage() {
   const disconnectBling = async () => {
     await endpoints.blingDisconnect();
     toast.info("Bling desconectado");
-    load();
+    const { data } = await endpoints.blingOAuthConfig(window.location.origin);
+    setCfg(data);
   };
 
   const saveJd = async (e) => {
@@ -107,8 +109,9 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await endpoints.setJohnDropCreds(creds.username, creds.password);
+      const { data } = await endpoints.getJohnDropStatus();
+      setJd(data);
       toast.success("JohnDrop salva — o robô já pode entrar");
-      load();
     } finally {
       setSaving(false);
     }
@@ -125,8 +128,9 @@ export default function SettingsPage() {
     setSaving(true);
     try {
       await endpoints.setDropperCreds(dropperCreds.username, dropperCreds.password);
+      const { data } = await endpoints.getDropperStatus();
+      setDropper(data);
       toast.success("Dropper salvo — o robô já pode entrar");
-      load();
     } finally {
       setSaving(false);
     }
