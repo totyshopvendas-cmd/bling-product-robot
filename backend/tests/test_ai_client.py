@@ -154,3 +154,26 @@ def test_status_never_leaks_key(monkeypatch):
     assert st["text"]["provider"] == "openai"
     assert st["image"]["provider"] == "openai"
     assert st["tts"] is True
+
+
+def test_ollama_local_is_used_without_api_key(monkeypatch, mock_http):
+    routes, calls = mock_http
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.test:11434")
+    routes["http://ollama.test:11434/api/chat"] = lambda r: httpx.Response(
+        200, json={"message": {"content": "descrição local"}})
+    assert ai_client.has_text_ai()
+    assert ai_client.resolve_text(None, None) == ("ollama", "qwen2.5:3b")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-will-not-be-used")
+    assert ai_client.resolve_text("openai", "gpt-4o-mini") == ("ollama", "qwen2.5:3b")
+    result = run(ai_client.LlmChat().send_message(ai_client.UserMessage("produto")))
+    assert result == "descrição local"
+    body = json.loads(calls[0].content)
+    assert body["model"] == "qwen2.5:3b"
+    assert body["stream"] is False
+
+
+def test_ollama_configuration_can_be_saved(monkeypatch):
+    monkeypatch.setattr(ai_client, "_stored_keys", lambda: {
+        "ollama_base_url": "http://host.docker.internal:11434", "ollama_model": "llama3.2:3b"})
+    assert ai_client.status()["providers"]["ollama"]["configured"] is True
+    assert ai_client.resolve_text(None, None) == ("ollama", "llama3.2:3b")

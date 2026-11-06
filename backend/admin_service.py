@@ -124,6 +124,8 @@ class AIKeysRequest(BaseModel):
     openai: Optional[str] = None
     gemini: Optional[str] = None
     openrouter: Optional[str] = None
+    ollama_base_url: Optional[str] = None
+    ollama_model: Optional[str] = None
 
 
 @router.get("/settings/ai")

@@ -5,6 +5,15 @@ services:
     volumes:
       - totyshop_mongo:/data/db
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    profiles: ["local-ai"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - totyshop_ollama:/root/.ollama
+
   app:
     build: .
     restart: unless-stopped
@@ -15,7 +24,8 @@ services:
       DB_NAME: ${DB_NAME:-bling_robot}
       TZ: America/Sao_Paulo
     ports:
-      - "8000:8000"
+      # Acesso local apenas por padrão; não expõe o painel diretamente à rede.
+      - "127.0.0.1:8000:8000"
     depends_on:
       - mongo
     volumes:
@@ -29,3 +39,4 @@ volumes:
   totyshop_secrets:
   totyshop_exports:
   totyshop_data:
+  totyshop_ollama:

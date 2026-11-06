@@ -37,11 +37,13 @@ export default function AISettings() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(null);
   const [results, setResults] = useState({});
+  const [ollama, setOllama] = useState({ base_url: "http://ollama:11434", model: "qwen2.5:3b" });
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get("/settings/ai");
       setStatus(data);
+      if (data.ollama) setOllama({ base_url: data.ollama.base_url || "http://ollama:11434", model: data.ollama.model || "qwen2.5:3b" });
     } catch (err) {
       logger.error("ai settings:", err);
     }
@@ -96,8 +98,7 @@ export default function AISettings() {
             <Brain className="h-5 w-5 text-[#EE7B22]" /> Inteligência Artificial
           </h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Antes a IA vinha da chave da Emergent. Agora você usa a sua chave, direto no provedor,
-            e paga só pelo que usar. Uma chave já basta. Ela fica guardada só neste computador/servidor.
+            Você pode usar o Ollama no seu computador sem chave e sem cobrança por chamada, ou conectar um provedor externo. Chaves externas ficam guardadas só neste computador/servidor.
           </p>
         </div>
         {any && (
@@ -122,6 +123,22 @@ export default function AISettings() {
           </div>
         </div>
       )}
+
+      <div className="border border-emerald-200 bg-emerald-50/50 p-4 space-y-3">
+        <div>
+          <div className="text-sm font-semibold">Ollama local — sem cobrança por chamada</div>
+          <p className="text-xs text-muted-foreground mt-1">Usa um modelo aberto no seu próprio computador. Instale Ollama e baixe um modelo (por exemplo, qwen2.5:3b). Para o instalador Docker no Windows, use o endereço abaixo. A IA só fica disponível enquanto seu computador estiver ligado.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <input aria-label="Endereço Ollama" value={ollama.base_url} onChange={(e) => setOllama((v) => ({ ...v, base_url: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="http://ollama:11434" />
+          <input aria-label="Modelo Ollama" value={ollama.model} onChange={(e) => setOllama((v) => ({ ...v, model: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="qwen2.5:3b" />
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => save({ ollama_base_url: ollama.base_url, ollama_model: ollama.model })} disabled={saving} className="text-xs px-3 py-1.5 bg-emerald-700 text-white disabled:opacity-50">Salvar Ollama</button>
+          <button type="button" onClick={() => test("ollama")} disabled={!prov.ollama?.configured || testing === "ollama"} className="text-xs px-3 py-1.5 border border-border disabled:opacity-40">{testing === "ollama" ? "Testando…" : "Testar conexão"}</button>
+          {results.ollama && <span className={`text-xs ${results.ollama.ok ? "text-emerald-700" : "text-rose-700"}`}>{results.ollama.ok ? "Conectado" : results.ollama.error}</span>}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {PROVIDERS.map((p) => {

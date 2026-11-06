@@ -26,9 +26,25 @@ com o Bling e com o JohnDrop, por isso as prévias online (Emergent, Arena) serv
 Se o Bling recusar `http://127.0.0.1` (alguns apps exigem HTTPS), use um túnel (`ngrok http 8000`)
 ou um servidor com domínio HTTPS, e coloque esse endereço no Bling e em `APP_BASE_URL`.
 
-### Ligar a Inteligência Artificial (substitui a chave da Emergent)
+### IA local sem cobrança por chamada (Ollama)
 
-1. Crie uma chave em **um** destes sites (o Gemini tem cota grátis):
+O Ollama roda em um contêiner privado do Docker e não precisa de chave de API. Para gerar títulos, descrições, bullets e categorias sem enviar esses textos a um provedor pago:
+
+1. Com o TotyShop instalado, abra o PowerShell na pasta do projeto.
+2. Inicie o serviço local de IA:
+   ```powershell
+   docker compose --profile local-ai up -d
+   docker compose exec ollama ollama pull qwen2.5:3b
+   ```
+   O download inicial do modelo pode demorar e usa espaço em disco.
+3. No painel, abra **Configurações → Inteligência Artificial**. Em Ollama local, use `http://ollama:11434` e `qwen2.5:3b`; salve e teste a conexão.
+4. Quando Ollama estiver configurado, o app prioriza esse modelo para texto, evitando chamadas pagas por engano. O computador pessoal precisa ficar ligado para o sistema trabalhar.
+
+O modelo roda no seu computador, então a velocidade e qualidade dependem da memória e do processador. Ollama cobre texto; geração de imagens e voz ainda requerem provedores compatíveis e podem ter custo. O contêiner de IA não publica uma porta na rede: o endereço fica restrito à comunicação interna do Docker.
+
+### IA por provedor externo (opcional)
+
+Se preferir uma IA hospedada, crie uma chave em **um** destes sites (a disponibilidade e os limites gratuitos podem mudar):
    - Google Gemini → https://aistudio.google.com/apikey
    - OpenAI → https://platform.openai.com/api-keys
    - Anthropic (Claude) → https://console.anthropic.com

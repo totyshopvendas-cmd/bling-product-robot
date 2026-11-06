@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-PROVIDERS = ("anthropic", "openai", "gemini", "openrouter")
+PROVIDERS = ("ollama", "anthropic", "openai", "gemini", "openrouter")
 KEY_ENV = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
@@ -39,13 +39,14 @@ DEFAULT_TEXT_MODEL = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.5-flash",
     "openrouter": "anthropic/claude-haiku-4.5",
+    "ollama": os.environ.get("OLLAMA_MODEL", "qwen2.5:3b"),
 }
 DEFAULT_IMAGE_MODEL = {
     "gemini": "gemini-2.5-flash-image",
     "openai": "gpt-image-1",
     "openrouter": "google/gemini-2.5-flash-image",
 }
-TEXT_ORDER = ("anthropic", "openai", "gemini", "openrouter")
+TEXT_ORDER = ("ollama", "anthropic", "openai", "gemini", "openrouter")
 IMAGE_ORDER = ("gemini", "openai", "openrouter")
 TIMEOUT = httpx.Timeout(120.0, connect=20.0)
 
@@ -68,8 +69,24 @@ def get_key(provider: str) -> Optional[str]:
     return (_stored_keys().get(provider) or "").strip() or None
 
 
+def _ollama_url() -> str:
+    stored = _stored_keys()
+    return (os.environ.get("OLLAMA_BASE_URL") or stored.get("ollama_base_url") or "").strip().rstrip("/")
+
+
+def _ollama_model() -> str:
+    stored = _stored_keys()
+    return (os.environ.get("OLLAMA_MODEL") or stored.get("ollama_model") or "qwen2.5:3b").strip()
+
+
+def _is_configured(provider: str) -> bool:
+    if provider == "ollama":
+        return bool(_ollama_url())
+    return bool(get_key(provider))
+
+
 def configured_providers() -> List[str]:
-    return [p for p in PROVIDERS if get_key(p)]
+    return [p for p in PROVIDERS if _is_configured(p)]
 
 
 def has_text_ai() -> bool:
@@ -85,14 +102,17 @@ def status() -> dict:
     out = {}
     for p in PROVIDERS:
         k = get_key(p)
-        src = None
-        if k:
-            src = "env" if any((os.environ.get(e) or "").strip() for e in KEY_ENV[p]) else "painel"
-        out[p] = {"configured": bool(k), "source": src, "hint": (k[:4] + "…" + k[-4:]) if k and len(k) > 10 else None}
+        configured = _is_configured(p)
+        src = ("local" if p == "ollama" else
+               "env" if any((os.environ.get(e) or "").strip() for e in KEY_ENV[p]) else "painel") if configured else None
+        out[p] = {"configured": configured, "source": src,
+                  "hint": (_ollama_url() if p == "ollama" and configured else
+                           (k[:4] + "…" + k[-4:]) if k and len(k) > 10 else None)}
     text_p, text_m = resolve_text(None, None)
     img_p, img_m = resolve_image(None, None)
     return {
         "providers": out,
+        "ollama": {"base_url": _ollama_url(), "model": _ollama_model()},
         "text": {"provider": text_p, "model": text_m},
         "image": {"provider": img_p, "model": img_m},
         "tts": bool(get_key("openai")),
@@ -102,15 +122,18 @@ def status() -> dict:
 def resolve_text(provider: Optional[str], model: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     forced_p = (os.environ.get("AI_TEXT_PROVIDER") or "").strip().lower()
     forced_m = (os.environ.get("AI_TEXT_MODEL") or "").strip()
-    if forced_p and get_key(forced_p):
+    if forced_p and _is_configured(forced_p):
         return forced_p, forced_m or DEFAULT_TEXT_MODEL.get(forced_p)
+    # If the user configured a local model, prefer it to avoid accidental paid API calls.
+    if _is_configured("ollama"):
+        return "ollama", _ollama_model()
     if provider in ("google",):
         provider = "gemini"
-    if provider and get_key(provider):
-        return provider, model or DEFAULT_TEXT_MODEL[provider]
+    if provider and provider in DEFAULT_TEXT_MODEL and _is_configured(provider):
+        return provider, model or (_ollama_model() if provider == "ollama" else DEFAULT_TEXT_MODEL[provider])
     for p in TEXT_ORDER:
-        if get_key(p):
-            return p, DEFAULT_TEXT_MODEL[p]
+        if _is_configured(p):
+            return p, _ollama_model() if p == "ollama" else DEFAULT_TEXT_MODEL[p]
     return None, None
 
 
@@ -140,8 +163,8 @@ class ModelNotFound(RuntimeError):
 
 def _no_key_error() -> AIConfigError:
     return AIConfigError(
-        "Nenhuma chave de IA configurada. Abra Configurações → Inteligência Artificial "
-        "e cole uma chave (Anthropic, OpenAI, Gemini ou OpenRouter)."
+        "Nenhum provedor de IA configurado. Instale o Ollama localmente ou configure uma chave em "
+        "Configurações → Inteligência Artificial."
     )
 
 
@@ -215,7 +238,7 @@ class LlmChat:
         if not provider:
             raise _no_key_error()
         fn = {"anthropic": _anthropic_text, "openai": _openai_text,
-              "gemini": _gemini_text, "openrouter": _openrouter_text}[provider]
+              "gemini": _gemini_text, "openrouter": _openrouter_text, "ollama": _ollama_text}[provider]
         try:
             text = await fn(model, self.system_message, self._history, message, self.params)
         except ModelNotFound:
@@ -318,6 +341,27 @@ async def _openrouter_text(model, system, history, msg, params) -> str:
         "https://openrouter.ai/api/v1", get_key("openrouter"), model, system, history, msg, params, "OpenRouter",
         {"HTTP-Referer": os.environ.get("APP_BASE_URL", "http://127.0.0.1:8000"), "X-Title": "TotyShop"},
     )
+
+
+async def _ollama_text(model, system, history, msg, params) -> str:
+    # Ollama is intentionally text-only: this app calls it via the same format as OpenAI,
+    # but Ollama's native API avoids requiring an API key.
+    messages = _openai_messages(system, history, msg)
+    body: Dict[str, Any] = {"model": model, "messages": messages, "stream": False}
+    options: Dict[str, Any] = {}
+    if "temperature" in params:
+        options["temperature"] = params["temperature"]
+    if "max_tokens" in params:
+        options["num_predict"] = params["max_tokens"]
+    if options:
+        body["options"] = options
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+            r = await c.post(f"{_ollama_url()}/api/chat", json=body)
+        _raise_for(r, "Ollama")
+        return (r.json().get("message") or {}).get("content", "")
+    except httpx.ConnectError as e:
+        raise AIConfigError("Não consegui conectar ao Ollama. Confira se ele está instalado e ativo; no Docker do Windows use host.docker.internal:11434.") from e
 
 
 def _gemini_parts(msg: UserMessage) -> List[Dict[str, Any]]:
@@ -435,14 +479,14 @@ class OpenAITextToSpeech:
 
 
 async def test_provider(provider: str) -> dict:
-    """Faz uma chamada mínima para validar a chave."""
-    if not get_key(provider):
-        return {"ok": False, "error": "sem chave"}
+    """Faz uma chamada mínima para validar o provedor (ou a conexão local do Ollama)."""
+    if not _is_configured(provider):
+        return {"ok": False, "error": "provedor não configurado"}
     # chama o provedor pedido diretamente (sem fallback)
     fn = {"anthropic": _anthropic_text, "openai": _openai_text,
-          "gemini": _gemini_text, "openrouter": _openrouter_text}[provider]
+          "gemini": _gemini_text, "openrouter": _openrouter_text, "ollama": _ollama_text}[provider]
     try:
-        txt = await fn(DEFAULT_TEXT_MODEL[provider], "Responda apenas OK.", [], UserMessage("Diga OK"), {"max_tokens": 10})
+        txt = await fn(_ollama_model() if provider == "ollama" else DEFAULT_TEXT_MODEL[provider], "Responda apenas OK.", [], UserMessage("Diga OK"), {"max_tokens": 10})
         return {"ok": True, "reply": (txt or "").strip()[:40]}
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
