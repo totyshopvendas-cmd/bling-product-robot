@@ -12,7 +12,6 @@ from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Q
 from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from urllib.parse import urlencode
@@ -1235,16 +1234,37 @@ api.include_router(diag_router)
 admin_service.setup(app, api)
 app.include_router(api)
 
-class _AllowIframe(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        # Do not send X-Frame-Options: ALLOWALL — it is invalid and some
-        # browsers treat it as DENY. CSP frame-ancestors is the allowlist.
-        response.headers["Content-Security-Policy"] = "frame-ancestors *"
-        if "x-frame-options" in response.headers:
-            del response.headers["x-frame-options"]
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        return response
+class _AllowIframe:
+    """ASGI-native response header middleware.
+
+    Avoid BaseHTTPMiddleware's task-group/call_next wrapper: with streaming or
+    cancelled downstream requests it can raise `RuntimeError: No response
+    returned`, making otherwise unrelated API requests appear to hang/fail.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_iframe_headers(message):
+            if message["type"] == "http.response.start":
+                headers = [
+                    (name, value) for name, value in message.get("headers", [])
+                    if name.lower() not in (b"x-frame-options", b"content-security-policy",
+                                            b"access-control-allow-origin")
+                ]
+                headers.extend([
+                    (b"content-security-policy", b"frame-ancestors *"),
+                    (b"access-control-allow-origin", b"*"),
+                ])
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_iframe_headers)
 
 
 app.add_middleware(_AllowIframe)
