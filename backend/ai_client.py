@@ -39,7 +39,7 @@ DEFAULT_TEXT_MODEL = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.5-flash",
     "openrouter": "anthropic/claude-haiku-4.5",
-    "ollama": os.environ.get("OLLAMA_MODEL", "qwen2.5:3b"),
+    "ollama": os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b"),
 }
 DEFAULT_IMAGE_MODEL = {
     "gemini": "gemini-2.5-flash-image",
@@ -76,7 +76,7 @@ def _ollama_url() -> str:
 
 def _ollama_model() -> str:
     stored = _stored_keys()
-    return (os.environ.get("OLLAMA_MODEL") or stored.get("ollama_model") or "qwen2.5:3b").strip()
+    return (os.environ.get("OLLAMA_MODEL") or stored.get("ollama_model") or "qwen2.5:1.5b").strip()
 
 
 def _is_configured(provider: str) -> bool:

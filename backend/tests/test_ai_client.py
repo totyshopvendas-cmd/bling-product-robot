@@ -162,13 +162,13 @@ def test_ollama_local_is_used_without_api_key(monkeypatch, mock_http):
     routes["http://ollama.test:11434/api/chat"] = lambda r: httpx.Response(
         200, json={"message": {"content": "descrição local"}})
     assert ai_client.has_text_ai()
-    assert ai_client.resolve_text(None, None) == ("ollama", "qwen2.5:3b")
+    assert ai_client.resolve_text(None, None) == ("ollama", "qwen2.5:1.5b")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-will-not-be-used")
-    assert ai_client.resolve_text("openai", "gpt-4o-mini") == ("ollama", "qwen2.5:3b")
+    assert ai_client.resolve_text("openai", "gpt-4o-mini") == ("ollama", "qwen2.5:1.5b")
     result = run(ai_client.LlmChat().send_message(ai_client.UserMessage("produto")))
     assert result == "descrição local"
     body = json.loads(calls[0].content)
-    assert body["model"] == "qwen2.5:3b"
+    assert body["model"] == "qwen2.5:1.5b"
     assert body["stream"] is False
 
 

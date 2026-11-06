@@ -28,19 +28,16 @@ ou um servidor com domínio HTTPS, e coloque esse endereço no Bling e em `APP_B
 
 ### IA local sem cobrança por chamada (Ollama)
 
-O Ollama roda em um contêiner privado do Docker e não precisa de chave de API. Para gerar títulos, descrições, bullets e categorias sem enviar esses textos a um provedor pago:
+No Windows, dá para usar IA local **sem Docker** (recomendado se a virtualização estiver desativada):
 
-1. Com o TotyShop instalado, abra o PowerShell na pasta do projeto.
-2. Inicie o serviço local de IA:
-   ```powershell
-   docker compose --profile local-ai up -d
-   docker compose exec ollama ollama pull qwen2.5:3b
-   ```
-   O download inicial do modelo pode demorar e usa espaço em disco.
-3. No painel, abra **Configurações → Inteligência Artificial**. Em Ollama local, use `http://ollama:11434` e `qwen2.5:3b`; salve e teste a conexão.
-4. Quando Ollama estiver configurado, o app prioriza esse modelo para texto, evitando chamadas pagas por engano. O computador pessoal precisa ficar ligado para o sistema trabalhar.
+1. Instale Ollama em https://ollama.com/download.
+2. Abra o PowerShell e rode `ollama pull qwen2.5:1.5b`.
+3. Inicie o TotyShop pelo arquivo `iniciar_totyshop.bat`.
+4. No painel, em **Configurações → Inteligência Artificial**, use o endereço `http://127.0.0.1:11434` e o modelo `qwen2.5:1.5b`; salve e teste.
 
-O modelo roda no seu computador, então a velocidade e qualidade dependem da memória e do processador. Ollama cobre texto; geração de imagens e voz ainda requerem provedores compatíveis e podem ter custo. O contêiner de IA não publica uma porta na rede: o endereço fica restrito à comunicação interna do Docker.
+O modelo escolhido é menor para tentar funcionar melhor em computadores com memória limitada. Ainda pode ficar lento: este PC precisa estar ligado e o Ollama aberto para usar a IA. Ollama cobre texto; geração de imagens e voz ainda requerem provedores compatíveis e podem ter custo.
+
+Se o projeto estiver rodando via Docker em vez do iniciador Windows, o Ollama também pode rodar em contêiner: `docker compose --profile local-ai up -d`, depois `docker compose exec ollama ollama pull qwen2.5:1.5b`. Nesse caso, no painel use `http://ollama:11434`.
 
 ### IA por provedor externo (opcional)
 

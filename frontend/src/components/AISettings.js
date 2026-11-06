@@ -37,13 +37,13 @@ export default function AISettings() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(null);
   const [results, setResults] = useState({});
-  const [ollama, setOllama] = useState({ base_url: "http://ollama:11434", model: "qwen2.5:3b" });
+  const [ollama, setOllama] = useState({ base_url: "http://127.0.0.1:11434", model: "qwen2.5:1.5b" });
 
   const load = useCallback(async () => {
     try {
       const { data } = await api.get("/settings/ai");
       setStatus(data);
-      if (data.ollama) setOllama({ base_url: data.ollama.base_url || "http://ollama:11434", model: data.ollama.model || "qwen2.5:3b" });
+      if (data.ollama) setOllama({ base_url: data.ollama.base_url || "http://127.0.0.1:11434", model: data.ollama.model || "qwen2.5:1.5b" });
     } catch (err) {
       logger.error("ai settings:", err);
     }
@@ -127,11 +127,11 @@ export default function AISettings() {
       <div className="border border-emerald-200 bg-emerald-50/50 p-4 space-y-3">
         <div>
           <div className="text-sm font-semibold">Ollama local — sem cobrança por chamada</div>
-          <p className="text-xs text-muted-foreground mt-1">Usa um modelo aberto no seu próprio computador. Instale Ollama e baixe um modelo (por exemplo, qwen2.5:3b). Para o instalador Docker no Windows, use o endereço abaixo. A IA só fica disponível enquanto seu computador estiver ligado.</p>
+          <p className="text-xs text-muted-foreground mt-1">Usa um modelo aberto no seu próprio computador. Instale Ollama e baixe um modelo (por exemplo, qwen2.5:1.5b). Na instalação comum do Windows, use o endereço local abaixo. A IA só fica disponível enquanto seu computador estiver ligado.</p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          <input aria-label="Endereço Ollama" value={ollama.base_url} onChange={(e) => setOllama((v) => ({ ...v, base_url: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="http://ollama:11434" />
-          <input aria-label="Modelo Ollama" value={ollama.model} onChange={(e) => setOllama((v) => ({ ...v, model: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="qwen2.5:3b" />
+          <input aria-label="Endereço Ollama" value={ollama.base_url} onChange={(e) => setOllama((v) => ({ ...v, base_url: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="http://127.0.0.1:11434" />
+          <input aria-label="Modelo Ollama" value={ollama.model} onChange={(e) => setOllama((v) => ({ ...v, model: e.target.value }))} className="w-full text-sm border border-border px-3 py-2" placeholder="qwen2.5:1.5b" />
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => save({ ollama_base_url: ollama.base_url, ollama_model: ollama.model })} disabled={saving} className="text-xs px-3 py-1.5 bg-emerald-700 text-white disabled:opacity-50">Salvar Ollama</button>
