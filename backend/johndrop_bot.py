@@ -360,8 +360,12 @@ async def _login_johndrop(page, username: str, password: str) -> bool:
 
 
 async def _open_catalog(page) -> None:
-    """Open catalog page, apply filter 'Todos que eu não cadastrei' via dropdown + search button.
-    Resilient against ERR_ABORTED (page redirects still in flight)."""
+    """Open JohnDrop's pending catalog and apply the unregistered filter.
+
+    Prefer the site's dropdown/search UI, but fall back to the explicit URL if
+    the UI action fails or fails to render product cards. Do not wait for
+    networkidle: the supplier page may keep background requests open forever.
+    """
     last_err = None
     for attempt in range(3):
         try:
@@ -372,7 +376,7 @@ async def _open_catalog(page) -> None:
             last_err = e
             msg = str(e)
             if "ERR_ABORTED" in msg or "ERR_TIMED_OUT" in msg:
-                await add_log("info", f"Catálogo: nav aborted, retry {attempt + 1}/3")
+                await add_log("info", f"Catálogo: navegação interrompida; nova tentativa {attempt + 1}/3")
                 await page.wait_for_timeout(2500)
                 continue
             raise
@@ -380,53 +384,58 @@ async def _open_catalog(page) -> None:
         raise last_err
 
     await add_log("info", "Acessando Publicar Catálogo...")
-
-    # Try explicit dropdown flow: select "Todos que eu não cadastrei" + click search
     applied_via_ui = False
     try:
-        # The integration filter <select> usually has options like
-        # "Todos", "Todos que eu cadastrei", "Todos que eu não cadastrei"
         selects = await page.query_selector_all("select")
         for sel in selects:
             options_text = await sel.evaluate(
                 "el => Array.from(el.options).map(o => o.textContent).join('||')"
             )
-            if options_text and "não cadastrei" in options_text.lower():
-                # Select option matching "não cadastrei" (case-insensitive)
-                opt_value = await sel.evaluate(
-                    "el => { const o = Array.from(el.options).find(x => x.textContent.toLowerCase().includes('não cadastrei')); return o ? o.value : null; }"
-                )
-                if opt_value is not None:
-                    await sel.select_option(value=opt_value)
-                    await add_log("info", "Filtro 'Todos que eu não cadastrei' selecionado")
-                    applied_via_ui = True
-                break
-        if applied_via_ui:
-            # Click the blue magnifying glass search button (submit form)
+            if not options_text or "não cadastrei" not in options_text.lower():
+                continue
+            opt_value = await sel.evaluate(
+                "el => { const o = Array.from(el.options).find(x => x.textContent.toLowerCase().includes('não cadastrei')); return o ? o.value : null; }"
+            )
+            if opt_value is None:
+                continue
+            await sel.select_option(value=opt_value)
             search_btn = await page.query_selector(
                 'button[type="submit"], button:has(i.fa-search), button:has(svg.lucide-search)'
             )
-            if search_btn:
-                await search_btn.click()
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                await add_log("info", "Botão de busca (lupa) clicado")
+            if search_btn is None:
+                raise RuntimeError("botão de busca do filtro não encontrado")
+            await search_btn.click()
+            # Do not wait for networkidle; product cards are awaited below.
+            await page.wait_for_timeout(1200)
+            applied_via_ui = True
+            await add_log("info", "Filtro 'Todos que eu não cadastrei' aplicado")
+            break
     except Exception as e:
-        await add_log("warning", f"Falha ao aplicar filtro via UI ({str(e)[:120]}). Usando URL.")
+        applied_via_ui = False
+        await add_log("warning", f"Filtro pela tela falhou ({str(e)[:160]}); tentando endereço direto do catálogo")
 
     if not applied_via_ui:
-        await page.goto(JOHNDROP_CATALOG_URL, wait_until="networkidle", timeout=60000)
+        await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=60000)
 
-    # Wait for product cards to render
     try:
-        await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+        await page.wait_for_selector(CARD_SELECTOR, timeout=12000)
+        return
     except Exception:
-        await add_log("warning", "Selector de produtos não apareceu em 15s — sem produtos pendentes ou layout mudou")
+        if applied_via_ui:
+            await add_log("warning", "Filtro da tela não mostrou produtos; tentando endereço direto do catálogo")
+            await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=60000)
+            try:
+                await page.wait_for_selector(CARD_SELECTOR, timeout=12000)
+                return
+            except Exception:
+                pass
+        await add_log("warning", "Nenhum produto pendente foi encontrado (ou o layout do catálogo mudou)")
         try:
             snippet = await page.evaluate(
                 "() => document.querySelector('.content-page, main, body')?.innerText?.slice(0, 600) || ''"
             )
             if snippet:
-                await add_log("info", f"Página: {snippet[:400]}")
+                await add_log("info", f"Página do catálogo: {snippet[:400]}")
         except Exception:
             pass
 
