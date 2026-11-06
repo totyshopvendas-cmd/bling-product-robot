@@ -2,6 +2,7 @@
 setlocal enabledelayedexpansion
 title TotyShop Automacao
 cd /d "%~dp0"
+set "TOTYSHOP_CORE_ONLY=1"
 
 echo ============================================
 echo   TotyShop - instalacao e painel local
@@ -88,12 +89,13 @@ if not exist "frontend\node_modules" (
 )
 
 if not exist "frontend\build\index.html" goto dobuild
-if not exist "frontend\build\.stamp-v3" goto dobuild
+if not exist "frontend\build\.stamp-v4" goto dobuild
 goto afterbuild
 :dobuild
 echo Montando o painel...
 pushd frontend
 set CI=false
+set REACT_APP_CORE_ONLY=true
 set DISABLE_ESLINT_PLUGIN=true
 set GENERATE_SOURCEMAP=false
 call npm run build
@@ -104,7 +106,7 @@ if not exist "frontend\build\index.html" (
   pause
   exit /b 1
 )
-echo. > "frontend\build\.stamp-v3"
+echo. > "frontend\build\.stamp-v4"
 :afterbuild
 
 rem Atalho na Area de Trabalho (so na primeira vez)

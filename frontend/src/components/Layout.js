@@ -28,6 +28,13 @@ const NAV = [
   { to: "/configuracoes", icon: SettingsIcon, label: "Configurações" },
 ];
 
+const CORE_ONLY = process.env.REACT_APP_CORE_ONLY !== "false";
+const CORE_PATHS = new Set([
+  "/", "/limpeza", "/precos", "/robo", "/dropper", "/shopee",
+  "/bling", "/bling-lote", "/logs", "/configuracoes",
+]);
+const ACTIVE_NAV = CORE_ONLY ? NAV.filter((item) => CORE_PATHS.has(item.to)) : NAV;
+
 const STATUS_POLL_INTERVAL_MS = 4000;
 
 const STATE_LABEL = {
@@ -81,7 +88,7 @@ export default function Layout({ children }) {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV.map(({ to, icon: Icon, label }) => {
+          {ACTIVE_NAV.map(({ to, icon: Icon, label }) => {
             const active = location.pathname === to;
             return (
               <Link
@@ -124,7 +131,7 @@ export default function Layout({ children }) {
           <div className="hidden md:flex items-center gap-2 text-sm">
             <span className="label-overline">Operações</span>
             <span className="text-zinc-400">/</span>
-            <span className="font-medium">{NAV.find(n => n.to === location.pathname)?.label || "Painel"}</span>
+            <span className="font-medium">{ACTIVE_NAV.find(n => n.to === location.pathname)?.label || "Painel"}</span>
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <CircleDot className="h-3.5 w-3.5 text-emerald-500" />

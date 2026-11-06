@@ -3,6 +3,7 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY frontend/ ./
+ENV REACT_APP_CORE_ONLY=true
 ENV REACT_APP_BACKEND_URL=
 ENV CI=true
 RUN rm -rf node_modules/fork-ts-checker-webpack-plugin/node_modules \

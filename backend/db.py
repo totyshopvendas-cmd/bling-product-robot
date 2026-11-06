@@ -115,11 +115,20 @@ async def _flush_loop(interval: float) -> None:
             _log.warning("falha ao salvar banco local: %s", e)
 
 
-def start_local_persistence(interval: float = 10.0) -> None:
-    """Chamar no startup do app (dentro do event loop)."""
+def start_local_persistence(interval: float | None = None) -> None:
+    """Chamar no startup do app (dentro do event loop).
+
+    The local JSON snapshot can be large, so avoid serializing it every few
+    seconds on modest PCs. Normal shutdown still forces an immediate save.
+    """
     global _task
     if not _PERSIST or _task is not None:
         return
+    if interval is None:
+        try:
+            interval = max(10.0, float(os.environ.get("LOCAL_DB_FLUSH_INTERVAL", "30")))
+        except (TypeError, ValueError):
+            interval = 30.0
     try:
         load_local_db()
     except Exception as e:

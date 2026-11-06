@@ -5,18 +5,11 @@ com o Bling e com o JohnDrop, por isso as prévias online (Emergent, Arena) serv
 
 ## Windows — passo a passo
 
-1. Instale [Python 3.11+](https://www.python.org/downloads/) (marque **Add python.exe to PATH**) e [Node.js 18+](https://nodejs.org/).
-2. Baixe este repositório (GitHub → **Code → Download ZIP**, ou `git clone`) e descompacte, por exemplo em `C:\TotyShop`.
-3. Dê dois cliques em **`iniciar_totyshop.bat`**.
-   - Na primeira vez ele abre o Bloco de Notas com o arquivo `backend\.env`. Preencha:
-     - `BLING_CLIENT_ID` e `BLING_CLIENT_SECRET` (Bling → Central de Extensões → seu aplicativo)
-     - `APP_BASE_URL=http://127.0.0.1:8000`
-     - `MONGO_URL=memory://local` (se você não tem MongoDB instalado — os dados ficam salvos em `backend\data\local_db.json`)
-     - `APP_SECRET` = qualquer frase longa
-     - `APP_PASSWORD` = deixe **vazio** no seu PC
-   - Salve, feche o Bloco de Notas e aperte uma tecla na janela preta.
-   - Ele instala tudo sozinho (demora uns minutos só na primeira vez) e abre o Chrome em `http://127.0.0.1:8000`.
-4. **Não feche a janela preta** enquanto estiver usando — pode minimizar.
+1. Instale [Python 3.11+](https://www.python.org/downloads/) e [Node.js 18+](https://nodejs.org/) se o iniciador não conseguir fazê-lo automaticamente.
+2. Baixe a versão atualizada do projeto e descompacte em uma pasta local, por exemplo `C:\TotyShop`.
+3. Dê dois cliques em **`iniciar_totyshop.bat`**. Na primeira vez, ele prepara as dependências e o Chromium; pode levar alguns minutos e precisa de internet.
+4. O iniciador usa uma configuração local e uma interface focada em JohnDrop, Dropper, Shopee e enriquecimento. Em **Configurações → Bling**, salve o Client ID e o Client Secret do aplicativo Bling; não os envie pelo chat.
+5. **Não feche a janela preta** enquanto estiver usando — pode minimizá-la. O painel abre em `http://127.0.0.1:8000`.
 
 ### Conectar o Bling
 

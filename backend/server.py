@@ -61,6 +61,7 @@ import category_mapping_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
+CORE_ONLY_MODE = (os.environ.get("TOTYSHOP_CORE_ONLY", "0").strip().lower() in {"1", "true", "yes", "sim"})
 
 
 app = FastAPI(title="TotyShop Automation")
@@ -106,12 +107,16 @@ async def _startup() -> None:
             logger.info(f"Chromium pronto: {johndrop_bot._find_chromium_binary()}")
     except Exception as e:
         logger.warning(f"chromium auto-install skipped: {e}")
-    # Boot the social ad scheduler (peak-hour publisher)
-    try:
-        start_scheduler()
-        logger.info("Social ad scheduler started")
-    except Exception as e:
-        logger.warning(f"scheduler start failed: {e}")
+    # Social publishing is outside the robots/enrichment core and is disabled
+    # in core-only installs to reduce background work.
+    if not CORE_ONLY_MODE:
+        try:
+            start_scheduler()
+            logger.info("Social ad scheduler started")
+        except Exception as e:
+            logger.warning(f"scheduler start failed: {e}")
+    else:
+        logger.info("Core-only mode: social scheduler disabled")
     # Boot the enrich worker (watches JohnDrop→Bling sync)
     try:
         start_enrich_worker()
@@ -135,7 +140,10 @@ async def _startup() -> None:
 
     import asyncio as _aio
     _aio.create_task(_load_prices_bg())
-    _aio.create_task(_stock_schedule_loop())
+    if not CORE_ONLY_MODE:
+        _aio.create_task(_stock_schedule_loop())
+    else:
+        logger.info("Core-only mode: stock schedule disabled")
 
 
 @api.get("/")
