@@ -1,10 +1,10 @@
 """Description-driven variation rules used by individual and bulk enrichment."""
 from __future__ import annotations
 
-import re
 import unicodedata
 from typing import List, Optional
 
+import bling_service
 from variation_stock_rules import (
     distribute_stock,
     parse_variation_quantities,
@@ -43,18 +43,17 @@ def _quantity(product: dict) -> int:
         return 0
 
 
-async def _read_existing_children_stock(parent_id: int, children: list) -> int:
+async def _read_existing_children_stock(children: list) -> int:
     """Sum current child inventory when parent balance is zero (common on Bling)."""
-    embedded = sum(_quantity(child) for child in children)
-    if embedded:
-        return embedded
-    total = 0
+    total = sum(_quantity(child) for child in children)
+    if total:
+        return total
     for child in children:
         child_id = child.get("id")
         if not child_id:
             continue
         try:
-            response = await __import__("bling_service").bling_request(
+            response = await bling_service.bling_request(
                 "GET", "/estoques/saldos", params={"idsProdutos[]": child_id},
             )
             if response.status_code >= 400:
@@ -63,13 +62,13 @@ async def _read_existing_children_stock(parent_id: int, children: list) -> int:
             if rows:
                 row = rows[0]
                 total += max(0, int(row.get("saldoVirtualTotal") or row.get("saldoFisicoTotal") or 0))
-        except (TypeError, ValueError, Exception):
+        except Exception:
             continue
     return total
 
 
 def _install_runtime_rules() -> None:
-    """Install the strict parser and always rebalance existing as well as new children."""
+    """Install the strict parser and rebalance existing as well as new children."""
     import sys
 
     enrichment = sys.modules.get("bling_enrichment")
@@ -98,7 +97,7 @@ def _install_runtime_rules() -> None:
         if total <= 0 and parent:
             total = _quantity(parent)
         if total <= 0 and children_before:
-            total = await _read_existing_children_stock(parent_id, children_before)
+            total = await _read_existing_children_stock(children_before)
         if total <= 0:
             total = await bling_variations._read_parent_stock_with_retry(parent_id, parent)
 
@@ -107,18 +106,15 @@ def _install_runtime_rules() -> None:
 
         plan = distribute_stock(total, names, explicit)
         kwargs["explicit_quantities"] = plan
-        # The creator needs a positive sentinel to issue balance operations even
-        # when actual total is zero; all planned child balances remain explicitly 0.
+        # Positive sentinel makes original creator apply an explicit zero balance
+        # when actual total is zero and also ensures the parent is set to zero.
         kwargs["total_stock"] = max(1, total)
         result = await original_create(*args, **kwargs)
 
-        # create_variations is intentionally idempotent and skips children that
-        # already exist. Re-fetch and set balances for every matching child so a
-        # successful enrichment also repairs previously incorrect stock.
+        # Original creator deliberately skips already existing children. Re-fetch
+        # them and apply balances to all matching options, including those skipped.
         try:
-            response = await bling_variations.bling_service.bling_request(
-                "GET", f"/produtos/{parent_id}",
-            )
+            response = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
             latest = (response.json() or {}).get("data") or {} if response.status_code < 400 else parent or {}
             children = latest.get("variacoes") or children_before
             by_option = {_norm(_child_option(child)): child for child in children if _child_option(child)}
@@ -127,10 +123,9 @@ def _install_runtime_rules() -> None:
                 if child and child.get("id"):
                     await bling_variations._set_children_stock([child["id"]], quantity)
 
-            # Parent balance must be zero even if it started with no stock.
             deposit_id = await bling_variations._get_default_deposito_id()
             if deposit_id:
-                await bling_variations.bling_service.bling_request(
+                await bling_service.bling_request(
                     "POST", "/estoques",
                     json={
                         "produto": {"id": parent_id},

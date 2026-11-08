@@ -8,9 +8,11 @@ from typing import Dict, Iterable, List, Mapping
 
 def _fold(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text or "")
-    return "".join(c for c in normalized if not unicodedata.combining(c)).lower().strip()
+    return "".join(char for char in normalized if not unicodedata.combining(char)).lower().strip()
 
 
+# Only explicit Cor/Tamanho/Modelo sections can declare variation options.
+# Headings such as Características Técnicas are never treated as variations.
 _HEADER = re.compile(
     r"^\s*(?:(?:dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*)"
     r"(cores?|tamanhos?|modelos?)|"
@@ -87,15 +89,10 @@ def parse_variation_quantities(description: str, variations: Iterable[str]) -> D
     if not description:
         return result
     for name in variations:
-        escaped = re.escape(name)
-        option = rf"(?<![\w]){escaped}(?![\w])"
-        # Inspect the option's own line, so a nearby exhausted option cannot
-        # accidentally zero another choice.
-        matching_lines = [
-            line.strip() for line in description.splitlines()
-            if re.search(option, line, re.IGNORECASE)
-        ]
-        for line in matching_lines:
+        option = rf"(?<![\w]){re.escape(name)}(?![\w])"
+        # Read the option's own line, preventing one exhausted option from
+        # accidentally marking another nearby option as exhausted.
+        for line in description.splitlines():
             found = re.search(option, line, re.IGNORECASE)
             if not found:
                 continue
