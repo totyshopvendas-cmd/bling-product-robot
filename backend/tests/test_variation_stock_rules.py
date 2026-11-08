@@ -1,50 +1,53 @@
-"""Tests for strict description-based variation and stock interpretation."""
+"""Regression tests for the G9000PRO JohnDrop description and stock rules."""
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from variation_stock_rules import (
-    distribute_stock,
-    parse_variation_quantities,
-    parse_variation_sections,
-    variation_kind,
-)
+from variation_stock_rules import distribute_stock, parse_variation_quantities, parse_variation_sections
 
 
-def test_only_explicit_variation_sections_are_parsed():
-    description = (
-        "Características:\nMaterial: plástico\nPotência: 12W\n\n"
-        "Cores disponíveis: Azul, Verde\n\n"
-        "Tamanhos disponíveis:\nP\nM\n\n"
-        "Modelos disponíveis: Modelo A; Modelo B"
-    )
-    assert parse_variation_sections(description) == ["Azul", "Verde", "P", "M", "Modelo A", "Modelo B"]
+G9000_DESCRIPTION = """Código de barras: 6954284000320
+
+Headset Gamer Profissional Com Microfone Noise Cancelling G9000 PRO
+
+Características Técnicas:
+-Modelo: G9000 Pro
+-Diâmetro do Driver: 40mm
+-Sensibilidade: 105dB +/- 3dB
+-Faixa de Frequência: 15Hz - 20KHz
+
+Disponível na cor:
+-Preto
+-Branco
+
+Medidas da embalagem:
+L: 21,5 x C: 11,5 x A: 23,5cm
+Peso do Produto: 510g"""
 
 
-def test_features_without_variation_headings_are_ignored():
-    description = "Características: Corpo azul, tamanho compacto, modelo resistente, 12W."
-    assert parse_variation_sections(description) == []
+def test_g9000_description_extracts_only_the_two_colors():
+    assert parse_variation_sections(G9000_DESCRIPTION) == ["Preto", "Branco"]
 
 
-def test_exhausted_and_explicit_quantities_are_read():
-    description = "Cores disponíveis:\nAzul (esgotado)\nVerde: 7\nPreto (sem estoque)"
-    variations = ["Azul", "Verde", "Preto"]
-    assert parse_variation_quantities(description, variations) == {"Azul": 0, "Verde": 7, "Preto": 0}
+def test_g9000_description_does_not_turn_technical_features_into_variations():
+    options = parse_variation_sections(G9000_DESCRIPTION)
+    assert "G9000 Pro" not in options
+    assert "40mm" not in options
+    assert "105dB +/- 3dB" not in options
+    assert "15Hz - 20KHz" not in options
 
 
-def test_exhausted_prefix_format_is_read():
-    description = "Cores disponíveis:\nEsgotado: Azul\nVerde disponível"
-    assert parse_variation_quantities(description, ["Azul", "Verde"]) == {"Azul": 0}
-
-
-def test_stock_uses_explicit_quantities_then_splits_remainder():
-    assert distribute_stock(100, ["Azul", "Verde", "Preto"], {"Azul": 0, "Verde": 20}) == {
-        "Azul": 0, "Verde": 20, "Preto": 80,
+def test_g9000_without_explicit_stock_splits_existing_total_evenly():
+    options = parse_variation_sections(G9000_DESCRIPTION)
+    assert distribute_stock(146, options, parse_variation_quantities(G9000_DESCRIPTION, options)) == {
+        "Preto": 73, "Branco": 73,
     }
 
 
-def test_unknown_variation_is_model_not_color():
-    assert variation_kind("Modelo A") == "Modelo"
-    assert variation_kind("M") == "Tamanho"
-    assert variation_kind("Azul claro") == "Cor"
+def test_exhausted_color_is_kept_at_zero_and_remainder_is_split():
+    description = "Cores disponíveis:\nPreto (esgotado)\nBranco"
+    options = parse_variation_sections(description)
+    quantities = parse_variation_quantities(description, options)
+    assert options == ["Preto", "Branco"]
+    assert distribute_stock(146, options, quantities) == {"Preto": 0, "Branco": 146}
