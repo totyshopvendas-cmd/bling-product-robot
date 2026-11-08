@@ -1,91 +1,32 @@
+"""Compatibility guard for description-driven JohnDrop variations.
+
+Variation names and stock labels are taken from explicit Cor/Tamanho/Modelo
+sections in the supplier description. Product-feature text and image guesses do
+not create, remove, or reclassify options.
+"""
 from __future__ import annotations
 
-import re
 from typing import Iterable, List, Optional, Sequence, Set
 
 from color_analyzer import detect_dominant_colors
-
-
-COLOR_ALIASES = {
-    "azul": "azul",
-    "azul claro": "azul",
-    "azul escuro": "azul",
-    "blau": "azul",
-    "blue": "azul",
-    "preto": "preto",
-    "preta": "preto",
-    "black": "preto",
-    "branco": "branco",
-    "branca": "branco",
-    "white": "branco",
-    "vermelho": "vermelho",
-    "vermelha": "vermelho",
-    "red": "vermelho",
-    "verde": "verde",
-    "verde claro": "verde",
-    "verde escuro": "verde",
-    "green": "verde",
-    "amarelo": "amarelo",
-    "amarela": "amarelo",
-    "yellow": "amarelo",
-    "rosa": "rosa",
-    "rosa claro": "rosa",
-    "pink": "rosa",
-    "roxo": "roxo",
-    "roxa": "roxo",
-    "purple": "roxo",
-    "laranja": "laranja",
-    "orange": "laranja",
-    "marrom": "marrom",
-    "marron": "marrom",
-    "bege": "bege",
-    "cinza": "cinza",
-    "cinza claro": "cinza",
-    "cinza escuro": "cinza",
-    "grey": "cinza",
-    "gray": "cinza",
-    "dourado": "dourado",
-    "prata": "prata",
-    "silver": "prata",
-    "vinho": "vinho",
-}
-
-
-def _normalize_color_token(value: str) -> str:
-    if not value:
-        return ""
-    token = value.strip().lower().replace("-", " ").replace("_", " ")
-    token = re.sub(r"\s+", " ", token)
-    if token in COLOR_ALIASES:
-        return COLOR_ALIASES[token]
-    return token
-
-
-def _is_color_name(value: str) -> bool:
-    return _normalize_color_token(value) in set(COLOR_ALIASES.values())
-
-
-def _contains_color_description(raw_description: str) -> bool:
-    if not raw_description:
-        return False
-    text = raw_description.lower()
-    for keyword in COLOR_ALIASES.keys():
-        if keyword in text:
-            return True
-    return False
+from variation_stock_rules import (
+    distribute_stock,
+    parse_variation_quantities,
+    parse_variation_sections,
+    variation_kind,
+)
 
 
 def _image_urls_from_source(images: Iterable[object]) -> List[str]:
     urls: List[str] = []
     for item in images or []:
-        if isinstance(item, str):
-            if item.strip():
-                urls.append(item.strip())
+        if isinstance(item, str) and item.strip():
+            urls.append(item.strip())
         elif isinstance(item, dict):
             for key in ("link", "url", "image_url", "src"):
-                val = item.get(key)
-                if isinstance(val, str) and val.strip():
-                    urls.append(val.strip())
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    urls.append(value.strip())
                     break
     return urls
 
@@ -94,14 +35,56 @@ def _colors_from_images(images: Optional[Sequence[object]]) -> Set[str]:
     colors: Set[str] = set()
     for image_url in _image_urls_from_source(images):
         try:
-            detected = detect_dominant_colors(image_url, top_n=4)
-            for item in detected:
-                normalized = _normalize_color_token(item)
-                if normalized:
-                    colors.add(normalized)
+            colors.update(str(color).strip().lower() for color in detect_dominant_colors(image_url, top_n=4) if color)
         except Exception:
             continue
     return colors
+
+
+def _install_runtime_rules() -> None:
+    """Bridge the existing enrichment API to the strict parser and stock rules.
+
+    The current call chain passes plain option names to Bling. Install these
+    small adapters when that chain reaches the variation guard, avoiding a
+    second, image-based filter that previously dropped valid exhausted colors.
+    """
+    import sys
+
+    enrichment = sys.modules.get("bling_enrichment")
+    if enrichment is not None:
+        enrichment._parse_variations = parse_variation_sections
+        enrichment._parse_variation_quantities = parse_variation_quantities
+
+    try:
+        import bling_variations
+    except Exception:
+        return
+    bling_variations._attribute_kind = variation_kind
+    if getattr(bling_variations.create_variations, "_description_stock_rules", False):
+        return
+
+    original_create = bling_variations.create_variations
+
+    async def create_with_description_stock(*args, **kwargs):
+        parent_id = args[0] if args else kwargs.get("parent_id")
+        parent = args[1] if len(args) > 1 else kwargs.get("parent_current")
+        names = args[2] if len(args) > 2 else kwargs.get("variations") or []
+        explicit = kwargs.get("explicit_quantities") or {}
+        total = kwargs.get("total_stock", 0)
+        if not total or total <= 0:
+            total = await bling_variations._read_parent_stock_with_retry(parent_id, parent)
+        if names:
+            plan = distribute_stock(total, list(names), explicit)
+            # Mark every option explicit so the existing creator applies each
+            # exact balance, including zero, without re-splitting the full total.
+            kwargs["explicit_quantities"] = plan
+            # A positive sentinel prevents a redundant stock poll when the true
+            # total is zero. All children are explicit zero in that case.
+            kwargs["total_stock"] = max(1, int(total or 0))
+        return await original_create(*args, **kwargs)
+
+    create_with_description_stock._description_stock_rules = True
+    bling_variations.create_variations = create_with_description_stock
 
 
 def filter_variations_by_color(
@@ -109,49 +92,19 @@ def filter_variations_by_color(
     raw_description: str = "",
     images: Optional[Sequence[object]] = None,
 ) -> List[str]:
-    """Mantém variações de tamanho/modelo intactas e filtra apenas variações de cor.
-
-    Regra pedida:
-    - somente usa análise visual quando a descrição menciona cor;
-    - só mantém a variação de cor se a imagem confirmar a cor;
-    - outras variações (tamanho/modelo) continuam sem ser alteradas.
-    """
-    if not variations:
-        return []
-
-    image_colors = _colors_from_images(images)
-    if not image_colors:
-        return [v for v in variations if not _is_color_name(v)]
-
-    filtered: List[str] = []
-    for variation in variations:
-        variation_text = (variation or "").strip()
-        if not variation_text:
-            continue
-
-        if not _is_color_name(variation_text):
-            filtered.append(variation_text)
-            continue
-
-        if not _contains_color_description(raw_description):
-            filtered.append(variation_text)
-            continue
-
-        normalized_variation = _normalize_color_token(variation_text)
-        if normalized_variation in image_colors:
-            filtered.append(variation_text)
-
-    return filtered
+    """Return description-declared options without visual/image rejection."""
+    _install_runtime_rules()
+    parsed = parse_variation_sections(raw_description or "")
+    if parsed:
+        return parsed
+    # Keep backwards compatibility for callers with pre-parsed non-color options;
+    # the standard enrichment path always stores and supplies the raw description.
+    return [value for value in (variations or []) if value and str(value).strip()]
 
 
 def should_create_color_variation(raw_description: str, images: Optional[Sequence[object]]) -> bool:
-    if not _contains_color_description(raw_description):
-        return False
-    return bool(_colors_from_images(images))
+    """Kept for compatibility; explicit description sections are authoritative."""
+    return bool(parse_variation_sections(raw_description))
 
 
-__all__ = [
-    "filter_variations_by_color",
-    "should_create_color_variation",
-    "_contains_color_description",
-]
+__all__ = ["filter_variations_by_color", "should_create_color_variation"]
