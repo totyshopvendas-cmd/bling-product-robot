@@ -14,9 +14,9 @@ from variation_stock_rules import (
 
 def test_only_explicit_variation_sections_are_parsed():
     description = (
-        "Características:\\nMaterial: plástico\\nPotência: 12W\\n\\n"
-        "Cores disponíveis: Azul, Verde\\n\\n"
-        "Tamanhos disponíveis:\\nP\\nM\\n\\n"
+        "Características:\nMaterial: plástico\nPotência: 12W\n\n"
+        "Cores disponíveis: Azul, Verde\n\n"
+        "Tamanhos disponíveis:\nP\nM\n\n"
         "Modelos disponíveis: Modelo A; Modelo B"
     )
     assert parse_variation_sections(description) == ["Azul", "Verde", "P", "M", "Modelo A", "Modelo B"]
@@ -28,9 +28,14 @@ def test_features_without_variation_headings_are_ignored():
 
 
 def test_exhausted_and_explicit_quantities_are_read():
-    description = "Cores disponíveis:\\nAzul (esgotado)\\nVerde: 7\\nPreto (sem estoque)"
+    description = "Cores disponíveis:\nAzul (esgotado)\nVerde: 7\nPreto (sem estoque)"
     variations = ["Azul", "Verde", "Preto"]
     assert parse_variation_quantities(description, variations) == {"Azul": 0, "Verde": 7, "Preto": 0}
+
+
+def test_exhausted_prefix_format_is_read():
+    description = "Cores disponíveis:\nEsgotado: Azul\nVerde disponível"
+    assert parse_variation_quantities(description, ["Azul", "Verde"]) == {"Azul": 0}
 
 
 def test_stock_uses_explicit_quantities_then_splits_remainder():
