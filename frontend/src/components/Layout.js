@@ -14,6 +14,7 @@ const NAV = [
   { to: "/robo", icon: Bot, label: "Robô JohnDrop" },
   { to: "/dropper", icon: Package, label: "Robô Dropper" },
   { to: "/shopee", icon: Bot, label: "Robô Shopee" },
+  { to: "/revisar-produtos", icon: List, label: "Revisar Produtos" },
   { to: "/bling", icon: Layers, label: "Enriquecimento Bling" },
   { to: "/bling-lote", icon: ListChecks, label: "Enriquecer em Lote" },
   { to: "/estoque-sync", icon: RefreshCw, label: "Sync Estoque" },

@@ -124,15 +124,58 @@ echo  Pode minimizar.
 echo ============================================
 echo.
 
+rem Saida imediata no console: sem isso o Python segura os textos no buffer
+rem e a janela fica "muda" por varios segundos, parecendo travada.
+set "PYTHONUNBUFFERED=1"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
+rem ---------------------------------------------------------------
+rem  6) Conferencia rapida antes de subir o painel
+rem ---------------------------------------------------------------
+python -c "import uvicorn, fastapi" >nul 2>&1
+if errorlevel 1 (
+  echo Dependencias faltando no ambiente. Reinstalando...
+  python -m pip install -r "backend\requirements.txt"
+  python -c "import uvicorn, fastapi" >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo ============================================
+    echo  ERRO: nao consegui preparar as dependencias.
+    echo  De dois cliques em DIAGNOSTICO.bat e envie
+    echo  o arquivo diagnostico.log.
+    echo ============================================
+    pause
+    exit /b 1
+  )
+)
+
 rem Abre o navegador so quando o painel estiver respondendo
 start "" /b powershell -NoProfile -ExecutionPolicy Bypass -Command "for($i=0;$i -lt 90;$i++){try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8000/ | Out-Null; break}catch{Start-Sleep 2}}; Start-Process 'http://127.0.0.1:8000/'"
 
 cd /d "%~dp0backend"
 
+set /a TENTATIVAS=0
 :run
-python -m uvicorn server:app --host 127.0.0.1 --port 8000
+set /a TENTATIVAS+=1
 echo.
-echo O painel parou. Religa em 3 segundos...
+echo [%TIME%] Subindo o painel... ^(tentativa %TENTATIVAS%^)
+echo Os primeiros 10 segundos podem ficar sem mensagem. Normal.
+echo.
+python -u -m uvicorn server:app --host 127.0.0.1 --port 8000
+set "CODIGO=%ERRORLEVEL%"
+echo.
+echo [%TIME%] O painel parou (codigo %CODIGO%).
+if %TENTATIVAS% GEQ 3 (
+  echo ============================================
+  echo  Nao consegui manter o painel ligado.
+  echo  Rode o DIAGNOSTICO.bat: ele grava o motivo
+  echo  exato no arquivo diagnostico.log.
+  echo ============================================
+  pause
+  exit /b 1
+)
+echo Religa em 3 segundos...
 echo Feche esta janela so se quiser desligar de verdade.
 timeout /t 3 /nobreak >nul
 goto run

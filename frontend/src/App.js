@@ -10,6 +10,7 @@ import Pricing from "@/pages/Pricing";
 import Robot from "@/pages/Robot";
 import DropperRobot from "@/pages/DropperRobot";
 import ShopeeRobot from "@/pages/ShopeeRobot";
+import ReviewProducts from "@/pages/ReviewProducts";
 import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
@@ -36,6 +37,7 @@ function App() {
           <Route path="/robo" element={<Robot />} />
           <Route path="/dropper" element={<DropperRobot />} />
           <Route path="/shopee" element={<ShopeeRobot />} />
+          <Route path="/revisar-produtos" element={<ReviewProducts />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />
