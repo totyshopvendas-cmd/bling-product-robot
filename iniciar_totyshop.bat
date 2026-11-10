@@ -88,7 +88,7 @@ if not exist "frontend\node_modules" (
 )
 
 if not exist "frontend\build\index.html" goto dobuild
-if not exist "frontend\build\.stamp-v3" goto dobuild
+if not exist "frontend\build\.stamp-v4" goto dobuild
 goto afterbuild
 :dobuild
 echo Montando o painel...
@@ -104,7 +104,7 @@ if not exist "frontend\build\index.html" (
   pause
   exit /b 1
 )
-echo. > "frontend\build\.stamp-v3"
+echo. > "frontend\build\.stamp-v4"
 :afterbuild
 
 rem Atalho na Area de Trabalho (so na primeira vez)
