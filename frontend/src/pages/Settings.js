@@ -12,6 +12,13 @@ export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
   const [jd, setJd] = useState({ configured: false, username: "" });
   const [creds, setCreds] = useState({ username: "", password: "" });
+  const [dp, setDp] = useState({ configured: false, username: "" });
+  const [dpCreds, setDpCreds] = useState({ username: "", password: "" });
+  const [savingDp, setSavingDp] = useState(false);
+  const [brand, setBrand] = useState({ mode: "fabricante", store_name: "" });
+  const [brandInput, setBrandInput] = useState("");
+  const [brandMode, setBrandMode] = useState("fabricante");
+  const [savingBrand, setSavingBrand] = useState(false);
   const [blingSecret, setBlingSecret] = useState("");
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -34,13 +41,24 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     try {
       const origin = window.location.origin;
-      const [b, j] = await Promise.all([
+      const [b, j, d] = await Promise.all([
         endpoints.blingOAuthConfig(origin),
         endpoints.getJohnDropStatus(),
+        endpoints.getDropperStatus(),
       ]);
       setCfg(b.data);
       setJd(j.data);
       if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
+      setDp(d.data);
+      if (d.data.username) setDpCreds((c) => ({ ...c, username: d.data.username }));
+      try {
+        const { data: br } = await endpoints.getBrandSettings();
+        setBrand(br);
+        setBrandMode(br.mode || "fabricante");
+        setBrandInput(br.store_name || "");
+      } catch (err) {
+        logger.error("brand settings:", err);
+      }
     } catch (err) {
       logger.error("Failed to load settings:", err);
     }
@@ -87,6 +105,22 @@ export default function SettingsPage() {
       load();
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveDp = async (e) => {
+    e.preventDefault();
+    if (!dpCreds.username || !dpCreds.password) {
+      toast.error("Preencha usuário e senha do Dropper");
+      return;
+    }
+    setSavingDp(true);
+    try {
+      await endpoints.setDropperCreds(dpCreds.username, dpCreds.password);
+      toast.success("Dropper salvo — o robô já pode entrar");
+      load();
+    } finally {
+      setSavingDp(false);
     }
   };
 
@@ -239,6 +273,155 @@ export default function SettingsPage() {
           {saving ? "Salvando…" : "Salvar JohnDrop"}
         </button>
       </form>
+
+      <form onSubmit={saveDp} className="border border-border bg-white p-6 space-y-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-sm bg-[#7C3AED] grid place-items-center text-white font-display font-bold">D</div>
+            <div>
+              <div className="font-display text-lg font-bold tracking-tight">Dropper</div>
+              <div className="text-xs text-muted-foreground">
+                Robô de cadastro da Dropper (dropper.dropping.com.br). Usuário/senha digitados só aqui.
+              </div>
+            </div>
+          </div>
+          {dp?.configured && (
+            <span className="text-xs px-3 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-sm uppercase font-semibold inline-flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Pronto
+            </span>
+          )}
+        </div>
+
+        {dp?.configured && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-sm p-4 text-sm text-emerald-900">
+            Dropper salvo. O robô usa {dp.username}.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="label-overline">Usuário (e-mail)</label>
+            <input
+              data-testid="dp-username-input"
+              type="email"
+              name="dropper-username"
+              autoComplete="off"
+              value={dpCreds.username}
+              onChange={(e) => setDpCreds((c) => ({ ...c, username: e.target.value }))}
+              placeholder="email@exemplo.com"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+          <div>
+            <label className="label-overline">Senha</label>
+            <input
+              data-testid="dp-password-input"
+              type="password"
+              value={dpCreds.password}
+              onChange={(e) => setDpCreds((c) => ({ ...c, password: e.target.value }))}
+              placeholder={dp.configured ? "••••••••" : "Senha Dropper"}
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+        </div>
+
+        <button
+          data-testid="save-dp-btn"
+          type="submit"
+          disabled={savingDp}
+          className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          <Save className="h-4 w-4" />
+          {savingDp ? "Salvando…" : "Salvar Dropper"}
+        </button>
+      </form>
+
+      {/* ---------------- Marca ---------------- */}
+      <div className="border border-border bg-white p-6 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-display font-semibold flex items-center gap-2">
+              <span className="h-5 w-5 text-[#EE7B22]" style={{ display: "grid", placeItems: "center" }}>M</span>
+              Marca dos produtos
+            </h2>
+            <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
+              A IA preenche a marca de cada produto. Você escolhe: usar a <strong>marca real do
+              fabricante</strong> (quando não houver, usa o nome da loja) ou <strong>sempre a marca da
+              sua loja</strong>. Preencha o nome da sua loja no campo abaixo (ele substitui o "____").
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div className="flex flex-col gap-2">
+            <span className="label-overline">Modo da marca</span>
+            <div className="flex gap-2">
+              <label className={`flex items-center gap-2 text-sm cursor-pointer p-3 rounded-sm border ${
+                brandMode === "fabricante" ? "bg-[#EE7B22]/10 border-[#EE7B22] text-[#EE7B22]" : "border-border bg-white hover:bg-zinc-50"
+              }`}>
+                <input
+                  type="radio"
+                  value="fabricante"
+                  checked={brandMode === "fabricante"}
+                  onChange={() => setBrandMode("fabricante")}
+                  className="h-4 w-4"
+                />
+                Marca real do fabricante
+              </label>
+              <label className={`flex items-center gap-2 text-sm cursor-pointer p-3 rounded-sm border ${
+                brandMode === "loja" ? "bg-[#EE7B22]/10 border-[#EE7B22] text-[#EE7B22]" : "border-border bg-white hover:bg-zinc-50"
+              }`}>
+                <input
+                  type="radio"
+                  value="loja"
+                  checked={brandMode === "loja"}
+                  onChange={() => setBrandMode("loja")}
+                  className="h-4 w-4"
+                />
+                Sempre a marca da loja
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Fabricante: detecta a marca do produto; se não encontrar, usa o nome da loja.
+              <br /> Loja: sempre usa o nome da sua loja como marca.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            <span className="label-overline">Nome da sua loja (marca "____")</span>
+            <input
+              data-testid="brand-store-name"
+              value={brandInput}
+              onChange={(e) => setBrandInput(e.target.value)}
+              placeholder="Ex: TotyShop"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+        </div>
+
+        <button
+          data-testid="save-brand-btn"
+          onClick={async () => {
+            setSavingBrand(true);
+            try {
+              const { data } = await endpoints.saveBrandSettings(brandMode, brandInput);
+              setBrand(data);
+              toast.success("Marca salva");
+            } catch (err) {
+              toast.error("Falha ao salvar a marca");
+            } finally {
+              setSavingBrand(false);
+            }
+          }}
+          disabled={savingBrand}
+          className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          <Save className="h-4 w-4" />
+          {savingBrand ? "Salvando…" : "Salvar marca"}
+        </button>
+        <div className="text-xs text-muted-foreground">
+          A marca vale para novos enriquecimentos e para a revisão em lote de produtos já cadastrados.
+        </div>
+      </div>
 
       <AISettings />
 

@@ -3,7 +3,7 @@ import html as html_module
 import json
 import os
 import secrets
-from typing import Optional
+from typing import List, Optional
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -36,6 +36,7 @@ import pricing_service
 import bling_service
 import robot_service
 import johndrop_bot
+import dropper_bot
 import shopee_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
@@ -53,6 +54,7 @@ from diag_service import router as diag_router
 import stock_sync
 import stock_sync_bot
 import johndrop_export
+import review_service
 import admin_service
 import category_mapping
 import category_mapping_bot
@@ -456,7 +458,90 @@ async def get_johndrop_creds_status() -> dict:
     return {"configured": True, "username": creds.get("username")}
 
 
-# ---------- Robot ----------
+# ---------- Dropper settings ----------
+@api.post("/settings/dropper")
+async def set_dropper_creds(creds: JohnDropCreds) -> dict:
+    await dropper_bot.save_dropper_credentials(creds.username, creds.password)
+    return {"ok": True}
+
+
+@api.get("/settings/dropper")
+async def get_dropper_creds_status() -> dict:
+    creds = await dropper_bot.get_dropper_credentials()
+    if not creds:
+        return {"configured": False}
+    return {"configured": True, "username": creds.get("username")}
+
+
+# ---------- Brand settings (item 4) ----------
+class BrandSettings(BaseModel):
+    mode: str  # "fabricante" | "loja"
+    store_name: str  # nome da loja (o "____" preenchido pelo usuário)
+
+
+@api.get("/settings/brand")
+async def get_brand_settings() -> dict:
+    doc = await db.settings.find_one({"key": "brand_settings"}, {"_id": 0})
+    val = (doc or {}).get("value") or {}
+    return {
+        "mode": val.get("mode", "fabricante"),
+        "store_name": val.get("store_name", ""),
+    }
+
+
+@api.post("/settings/brand")
+async def save_brand_settings(req: BrandSettings) -> dict:
+    if req.mode not in ("fabricante", "loja"):
+        raise HTTPException(400, "modo inválido (use 'fabricante' ou 'loja')")
+    await db.settings.update_one(
+        {"key": "brand_settings"},
+        {"$set": {"key": "brand_settings", "value": {
+            "mode": req.mode,
+            "store_name": req.store_name.strip(),
+        }}},
+        upsert=True,
+    )
+    return await get_brand_settings()
+
+
+# ---------- Dropper Robot ----------
+@api.post("/dropper/start", response_model=RobotStatusResponse)
+async def dropper_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
+    if dropper_bot.robot.state == "running":
+        raise HTTPException(400, "Robô Dropper já está em execução")
+    creds = await dropper_bot.get_dropper_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha do Dropper em Configurações")
+    if not cfg.dry_run:
+        cr = johndrop_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium na tela do Robô JohnDrop.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
+    await dropper_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.post("/dropper/stop")
+async def dropper_stop() -> dict:
+    await dropper_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/dropper/status", response_model=RobotStatusResponse)
+async def dropper_status() -> RobotStatusResponse:
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.get("/dropper/logs")
+async def dropper_logs(limit: int = 100) -> list:
+    # O robô Dropper compartilha o mesmo estado/logs do robô JohnDrop (robot_service),
+    # então devolvemos os logs gerais — o usuário vê a atividade do Dropper neles.
+    return await robot_service.get_logs(limit)
+
+
+# ---------- Shopee Robot ----------
 @api.post("/robot/start", response_model=RobotStatusResponse)
 async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
     if robot_service.robot.state == "running":
@@ -1138,6 +1223,84 @@ async def bling_bulk_job_status() -> dict:
 @api.post("/bling/bulk-job/stop")
 async def bling_bulk_job_stop() -> dict:
     return await bulk_enrichment.stop()
+
+
+# ---------- Revisão em lote de produtos (itens 6 e 7) ----------
+
+class ReviewEstimateRequest(BaseModel):
+    max_items: Optional[int] = None
+
+
+@api.post("/review/estimate")
+async def review_estimate(payload: ReviewEstimateRequest = None) -> dict:
+    """Estimativa de custo de IA ANTES de iniciar a revisão (item 7)."""
+    req = payload or ReviewEstimateRequest()
+    return await review_service.estimate_cost(req.max_items)
+
+
+class ReviewStartRequest(BaseModel):
+    product_ids: Optional[List[int]] = None
+    max_items: int = 200
+
+
+@api.post("/review/start")
+async def review_start(payload: ReviewStartRequest) -> dict:
+    if payload.product_ids:
+        return await review_service.start(payload.product_ids)
+    # Varre produtos não enriquecidos (mesmo critério do Enriquecer em Lote)
+    scanned = await bulk_enrichment.collect_not_enriched_ids(max_items=payload.max_items)
+    if not scanned:
+        raise HTTPException(400, "Nenhum produto para revisar")
+    return await review_service.start(scanned)
+
+
+@api.get("/review/status")
+async def review_status() -> dict:
+    return review_service.status()
+
+
+@api.post("/review/pause")
+async def review_pause() -> dict:
+    return await review_service.pause()
+
+
+@api.post("/review/resume")
+async def review_resume() -> dict:
+    return await review_service.resume()
+
+
+@api.post("/review/stop")
+async def review_stop() -> dict:
+    return await review_service.stop()
+
+
+@api.post("/review/mark-delete")
+async def review_mark_delete(payload: dict) -> dict:
+    """Marca um produto para exclusão (item 6 — só exclui após aprovação)."""
+    return await review_service.mark_for_delete(
+        int(payload.get("product_id", 0)), payload.get("sku", ""),
+        payload.get("name", ""), payload.get("reason", "estrutura de variação incorreta"),
+    )
+
+
+@api.post("/review/approve-deletes")
+async def review_approve_deletes() -> dict:
+    """Usuário aprova as exclusões pendentes (item 6)."""
+    return await review_service.approve_deletions()
+
+
+@api.post("/review/clear-delete-list")
+async def review_clear_delete_list() -> dict:
+    return await review_service.clear_delete_list()
+
+
+@api.delete("/bling/products/{product_id}")
+async def bling_delete_product(product_id: int) -> dict:
+    """Exclui um produto no Bling (item 6 — só após aprovação na revisão)."""
+    resp = await bling_service.bling_request("DELETE", f"/produtos/{product_id}")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text[:500])
+    return {"ok": True, "product_id": product_id}
 
 
 # ---------- Dashboard ----------

@@ -9,6 +9,8 @@ import TitleCleaner from "@/pages/TitleCleaner";
 import Pricing from "@/pages/Pricing";
 import Robot from "@/pages/Robot";
 import ShopeeRobot from "@/pages/ShopeeRobot";
+import DropperRobot from "@/pages/DropperRobot";
+import ReviewProducts from "@/pages/ReviewProducts";
 import Logs from "@/pages/Logs";
 import Settings from "@/pages/Settings";
 import BlingEnrichment from "@/pages/BlingEnrichment";
@@ -34,6 +36,8 @@ function App() {
           <Route path="/precos" element={<Pricing />} />
           <Route path="/robo" element={<Robot />} />
           <Route path="/shopee" element={<ShopeeRobot />} />
+          <Route path="/dropper" element={<DropperRobot />} />
+          <Route path="/revisar-produtos" element={<ReviewProducts />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/bling" element={<BlingEnrichment />} />
           <Route path="/bling-lote" element={<BlingBulkEnrich />} />

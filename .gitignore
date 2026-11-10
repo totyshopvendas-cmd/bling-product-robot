@@ -110,3 +110,7 @@ backend/.secrets/
 
 # Banco local (modo sem MongoDB) — contém tokens, não versionar
 backend/data/
+.venv_test/
+
+# log gerado pelo DIAGNOSTICO.bat
+diagnostico.log

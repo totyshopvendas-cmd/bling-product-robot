@@ -55,10 +55,36 @@ export const endpoints = {
     api.post("/settings/johndrop", { username, password }),
   getJohnDropStatus: () => api.get("/settings/johndrop"),
 
+  setDropperCreds: (username, password) =>
+    api.post("/settings/dropper", { username, password }),
+  getDropperStatus: () => api.get("/settings/dropper"),
+
+  dropperStart: (max_products, dry_run) =>
+    api.post("/dropper/start", { max_products, dry_run }),
+  dropperStop: () => api.post("/dropper/stop"),
+  dropperStatus: () => api.get("/dropper/status"),
+  dropperLogs: (limit = 100) => api.get(`/dropper/logs?limit=${limit}`),
+
   robotStart: (max_products, dry_run) =>
     api.post("/robot/start", { max_products, dry_run }),
   robotStop: () => api.post("/robot/stop"),
   robotStatus: () => api.get("/robot/status"),
   robotLogs: (limit = 100) => api.get(`/robot/logs?limit=${limit}`),
   robotLogsClear: () => api.post("/robot/logs/clear"),
+
+  getBrandSettings: () => api.get("/settings/brand"),
+  saveBrandSettings: (mode, store_name) =>
+    api.post("/settings/brand", { mode, store_name }),
+
+  reviewEstimate: (max_items) => api.post("/review/estimate", { max_items }),
+  reviewStart: (product_ids, max_items) =>
+    api.post("/review/start", { product_ids, max_items }),
+  reviewStatus: () => api.get("/review/status"),
+  reviewPause: () => api.post("/review/pause"),
+  reviewResume: () => api.post("/review/resume"),
+  reviewStop: () => api.post("/review/stop"),
+  reviewMarkDelete: (payload) => api.post("/review/mark-delete", payload),
+  reviewApproveDeletes: () => api.post("/review/approve-deletes"),
+  reviewClearDeleteList: () => api.post("/review/clear-delete-list"),
+  blingDeleteProduct: (product_id) => api.delete(`/bling/products/${product_id}`),
 };

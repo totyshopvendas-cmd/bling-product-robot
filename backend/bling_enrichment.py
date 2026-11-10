@@ -19,16 +19,272 @@ import asyncio
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from ai_client import LlmChat, UserMessage, has_text_ai
+from ai_client import LlmChat, UserMessage, ImageContent, has_text_ai, has_image_ai
 
 import bling_service
 from db import db
 from robot_service import add_log
-from color_variation_guard import filter_variations_by_color
+from color_variation_guard import filter_variations_by_color, _is_color_name
 
 
 LLM_PROVIDER = "anthropic"
 LLM_MODEL = "claude-haiku-4-5-20251001"
+
+# ----------------------------------------------------------------- marca -----
+# Configurada em Configurações → Marca dos produtos.
+#   mode = "fabricante": detecta a marca real do fabricante; se não houver, usa o nome da loja.
+#   mode = "loja":       usa sempre o nome da loja como marca.
+_BRAND_SETTINGS_CACHE: dict = {"mode": None, "store_name": None, "checked": False}
+
+
+async def _get_brand_settings() -> dict:
+    if _BRAND_SETTINGS_CACHE["checked"]:
+        return {"mode": _BRAND_SETTINGS_CACHE["mode"], "store_name": _BRAND_SETTINGS_CACHE["store_name"] or ""}
+    doc = await db.settings.find_one({"key": "brand_settings"}, {"_id": 0})
+    val = (doc or {}).get("value") or {}
+    _BRAND_SETTINGS_CACHE["mode"] = val.get("mode", "fabricante")
+    _BRAND_SETTINGS_CACHE["store_name"] = (val.get("store_name") or "").strip()
+    _BRAND_SETTINGS_CACHE["checked"] = True
+    return {"mode": _BRAND_SETTINGS_CACHE["mode"], "store_name": _BRAND_SETTINGS_CACHE["store_name"]}
+
+
+def _reset_brand_cache() -> None:
+    _BRAND_SETTINGS_CACHE["checked"] = False
+
+
+_BRAND_SYSTEM = (
+    "Você identifica a MARCA DO FABRICANTE de um produto a partir do título e da descrição. "
+    "Responda APENAS com o nome da marca (ex: Samsung, Nike, Philips) ou a palavra NENHUMA se não "
+    "for possível identificar uma marca de fabricante. "
+    "Não responda com nomes de varejo, marketplace, loja ou genéricos como 'Generico'."
+)
+
+
+async def _detect_brand_ai(raw_title: str, raw_description: str) -> Optional[str]:
+    """Usa IA para detectar a marca real do fabricante. Retorna None se não houver marca."""
+    if not has_text_ai():
+        return None
+    user = (
+        f"Título: {raw_title or ''}\n"
+        f"Descrição: {(raw_description or '')[:800]}\n\n"
+        "Qual é a marca do fabricante? Responda apenas o nome da marca ou NENHUMA."
+    )
+    try:
+        text = await _llm_call(_BRAND_SYSTEM, user)
+    except Exception:
+        return None
+    t = (text or "").strip().strip('"').strip("'")
+    if not t or t.upper() in {"NENHUMA", "N/A", "NA", "NENHUM", "-"}:
+        return None
+    # Limpa a resposta para conter só o nome da marca (primeira linha, sem pontuação extra)
+    t = t.split("\n")[0]
+    t = re.sub(r"[^A-Za-zÀ-ÿ0-9 .&\-]", " ", t).strip()
+    return t or None
+
+
+async def _resolve_brand(raw_title: str, raw_description: str) -> str:
+    """Resolve a marca final conforme o modo escolhido pelo usuário."""
+    settings = await _get_brand_settings()
+    mode = settings.get("mode", "fabricante")
+    store_name = settings.get("store_name") or ""
+
+    if mode == "loja":
+        return store_name or "Generico"
+
+    # modo fabricante: tenta IA; se não achar, usa o nome da loja (o "____")
+    detected = await _detect_brand_ai(raw_title, raw_description)
+    if detected:
+        return detected
+    return store_name or "Generico"
+
+
+# ------------------------------------------------- atributos (item 5) --------
+_ATTRIBUTES_SYSTEM = (
+    "Você extrai dados estruturados de um produto para preencher cadastros de "
+    "marketplaces (Mercado Livre, Shopee etc.). Responda APENAS com um JSON válido, "
+    "sem texto antes nem depois, com estas chaves (use string vazia []/'' quando não souber):\n"
+    '{"modelo": "", "material": "", "cor": "", "voltagem": "", "dimensoes": "", "palavras_chave": []}\n'
+    "- modelo: nome/modelo do produto (ex: 'KA-S079', 'XLS B125').\n"
+    "- material: material predominante (ex: 'plástico', 'alumínio', 'silicone').\n"
+    "- cor: cor principal do produto.\n"
+    "- voltagem: '110V', '220V', 'Bivolt' ou '' se não for elétrico.\n"
+    "- dimensoes: medidas do produto se mencionadas (ex: '30x20x5 cm').\n"
+    "- palavras_chave: até 6 palavras-chave curtas para busca."
+)
+
+
+async def _extract_attributes(raw_title: str, raw_description: str) -> dict:
+    """Extrai modelo, material, cor, voltagem, dimensões e palavras-chave via IA."""
+    if not has_text_ai():
+        return {}
+    user = (
+        f"Título: {raw_title or ''}\n"
+        f"Descrição: {(raw_description or '')[:1200]}\n\n"
+        "Extraia os atributos acima em JSON."
+    )
+    try:
+        text = await _llm_call(_ATTRIBUTES_SYSTEM, user)
+    except Exception:
+        return {}
+    m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+        return {
+            "modelo": str(data.get("modelo") or "").strip(),
+            "material": str(data.get("material") or "").strip(),
+            "cor": str(data.get("cor") or "").strip(),
+            "voltagem": str(data.get("voltagem") or "").strip(),
+            "dimensoes": str(data.get("dimensoes") or "").strip(),
+            "palavras_chave": data.get("palavras_chave") or [],
+        }
+    except Exception:
+        return {}
+
+
+def _attributes_to_bullets(attrs: dict) -> List[str]:
+    """Converte os atributos extraídos em bullets de 'Ficha Técnica' (máx 6)."""
+    bullets: List[str] = []
+    labels = {
+        "modelo": "Modelo",
+        "material": "Material",
+        "cor": "Cor",
+        "voltagem": "Voltagem",
+        "dimensoes": "Dimensões",
+    }
+    for key, label in labels.items():
+        val = attrs.get(key) or ""
+        if val:
+            bullets.append(f"- <b>{label}:</b> {val}")
+    keys = attrs.get("palavras_chave") or []
+    if keys:
+        bullets.append(f"- <b>Palavras-chave:</b> {', '.join(keys[:6])}")
+    return bullets[:6]
+
+
+# ------------------------------------------------- visão de cor (item 1) -----
+_COLOR_VISION_SYSTEM = (
+    "Você recebe fotos de um produto e uma lista de NOMES DE CORES em português. "
+    "Diga APENAS quais dessas cores realmente aparecem nas fotos do produto. "
+    "Responda APENAS um JSON válido: {\"cores_confirmadas\": [\"azul\", \"preto\"]}. "
+    "Não invente cores que não estejam visíveis. Se nenhuma das cores listadas aparecer, "
+    "devolva a lista vazia. Considere embalagem e fundo, não apenas o produto."
+)
+
+
+async def _confirm_colors_by_vision(images: Optional[list], color_names: List[str]) -> List[str]:
+    """Usa IA de visão para confirmar quais das cores informadas aparecem nas fotos.
+
+    Retorna apenas as cores confirmadas. Cores não confirmadas ficam de fora das
+    variações e vão para revisão (item 1: se a cor da foto não bater, não cadastra errado).
+    """
+    if not has_image_ai() or not images or not color_names:
+        return []
+    # Monta as mensagens com até 8 imagens (limite de custo/token).
+    image_contents: List[ImageContent] = []
+    for u in images[:8]:
+        if isinstance(u, str) and u.startswith("http"):
+            # Baixa a imagem e converte para base64 para enviar ao provedor de IA.
+            try:
+                import requests
+                r = requests.get(u, timeout=20)
+                if r.status_code == 200 and r.content:
+                    import base64
+                    b64 = base64.b64encode(r.content).decode()
+                    mime = "image/jpeg"
+                    image_contents.append(ImageContent(b64, mime))
+            except Exception:
+                continue
+        elif isinstance(u, str):
+            image_contents.append(ImageContent(u))
+    if not image_contents:
+        return []
+    user_text = (
+        "Cores para verificar: " + ", ".join(color_names) + "\n"
+        "Qual dessas cores aparece nas fotos? Responda em JSON."
+    )
+    try:
+        chat = LlmChat(
+            session_id=f"color-vision-{uuid.uuid4()}",
+            system_message=_COLOR_VISION_SYSTEM,
+        ).with_model("gemini", "gemini-2.5-flash-image")
+        response = await chat.send_message(UserMessage(text=user_text, file_contents=image_contents))
+    except Exception:
+        # fallback: tenta openai se gemini não tiver chave/imagem
+        try:
+            chat = LlmChat(
+                session_id=f"color-vision-{uuid.uuid4()}",
+                system_message=_COLOR_VISION_SYSTEM,
+            ).with_model("openai", "gpt-4o-mini")
+            response = await chat.send_message(UserMessage(text=user_text, file_contents=image_contents))
+        except Exception:
+            return []
+    m = re.search(r"\{[^{}]*\}", response or "", re.DOTALL)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+        confirmed = [str(c).strip().lower() for c in (data.get("cores_confirmadas") or [])]
+        return [c for c in confirmed if c]
+    except Exception:
+        return []
+
+
+def _normalize_color_for_vision(value: str) -> str:
+    """Normaliza um nome de cor para comparação (minúsculo, sem acento simples)."""
+    if not value:
+        return ""
+    v = value.strip().lower()
+    aliases = {
+        "azul claro": "azul", "azul escuro": "azul", "branca": "branco", "preta": "preto",
+        "vermelha": "vermelho", "verde claro": "verde", "verde escuro": "verde",
+        "amarela": "amarelo", "rosa claro": "rosa", "roxa": "roxo", "cinza claro": "cinza",
+        "cinza escuro": "cinza", "dourada": "dourado",
+    }
+    return aliases.get(v, v)
+
+
+async def _save_review(
+    sku: str, reason: str, details: list, raw_title: str, raw_description: str, images: Optional[list]
+) -> None:
+    """Registra um item na fila de revisão (quando a IA não confirma uma cor, por exemplo)."""
+    try:
+        await db.review_queue.update_one(
+            {"sku": sku, "reason": reason},
+            {"$set": {
+                "sku": sku,
+                "reason": reason,
+                "details": details,
+                "raw_title": raw_title,
+                "raw_description": raw_description,
+                "images": images,
+                "status": "pending",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        await add_log("warning", f"Falha ao salvar revisão para {sku}: {e}")
+
+
+# --------------------------------------------------- sortido (item 2) --------
+SORTIDO_RE = re.compile(
+    r"(conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque|"
+    r"seguindo\s+(?:a\s+)?disponibilidade|"
+    r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)|"
+    r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade|"
+    r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade|"
+    r"\bsortid[oa]s?\b|\bvariad[oa]s?\b|\bconforme\s+estoque\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_sortido(raw_description: str) -> bool:
+    """True quando o fornecedor envia cor/modelo conforme estoque (sortido/variado)."""
+    if not raw_description:
+        return False
+    return bool(SORTIDO_RE.search(raw_description))
 
 # Bling product sync may take a few seconds — retry finding the product
 FIND_PRODUCT_MAX_ATTEMPTS = 18
@@ -523,15 +779,16 @@ async def update_bling_product(
     cost: Optional[float] = None,
     variations: Optional[List[str]] = None,
     images: Optional[list] = None,
+    raw_title: str = "",
+    raw_description: str = "",
 ) -> bool:
-    """PATCH the Bling product, sending ONLY the 7 fields the TotyShop manual asks
-    us to change. Every other field (nome, código, preço, peso, dimensões, imagens,
-    estoque, etc.) stays EXACTLY as it came from JohnDrop — no defaults, no zeroing.
+    """PATCH the Bling product, sending ONLY the fields the TotyShop manual asks
+    us to change. Every other field stays EXACTLY as it came from JohnDrop.
 
     Fields we touch:
       1. descricaoCurta (sanitized + bullets)
-      2. descricaoComplementar (8 bullets)
-      3. marca = "Generico"
+      2. descricaoComplementar (8 bullets + Ficha Técnica com atributos IA)
+      3. marca (marca real do fabricante OU nome da loja, conforme Configurações → Marca)
       4. condicao = 1 (Novo)
       5. tipoProducao = "T" (Terceiros)
       6. gtin = ""
@@ -540,10 +797,18 @@ async def update_bling_product(
     """
     parent_name = current.get("nome") or ""
 
+    # Resolve a marca conforme o modo escolhido pelo usuário (item 4).
+    marca = await _resolve_brand(raw_title, raw_description)
+    # Se solicitado, extrai atributos (modelo, material, cor, voltagem, dimensoes,
+    # palavras-chave) via IA para preencher cadastros de marketplace (item 5).
+    attributes: dict = {}
+    if payload.get("_extract_attributes"):
+        attributes = await _extract_attributes(raw_title, raw_description)
+
     # Build a STRICTLY MINIMAL PATCH — never include nome, código, preço, peso,
     # dimensões, imagens, estoque, formato, etc.
     patch_payload: dict = {
-        "marca": "Generico",
+        "marca": marca,
         "condicao": 1,
         "tipoProducao": "T",
         "gtin": "",
@@ -552,7 +817,13 @@ async def update_bling_product(
     if payload.get("descricaoCurta"):
         patch_payload["descricaoCurta"] = payload["descricaoCurta"]
     if payload.get("descricaoComplementar"):
-        patch_payload["descricaoComplementar"] = payload["descricaoComplementar"]
+        complementar = payload["descricaoComplementar"]
+        # Anexa Ficha Técnica com os atributos extraídos pela IA (item 5).
+        if attributes:
+            ficha = _attributes_to_bullets(attributes)
+            if ficha:
+                complementar = complementar + "\n\n<b>Ficha Técnica:</b>\n" + "\n".join(ficha)
+        patch_payload["descricaoComplementar"] = complementar
     if payload.get("categoria"):
         patch_payload["categoria"] = payload["categoria"]
 
@@ -900,20 +1171,49 @@ async def enrich_product_by_sku(
         # Use the post-sync full product instead of an extra GET (the wait
         # already returned the latest version).
         full = full_after_sync or await _fetch_bling_product_full(product_id) or product
-        variations = _parse_variations(raw_description)
-        if variations:
-            filtered_variations = filter_variations_by_color(variations, raw_description, images)
-            if filtered_variations:
-                await add_log("info", f"Variações validadas pela imagem para {sku}: {', '.join(filtered_variations)}")
-            else:
-                await add_log("info", f"Variações ignoradas para {sku}: descrição menciona cor mas a imagem não confirmou a variação.")
-            variations = filtered_variations
+
+        # ITEM 2 — sortido/conforme estoque: não cria variações nem SKUs separados.
+        # Cadastra como produto simples e avisa na descrição que é sortido.
+        is_sortido = _is_sortido(raw_description)
+        variations: List[str] = []
+        if not is_sortido:
+            variations = _parse_variations(raw_description)
             if variations:
-                await add_log("info", f"Variações detectadas para {sku}: {', '.join(variations)}")
+                # ITEM 1 — confirmação de cor por visão IA antes de criar variações.
+                color_candidates = [v for v in variations if _is_color_name(v)]
+                non_color = [v for v in variations if not _is_color_name(v)]
+                confirmed_colors: List[str] = []
+                if color_candidates:
+                    confirmed = await _confirm_colors_by_vision(images, color_candidates)
+                    confirmed_set = set(confirmed)
+                    confirmed_colors = [c for c in color_candidates if _normalize_color_for_vision(c) in confirmed_set]
+                    rejected = [c for c in color_candidates if c not in confirmed_colors]
+                    if rejected:
+                        await add_log(
+                            "warning",
+                            f"Cor não confirmada nas fotos (revisão) para {sku}: {', '.join(rejected)}",
+                        )
+                        await _save_review(sku, "cor_nao_confirmada", rejected, raw_title, raw_description, images)
+                variations = non_color + confirmed_colors
+                if variations:
+                    await add_log(
+                        "info",
+                        f"Variações detectadas para {sku}: {', '.join(variations)}",
+                    )
+        else:
+            await add_log(
+                "info",
+                f"Produto {sku} é SORTIDO/conforme estoque — sem variações, SKU único.",
+            )
+            if short_desc:
+                sortido_note = "Produto sortido: cor/modelo enviado conforme estoque (vendedor não escolhe)."
+                short_desc_html = (short_desc_html + "<br><br>" + sortido_note) if short_desc_html else sortido_note
+
         ok = await update_bling_product(
             product_id, full, payload,
             johndrop_id=johndrop_id, cost=cost, variations=variations or None,
             images=images,
+            raw_title=raw_title, raw_description=raw_description,
         )
     except Exception as e:
         await add_log("error", f"Bling: PUT falhou para {sku}: {e}")
