@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from dropper_reader import parse_product_text, parse_variations
+import dropper_reader as dropper_reader_mod
+from dropper_reader import parse_product_text, parse_variations, page_is_blocked
 
 # Texto exatamente como aparece na página (valores do print do usuário)
 PAGINA_TESOURA = """Produtos
@@ -123,9 +124,10 @@ def test_pagina_sem_dados_nao_explode():
     assert p.description == ""
 
 
-def test_usa_id_da_url_quando_sem_codigo():
-    p = parse_product_text("apenas texto", url="https://dropper/d/cliente/produtos/abc123xyz")
-    assert p.code == "abc123xyz"
+def test_sem_codigo_de_produto_nao_usa_id_da_url():
+    """O id da URL é um cuid ilegível — nunca pode virar SKU no Bling."""
+    p = parse_product_text("apenas texto", url="https://dropper/d/cliente/produtos/cmw23d7vk0005oad8m9fdr4p")
+    assert p.code == ""
 
 
 def test_ncm_em_outro_layout_mesma_linha():
@@ -176,3 +178,77 @@ def test_parse_variations():
 def test_parse_variations_lista_vazia():
     assert parse_variations([]) == []
     assert parse_variations(None) == []
+
+
+# --------------------------------------------------------------------------- #
+# Regressões do primeiro import real no Bling
+# --------------------------------------------------------------------------- #
+
+PAGINA_COM_BANNER = """Produtos
+ProdDP2589
+FERAMENTAS MANUAIS · Classe Bronze
+Disponível
+Ative as notificações saiba na hora quando chegar
+Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder
+SEU CUSTO DE COMPRA
+R$ 190,44
+ESTOQUE
+7
+"""
+
+
+def test_banner_de_notificacao_nao_vira_titulo():
+    p = parse_product_text(PAGINA_COM_BANNER)
+    assert p.title == "Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder"
+    assert "notifica" not in p.title.lower()
+
+
+def test_titulo_pega_linha_apos_disponivel():
+    p = parse_product_text(PAGINA_COM_BANNER)
+    assert p.title.startswith("Kit 12")
+
+
+PAGINA_RESERVA = """Produtos
+Reserve agora pague o saldo cmw23d7vk0005oad8m9fdr4p
+Disponível
+Produto X qualquer coisa longa aqui
+SEU CUSTO DE COMPRA
+R$ 10,00
+"""
+
+
+def test_detecta_pagina_bloqueada_por_saldo():
+    motivo = page_is_blocked(PAGINA_RESERVA)
+    assert motivo and "reserve" in motivo.lower()
+
+
+def test_pagina_normal_nao_esta_bloqueada():
+    from dropper_reader import page_is_blocked
+
+    assert page_is_blocked(PAGINA_TESOURA) is None
+
+
+def test_categoria_com_banner_vira_none():
+    texto = "ProdDPF1\nProduto Legal Aqui Vonder\nCategoria\nAtive as notificações saiba na hora\n"
+    p = parse_product_text(texto)
+    assert p.category is None
+
+
+def test_is_junk_reconhece_textos_de_interface():
+    for linha in (
+        "Reserve agora pague o saldo cmw123",
+        "Ative as notificações saiba na hora quando chegar",
+        "Copiar link",
+        "Compartilhar",
+        "Termos de uso",
+    ):
+        assert dropper_reader_mod._is_junk(linha) is True, linha
+
+
+def test_is_junk_aceita_titulo_de_produto():
+    for linha in (
+        "Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder",
+        "Toucas para Cabelo",
+        "PULVERIZADOR",
+    ):
+        assert dropper_reader_mod._is_junk(linha) is False, linha

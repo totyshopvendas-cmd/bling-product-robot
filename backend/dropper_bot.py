@@ -69,6 +69,7 @@ STATE: dict = {
     "rows": 0,
     "products": 0,
     "failing": [],      # produtos que não entraram na planilha
+    "pulados": [],      # pulados de propósito (sem código, exige reserva)
 }
 
 
@@ -466,6 +467,48 @@ async def _read_variations(page) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Configuração do arquivo (fornecedor e categoria)
+# --------------------------------------------------------------------------- #
+
+#: guardado em backend/.secrets junto com as demais credenciais
+CONFIG_NAME = "dropper_export"
+
+
+def load_export_config() -> dict:
+    """Fornecedor e categoria usados na planilha.
+
+    O fornecedor precisa ser o nome EXATO do cadastro no Bling: com "DROPPING"
+    solto o import recusa a linha ("fornecedor inválido").
+    """
+    cfg = {
+        "fornecedor": sheet.DEFAULT_SUPPLIER,
+        "usar_categoria": sheet.DEFAULT_USE_CATEGORY,
+    }
+    try:
+        import secrets_store
+
+        stored = secrets_store.read(CONFIG_NAME) or {}
+        if stored.get("fornecedor"):
+            cfg["fornecedor"] = str(stored["fornecedor"]).strip()
+        if "usar_categoria" in stored:
+            cfg["usar_categoria"] = bool(stored["usar_categoria"])
+    except Exception:
+        pass
+    return cfg
+
+
+def save_export_config(fornecedor: str, usar_categoria: bool) -> dict:
+    import secrets_store
+
+    cfg = {
+        "fornecedor": (fornecedor or sheet.DEFAULT_SUPPLIER).strip(),
+        "usar_categoria": bool(usar_categoria),
+    }
+    secrets_store.write(CONFIG_NAME, cfg)
+    return cfg
+
+
+# --------------------------------------------------------------------------- #
 # Histórico — quais produtos já entraram em alguma planilha
 # --------------------------------------------------------------------------- #
 
@@ -572,10 +615,26 @@ async def _read_one_product(page, url: str, use_ai: bool):
         await add_log("error", "Página do produto sem texto legível")
         return None
 
+    # Produto que exige reserva/pagamento de saldo NÃO entra na planilha.
+    bloqueio = dropper_reader.page_is_blocked(text)
+    if bloqueio:
+        await add_log(
+            "warning",
+            f"Produto pulado: a página pede '{bloqueio}' — não está liberado para anúncio",
+        )
+        STATE.setdefault("pulados", []).append(_product_id_from_url(url) or url)
+        return None
+
     images = await _read_product_images(page, quiet=True)
     product = dropper_reader.parse_product_text(text, url, images=images)
     if not product.code:
-        product.code = _product_id_from_url(url) or ""
+        # sem "ProdDPFxxxx" não há SKU: o id da URL é um cuid ilegível
+        await add_log(
+            "warning",
+            f"Produto sem código (ProdDPF...) — pulado para não virar SKU ilegível no Bling: {url}",
+        )
+        STATE.setdefault("pulados", []).append(_product_id_from_url(url) or url)
+        return None
     if not product.title:
         await add_log("error", f"Título não encontrado no produto {product.code}")
         return None
@@ -605,12 +664,15 @@ async def _read_one_product(page, url: str, use_ai: bool):
         cleaned.get("cleaned") or product.title, product.description, use_ai=use_ai
     )
 
+    cfg = load_export_config()
     rows = sheet.build_rows(
         product,
         cleaned_title=cleaned.get("cleaned"),
         short_description=curta,
         complementary_description=compl,
         sale_price=sale_price,
+        supplier=cfg["fornecedor"],
+        use_category=cfg["usar_categoria"],
     )
     return rows, origem, product, cleaned.get("cleaned") or product.title
 
@@ -730,7 +792,8 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
     robot.reset()
     robot.state = "running"
     robot.started_at = datetime.now(timezone.utc)
-    STATE.update({"file": None, "test_file": False, "rows": 0, "products": 0, "failing": []})
+    STATE.update({"file": None, "test_file": False, "rows": 0, "products": 0,
+                  "failing": [], "pulados": []})
     await add_log(
         "info",
         f"Robô Dropper iniciado — LER produtos e gerar planilha Bling "
@@ -881,6 +944,12 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                     f"Alertas: sem NCM {stats['sem_ncm']} · sem preço {stats['sem_preco']} · "
                     f"sem imagem {stats['sem_imagem']} · arquivo em {EXPORT_DIR}",
                 )
+                if STATE.get("pulados"):
+                    await add_log(
+                        "warning",
+                        f"{len(STATE['pulados'])} produto(s) pulado(s) de propósito "
+                        f"(sem código ou exigindo reserva/saldo) — não entraram na planilha",
+                    )
                 await add_log("info", f"Relatório de revisão: {path.stem}_revisao.txt")
         finally:
             try:

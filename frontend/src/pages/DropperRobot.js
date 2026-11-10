@@ -29,6 +29,8 @@ export default function DropperRobotPage() {
   const [installing, setInstalling] = useState(false);
   const [sheetInfo, setSheetInfo] = useState(null);
   const [downloading, setDownloading] = useState(null);
+  const [cfg, setCfg] = useState(null);
+  const [savingCfg, setSavingCfg] = useState(false);
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
 
@@ -46,6 +48,14 @@ export default function DropperRobotPage() {
       setLogs(l);
       setChromium(c);
       setSheetInfo(sh);
+      if (!cfg) {
+        try {
+          const { data: cf } = await endpoints.dropperGetConfig();
+          setCfg(cf);
+        } catch (err) {
+          logger.error("dropper config:", err);
+        }
+      }
     } catch (err) {
       logger.error("dropper status:", err);
       setChromium((prev) => prev || { installed: false });
@@ -90,6 +100,19 @@ export default function DropperRobotPage() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Falha");
       setInstalling(false);
+    }
+  };
+
+  const salvarConfig = async () => {
+    setSavingCfg(true);
+    try {
+      const { data } = await endpoints.dropperSetConfig(cfg.fornecedor, cfg.usar_categoria);
+      setCfg(data);
+      toast.success("Configuração salva");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha ao salvar");
+    } finally {
+      setSavingCfg(false);
     }
   };
 
@@ -325,6 +348,46 @@ export default function DropperRobotPage() {
               </div>
             </div>
           </label>
+
+          {cfg && (
+            <div className="border-t border-border pt-3 space-y-2">
+              <div className="label-overline">Nome do fornecedor no Bling</div>
+              <input
+                data-testid="fornecedor-input"
+                type="text"
+                value={cfg.fornecedor}
+                onChange={(e) => setCfg({ ...cfg, fornecedor: e.target.value })}
+                className="w-full text-xs border border-border rounded-sm px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+              />
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Precisa ser igual ao cadastro em Clientes e Fornecedores. Se o Bling recusar
+                com "fornecedor inválido", copie o nome de lá e cole aqui.
+              </p>
+              <label className="flex items-start gap-2 text-xs cursor-pointer">
+                <input
+                  data-testid="usar-categoria-toggle"
+                  type="checkbox"
+                  checked={!!cfg.usar_categoria}
+                  onChange={(e) => setCfg({ ...cfg, usar_categoria: e.target.checked })}
+                  className="h-3.5 w-3.5 mt-0.5"
+                />
+                <span>
+                  Preencher <strong>Categoria</strong> com o nome do Dropper
+                  <span className="block text-muted-foreground">
+                    Deixe desmarcado: categoria inexistente faz o Bling recusar o produto.
+                  </span>
+                </span>
+              </label>
+              <button
+                data-testid="save-config-btn"
+                onClick={salvarConfig}
+                disabled={savingCfg}
+                className="w-full text-xs border border-border px-3 py-1.5 rounded-sm hover:bg-zinc-50 disabled:opacity-50"
+              >
+                {savingCfg ? "Salvando…" : "Salvar configuração"}
+              </button>
+            </div>
+          )}
 
           <div className="flex flex-col gap-2 pt-2">
             <button

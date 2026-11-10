@@ -544,6 +544,24 @@ async def dropper_diagnostico() -> dict:
     return {"ok": True, "report": report}
 
 
+class DropperExportConfig(BaseModel):
+    fornecedor: str = ""
+    usar_categoria: bool = False
+
+
+@api.get("/dropper/config")
+async def dropper_get_config() -> dict:
+    """Fornecedor/categoria usados na planilha do Bling."""
+    return dropper_bot.load_export_config()
+
+
+@api.post("/dropper/config")
+async def dropper_set_config(cfg: DropperExportConfig) -> dict:
+    if dropper_bot.robot.state == "running":
+        raise HTTPException(400, "Robô em execução — pare antes de alterar a configuração")
+    return dropper_bot.save_export_config(cfg.fornecedor, cfg.usar_categoria)
+
+
 @api.post("/dropper/historico/reset")
 async def dropper_historico_reset() -> dict:
     """Esquece os produtos já processados (o próximo run lê todos de novo)."""

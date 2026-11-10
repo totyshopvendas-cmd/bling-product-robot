@@ -62,6 +62,42 @@ _NOT_TITLE = re.compile(
     re.IGNORECASE,
 )
 
+#: textos de interface/aviso que a página mostra e que NÃO são o produto.
+#: (apareceram no primeiro import real: viraram título e código no Bling)
+_UI_JUNK = re.compile(
+    r"(ative\s+as\s+notifica|notifica[cç][oõ]es|saiba\s+na\s+hora|"
+    r"reserve\s+agora|pague\s+o\s+saldo|saldo\s+dispon[ií]vel|"
+    r"recarregar|adicionar\s+cr[eé]dito|compartilhar|copiar\s+link|"
+    r"quero\s+vender|ver\s+mais|carregando|novo\s+an[uú]ncio|"
+    r"cadastrar\s+produto|como\s+funciona|tutorial|suporte|"
+    r"termos\s+de\s+uso|pol[ií]tica\s+de\s+privacidade)",
+    re.IGNORECASE,
+)
+
+#: a página avisa que o produto só pode ser anunciado pagando/reservando
+_BLOCKED = re.compile(
+    r"(reserve\s+agora|pague\s+o\s+saldo|saldo\s+insuficiente|"
+    r"recarregue\s+seus\s+cr[eé]ditos|adicionar\s+cr[eé]ditos)",
+    re.IGNORECASE,
+)
+
+
+def _is_junk(line: str) -> bool:
+    """Linha que não pode virar título/categoria (banner, botão, aviso)."""
+    if not line or not line.strip():
+        return True
+    return bool(_UI_JUNK.search(line)) or bool(_NOT_TITLE.match(line))
+
+
+def page_is_blocked(text: str) -> Optional[str]:
+    """Motivo para PULAR o produto (a página exige pagamento/reserva).
+
+    Se a página mostra "Reserve agora pague o saldo", o produto não está
+    liberado para anúncio — nesse caso ele não entra na planilha.
+    """
+    match = _BLOCKED.search(text or "")
+    return match.group(0) if match else None
+
 
 def _lines(text: str) -> List[str]:
     return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
@@ -98,16 +134,35 @@ def _label_value(lines: List[str], label: str) -> Optional[str]:
 
 
 def _find_title(lines: List[str]) -> str:
-    """O título é a linha "de nome de produto" antes do bloco de custo."""
+    """O título do produto.
+
+    Estratégia, na ordem:
+    1. a linha logo depois de "Disponível"/"Indisponível" (layout observado);
+    2. a linha mais longa antes do bloco de custo.
+    Linhas de interface (banner, botão, aviso) são descartadas nas duas.
+    """
     stop = len(lines)
     for i, line in enumerate(lines):
         if line.lower().startswith("seu custo de compra") or line.lower().startswith("informa"):
             stop = i
             break
 
+    # 1) linha seguinte ao marcador de disponibilidade
+    for i, line in enumerate(lines[:stop]):
+        if re.match(r"^(dispon[ií]vel|indispon[ií]vel)\b", line.strip(), re.IGNORECASE):
+            for candidate in lines[i + 1: i + 4]:
+                if _is_junk(candidate):
+                    continue
+                if _PRODUCT_CODE_RE.fullmatch(candidate.replace(" ", "")):
+                    continue
+                if len(candidate) >= 8 and not re.fullmatch(r"[0-9.,\s]+", candidate):
+                    return candidate
+            break
+
+    # 2) fallback: a linha mais longa que sobrevive ao filtro
     best = ""
     for line in lines[:stop]:
-        if _NOT_TITLE.match(line):
+        if _is_junk(line):
             continue
         if _PRODUCT_CODE_RE.fullmatch(line.replace(" ", "")):
             continue
@@ -153,9 +208,8 @@ def parse_product_text(text: str, url: str = "", images: Optional[List[str]] = N
 
     code_match = _PRODUCT_CODE_RE.search(text or "")
     code = code_match.group(0) if code_match else ""
-    if not code and url:
-        # último recurso: o id da URL
-        code = (url.rstrip("/").rsplit("/", 1)[-1])[:24]
+    # NUNCA usar o id da URL como código: vira SKU ilegível no Bling
+    # (ex.: "cmw23d7vk0005oad8m9fdr4p"). Sem código = produto não entra.
 
     title = _find_title(lines)
 
@@ -163,6 +217,14 @@ def parse_product_text(text: str, url: str = "", images: Optional[List[str]] = N
     brand = _label_value(lines, "marca")
     category = _label_value(lines, "categoria")
     unit = _label_value(lines, "unidade")
+
+    # rótulo pode ter capturado um banner de interface
+    if category and _is_junk(category):
+        category = None
+    if brand and _is_junk(brand):
+        brand = None
+    if supplier and _is_junk(supplier):
+        supplier = None
 
     ncm = None
     m = _NCM_RE.search(text or "")

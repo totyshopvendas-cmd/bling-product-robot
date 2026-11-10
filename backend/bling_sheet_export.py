@@ -101,6 +101,17 @@ CSV_DELIMITER = ";"
 CSV_ENCODING = "utf-8-sig"  # utf-8 COM BOM
 
 #: Valores fixos observados no arquivo modelo real do usuário.
+#: Fornecedor padrão. Precisa ser IGUAL ao cadastro existente no Bling,
+#: senão o import recusa o produto com "fornecedor inválido".
+#: (Nome no Bling: DROPPING INTERMEDIACAO E CONSULTORIA DE VENDAS LTDA · Fantasia: Dropper)
+DEFAULT_SUPPLIER = "DROPPING INTERMEDIACAO E CONSULTORIA DE VENDAS LTDA"
+
+#: A categoria do Dropper (ex.: "FERAMENTAS MANUAIS") quase nunca existe no
+#: Bling, e categoria inválida faz o import recusar a linha inteira. Por isso o
+#: padrão é NÃO preencher — o produto entra sem categoria, para classificar depois.
+DEFAULT_USE_CATEGORY = False
+
+
 DEFAULTS: Dict[str, str] = {
     "Origem": "0",
     "Valor IPI fixo": "0",
@@ -379,7 +390,8 @@ def build_rows(
     short_description: str = "",
     complementary_description: str = "",
     sale_price: Optional[float] = None,
-    supplier: str = "DROPPING",
+    supplier: str = DEFAULT_SUPPLIER,
+    use_category: bool = False,
     color_images: Optional[Dict[str, List[str]]] = None,
 ) -> List[SheetRow]:
     """Monta as linhas do Bling para um produto (1 linha, ou pai + filhas).
@@ -408,7 +420,7 @@ def build_rows(
     base["NCM"] = format_ncm(product.ncm)
     base["GTIN/EAN"] = format_ean(product.ean)
     base["Marca"] = product.brand or "Generico"
-    base["Categoria do produto"] = product.category or ""
+    base["Categoria do produto"] = (product.category or "") if use_category else ""
     base["Fornecedor"] = supplier
     base["Cód. no fornecedor"] = supplier_code or ""
     base["Estoque"] = str(product.stock if product.stock is not None else 0)

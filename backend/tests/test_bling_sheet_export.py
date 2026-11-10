@@ -8,6 +8,7 @@ import pytest
 
 from bling_sheet_export import (
     BLING_COLUMNS,
+    DEFAULT_SUPPLIER,
     DropperProduct,
     DropperVariation,
     build_csv_text,
@@ -224,7 +225,8 @@ def test_produto_simples_gera_uma_linha():
     assert v["NCM"] == "8213.00.00"
     assert v["GTIN/EAN"] == "2003990403811"
     assert v["Marca"] == "VONDER"
-    assert v["Categoria do produto"] == "FERAMENTAS MANUAIS"
+    # categoria do Dropper não é usada por padrão: nome inválido derrubava o import
+    assert v["Categoria do produto"] == ""
     assert v["Unidade"] == "KIT"
     assert v["Estoque"] == "7"
     assert v["Preço"] == "285"
@@ -258,7 +260,7 @@ def test_valores_preenchidos_tem_a_ordem_correta_no_csv():
     assert data[11] == "190,44"          # Preço de custo
     assert data[17] == "0,108"           # Peso líquido
     assert data[38] == "VONDER"          # Marca
-    assert data[-2] == "FERAMENTAS MANUAIS"  # Categoria
+    assert data[-2] == ""  # Categoria: vazia por padrão (nome do Dropper não existe no Bling)
 
 
 def test_ncm_ausente_fica_vazio_e_aparece_no_relatorio():
@@ -367,3 +369,42 @@ def test_relatorio_marca_origem_de_cada_campo():
     assert "Peso líquido (Kg)" in relatorio
     assert "(descricao)" in relatorio
     assert "(tabela)" in relatorio
+
+
+# --------------------------------------------------------------------------- #
+# Regras aprendidas no primeiro import real no Bling
+# --------------------------------------------------------------------------- #
+
+
+def test_fornecedor_padrao_e_o_nome_do_cadastro():
+    """'DROPPING' solto dava 'fornecedor inválido' no Bling."""
+    assert DEFAULT_SUPPLIER == "DROPPING INTERMEDIACAO E CONSULTORIA DE VENDAS LTDA"
+
+
+def test_fornecedor_padrao_entra_na_linha():
+    produto = DropperProduct(code="ProdDPF1", title="Tesoura Vonder")
+    rows = build_rows(produto, cleaned_title="Tesoura Vonder")
+    assert rows[0].values["Fornecedor"] == DEFAULT_SUPPLIER
+
+
+def test_fornecedor_pode_ser_trocado():
+    produto = DropperProduct(code="ProdDPF1", title="Tesoura Vonder")
+    rows = build_rows(produto, cleaned_title="Tesoura Vonder", supplier="Dropper")
+    assert rows[0].values["Fornecedor"] == "Dropper"
+
+
+def test_categoria_so_entra_se_autorizada():
+    produto = DropperProduct(code="ProdDPF1", title="Tesoura Vonder", category="FERRAMENTAS MANUAIS")
+    sem = build_rows(produto, cleaned_title="Tesoura")
+    com = build_rows(produto, cleaned_title="Tesoura", use_category=True)
+    assert sem[0].values["Categoria do produto"] == ""
+    assert com[0].values["Categoria do produto"] == "FERRAMENTAS MANUAIS"
+
+
+def test_categoria_tambem_na_variacao():
+    produto = DropperProduct(
+        code="HM1", title="Camiseta", category="ROUPAS",
+        variations=[DropperVariation(name="Azul")],
+    )
+    rows = build_rows(produto, cleaned_title="Camiseta", use_category=True)
+    assert rows[1].values["Categoria do produto"] == "ROUPAS"

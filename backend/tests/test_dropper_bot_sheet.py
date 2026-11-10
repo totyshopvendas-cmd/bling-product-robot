@@ -13,6 +13,7 @@ import pytest
 
 import bling_sheet_export as sheet
 import dropper_bot
+import dropper_reader
 
 
 def test_product_id_from_url():
@@ -304,3 +305,56 @@ def test_historico_nao_mistura_com_planilha(tmp_path, monkeypatch):
     monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
     dropper_bot.save_history({"id:x": {}})
     assert dropper_bot.latest_sheet() is None
+
+
+# --------------------------------------------------------------------------- #
+# Configuração do fornecedor / categoria
+# --------------------------------------------------------------------------- #
+
+def test_config_padrao_usa_o_nome_do_cadastro(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot.sheet, "DEFAULT_SUPPLIER", "DROPPING INTERMEDIACAO E CONSULTORIA DE VENDAS LTDA")
+    import secrets_store
+
+    monkeypatch.setattr(secrets_store, "read", lambda _n: None)
+    cfg = dropper_bot.load_export_config()
+    assert cfg["fornecedor"] == "DROPPING INTERMEDIACAO E CONSULTORIA DE VENDAS LTDA"
+    assert cfg["usar_categoria"] is False
+
+
+def test_config_salva_e_rele(monkeypatch):
+    import secrets_store
+
+    guardado = {}
+    monkeypatch.setattr(secrets_store, "write", lambda n, d: guardado.update({n: d}))
+    monkeypatch.setattr(secrets_store, "read", lambda n: guardado.get(n))
+
+    dropper_bot.save_export_config("Dropper", True)
+    cfg = dropper_bot.load_export_config()
+    assert cfg == {"fornecedor": "Dropper", "usar_categoria": True}
+
+
+def test_config_vazia_cai_no_padrao(monkeypatch):
+    import secrets_store
+
+    monkeypatch.setattr(secrets_store, "write", lambda n, d: None)
+    monkeypatch.setattr(secrets_store, "read", lambda n: None)
+    assert dropper_bot.save_export_config("", False)["fornecedor"] == dropper_bot.sheet.DEFAULT_SUPPLIER
+
+
+def test_produto_bloqueado_nao_vira_linha():
+    """Página com 'Reserve agora pague o saldo' -> produto pulado."""
+    texto = "Produtos\nReserve agora pague o saldo cmw123\nDisponível\nProduto X\nR$ 10,00\n"
+    assert dropper_reader.page_is_blocked(texto)
+
+
+def test_produto_sem_codigo_e_pulado(monkeypatch):
+    """Sem ProdDPF... não há SKU: melhor pular do que sujar o Bling."""
+    page = _FakePage(
+        "Produtos\nDisponível\nProduto Bonito Sem Codigo Aqui\nSEU CUSTO DE COMPRA\nR$ 10,00\n"
+        "Marca\nVONDER\n"
+    )
+    dropper_bot.STATE["pulados"] = []
+    assert asyncio.run(
+        dropper_bot._read_one_product(page, URL.format("cmw123abc"), use_ai=False)
+    ) is None
+    assert dropper_bot.STATE["pulados"]
