@@ -512,13 +512,14 @@ async def dropper_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfi
     creds = await dropper_bot.get_dropper_credentials()
     if not creds or not creds.get("username"):
         raise HTTPException(400, "Salve o e-mail e a senha do Dropper em Configurações")
-    if not cfg.dry_run:
-        cr = johndrop_bot.chromium_status()
-        if not cr.get("installed"):
-            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium na tela do Robô JohnDrop.")
-        n = await db.pricing.count_documents({})
-        if n == 0:
-            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
+    # A leitura do Dropper usa navegador sempre (teste ou não).
+    cr = johndrop_bot.chromium_status()
+    if not cr.get("installed"):
+        raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium na tela do Robô JohnDrop.")
+    # Sem tabela de preços a planilha sai sem "Preço" — bloqueia para não gerar arquivo pela metade.
+    n = await db.pricing.count_documents({})
+    if n == 0:
+        raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
     await dropper_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
     return RobotStatusResponse(**robot_service.robot.to_dict())
 
@@ -532,6 +533,31 @@ async def dropper_stop() -> dict:
 @api.get("/dropper/status", response_model=RobotStatusResponse)
 async def dropper_status() -> RobotStatusResponse:
     return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.get("/dropper/diagnostico")
+async def dropper_diagnostico() -> dict:
+    """Abre o catálogo + 1 produto no Dropper e devolve o que o robô consegue ler."""
+    if dropper_bot.robot.state == "running":
+        raise HTTPException(400, "Robô em execução — pare antes de rodar o diagnóstico")
+    report = await dropper_bot.diagnostico_dropper()
+    return {"ok": True, "report": report}
+
+
+@api.get("/dropper/sheet")
+async def dropper_sheet_status() -> dict:
+    """Última planilha Bling gerada pelo robô Dropper."""
+    return dropper_bot.sheet_status()
+
+
+@api.get("/dropper/sheet/download")
+async def dropper_sheet_download(name: Optional[str] = Query(default=None)):
+    """Baixa a planilha (ou o relatório de revisão, se ``name`` terminar em .txt)."""
+    path = dropper_bot.resolve_sheet(name)
+    if not path:
+        raise HTTPException(status_code=404, detail="Nenhuma planilha gerada ainda")
+    media = "text/csv" if path.suffix.lower() == ".csv" else "text/plain"
+    return FileResponse(path, media_type=f"{media}; charset=utf-8", filename=path.name)
 
 
 @api.get("/dropper/logs")

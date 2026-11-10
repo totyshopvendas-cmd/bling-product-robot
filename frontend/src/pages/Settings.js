@@ -281,7 +281,7 @@ export default function SettingsPage() {
             <div>
               <div className="font-display text-lg font-bold tracking-tight">Dropper</div>
               <div className="text-xs text-muted-foreground">
-                Robô de cadastro da Dropper (dropper.dropping.com.br). Usuário/senha digitados só aqui.
+                Acesso à Dropper (dropper.dropping.com.br) para o robô ler os produtos e gerar a planilha do Bling. Usuário/senha digitados só aqui.
               </div>
             </div>
           </div>

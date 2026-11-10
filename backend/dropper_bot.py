@@ -1,12 +1,24 @@
-"""Dropper Playwright automation bot.
+"""Robô Dropper — LÊ os produtos no Dropper e gera a planilha do Bling.
 
-Mirrors the JohnDrop bot (johndrop_bot.py) but targets
-https://dropper.dropping.com.br/ — login, catalog, product creation form and
-submission. After a successful cadastro it schedules the Bling enrichment
-(enrich_pending) so the same enrichment worker used by JohnDrop handles the
-Dropper products too (same pipeline until Bling).
+Mudança de objetivo (v3): o robô **não cadastra mais nada no Dropper** e **não
+usa a API do Bling**. Ele percorre o catálogo do Dropper, abre a página de cada
+produto (``/cliente/produtos/<id>``), lê tudo que existe lá (título, descrição,
+imagens, código, custo, NCM, EAN, marca, categoria, unidade, estoque) e escreve
+uma planilha ``.csv`` no formato de importação do Bling — 59 colunas, ponto e
+vírgula, UTF-8 com BOM.
 
-Designed to fail gracefully if Playwright/Chromium is not installed.
+Fluxo:
+
+1. login no Dropper;
+2. colher as URLs do catálogo (``/cliente/produtos``);
+3. para cada produto: abrir a página, ler o texto, normalizar
+   (:mod:`dropper_reader`), buscar o preço de venda na tabela de preços
+   (custo -> venda) e gerar as descrições (:mod:`dropper_descriptions`);
+4. montar as linhas (:func:`bling_sheet_export.build_rows`) e gravar o arquivo
+   com um relatório de revisão do lado.
+
+Regra de ouro: **nada é inventado**. Campo que não vem do Dropper fica vazio e
+aparece no relatório; NCM/CEST/EAN nunca são chutados.
 """
 import asyncio
 import os
@@ -22,21 +34,42 @@ if (
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _CONTAINER_BROWSERS_PATH
 
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import List, Optional
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
 from robot_service import robot, add_log
 from db import db
 
+import bling_sheet_export as sheet
+import dropper_reader
+import dropper_descriptions
 
-# Dropper URLs — ajustar se o layout do site mudar.
-DROPPER_LOGIN_URL = "https://dropper.dropping.com.br/login"
-DROPPER_CATALOG_BASE_URL = "https://dropper.dropping.com.br/dashboard/catalog"
-DROPPER_CATALOG_URL = f"{DROPPER_CATALOG_BASE_URL}?integration_filter=without_integration"
-INTEGRATION_NAME = "TotyShop-Bling"
-SKU_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\\-]")
-DELAY_BETWEEN_PRODUCTS_S = 25  # pausa após cadastrar com sucesso
+
+# URLs do Dropper — ajustar se o site mudar de layout.
+DROPPER_BASE_URL = "https://dropper.dropping.com.br"
+DROPPER_LOGIN_URL = f"{DROPPER_BASE_URL}/login"
+DROPPER_PRODUCTS_URL = f"{DROPPER_BASE_URL}/cliente/produtos"
+DROPPER_PRODUCT_URL = f"{DROPPER_BASE_URL}/cliente/produtos/{{pid}}"
+
+#: pasta dos arquivos gerados (mesma pasta da planilha do JohnDrop)
+EXPORT_DIR = Path(__file__).parent / "exports"
+
+#: pausa entre um produto e outro (segundos) — não irritar o site
+DELAY_BETWEEN_PRODUCTS_S = float(os.environ.get("DROPPER_PAGE_DELAY", "1.0"))
+
+#: navegador visível (foi o que funcionou); DROPPER_HEADLESS=1 esconde a janela
+_HEADLESS = os.environ.get("DROPPER_HEADLESS", "0").strip() in ("1", "true", "True")
+
+#: estado da geração atual (independente do robô JohnDrop)
+STATE: dict = {
+    "file": None,       # nome do arquivo gerado
+    "test_file": False, # veio de um modo teste?
+    "rows": 0,
+    "products": 0,
+    "failing": [],      # produtos que não entraram na planilha
+}
 
 
 async def _save_credentials(username: str, password: str):
@@ -211,372 +244,127 @@ async def _playwright_available() -> bool:
         return False
 
 
-async def _safe_enrich_bling(sku: str, cleaned_title: str, raw_description: str,
-                              johndrop_id: Optional[str] = None, cost: Optional[float] = None,
-                              images: Optional[list] = None) -> None:
-    """Run Bling enrichment in background — never raises, just logs."""
-    try:
-        import bling_enrichment
-        await bling_enrichment.enrich_product_by_sku(
-            sku, cleaned_title, raw_description,
-            johndrop_id=johndrop_id, cost=cost, images=images,
-        )
-    except Exception as e:
-        msg = str(e)
-        await add_log("error", f"Bling enrichment background falhou para {sku}: {msg}")
-        if "Budget has been exceeded" in msg or "budget" in msg.lower():
-            robot.message = (
-                "Saldo da IA esgotado. Recarregue sua chave e use 'Enriquecer em Lote' "
-                "para reprocessar."
-            )
-            robot.llm_budget_exhausted = True
-
-
-async def run_bot(max_products: int = 10, dry_run: bool = True):
-    """Main bot loop. Set robot.state during execution."""
-    robot.reset()
-    robot.state = "running"
-    robot.started_at = datetime.now(timezone.utc)
-    await add_log("info", f"Robô Dropper iniciado (max={max_products}, dry_run={dry_run})")
-
-    creds = await _get_credentials()
-    if not creds:
-        robot.state = "error"
-        robot.message = "Credenciais Dropper não configuradas"
-        robot.finished_at = datetime.now(timezone.utc)
-        await add_log("error", "Credenciais Dropper ausentes. Configure em Configurações.")
-        return
-
-    if not await _playwright_available():
-        robot.state = "error"
-        robot.message = "Playwright/Chromium não instalado no servidor"
-        robot.finished_at = datetime.now(timezone.utc)
-        await add_log(
-            "error",
-            "Playwright não está instalado. Modo MOCKED ativo — gerando títulos sem cadastrar.",
-        )
-        await _run_mock(max_products)
-        return
-
-    try:
-        await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
-    except Exception as e:
-        await add_log("error", f"Playwright falhou ({str(e)[:160]}) — caindo para modo MOCKED")
-        try:
-            await _run_mock(max_products)
-        except Exception as e2:
-            robot.state = "error"
-            robot.message = str(e2)
-            await add_log("error", f"Erro no fallback MOCKED: {e2}")
-    finally:
-        robot.finished_at = datetime.now(timezone.utc)
-        if robot.state == "running":
-            robot.state = "idle"
-
-
-async def _run_mock(max_products: int):
-    """MOCKED execution path when Playwright is unavailable."""
-    samples = [
-        ("Caneta Touch Screen Stylus Universal Para Tablet e Celular XLS B125 / A-P18", 21.99),
-        ("(KA-1369 (4X AAA)) Carregador de Pilhas com LED + 04 Pilhas AAA Recarregáveis Kapbom KA-1369", 29.49),
-        ("(KA-S079) Câmera Segurança Babá Eletrônica Wi-fi 360° Kapbom KA-S079", 64.99),
-    ]
-    for i, (raw, cost) in enumerate(samples[:max_products]):
-        if robot.stop_flag:
-            await add_log("warning", "Robô interrompido pelo usuário")
-            break
-        robot.current_product = raw[:60]
-        robot.processed += 1
-        result = clean_title(raw)
-        price = await lookup_price(cost)
-        if not price.found:
-            robot.failed += 1
-            await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw)
-            continue
-        await add_log(
-            "success",
-            f"[MOCKED] Pronto para cadastrar: {result['cleaned']} | Preço: {price.sale_price_int}",
-            raw_title=raw,
-            cleaned_title=result["cleaned"],
-            sale_price=price.sale_price_int,
-        )
-        robot.success += 1
-        await asyncio.sleep(0.5)
-    robot.state = "idle"
-
-
-CARD_SELECTOR = (
-    'a[href*="/dashboard/product/createv2/"], '
-    'a:has-text("Cadastrar Produto"), '
-    'button:has-text("Cadastrar Produto")'
-)
+# --------------------------------------------------------------------------- #
+# Login e catálogo
+# --------------------------------------------------------------------------- #
 
 
 async def _login_dropper(page, username: str, password: str) -> bool:
-    """Login on Dropper. Returns True on success."""
+    """Login no Dropper. Devolve True quando sai da tela de /login."""
     await add_log("info", "Abrindo página de login Dropper...")
-    await page.goto(DROPPER_LOGIN_URL, wait_until="networkidle", timeout=60000)
-    await page.fill('input[type="email"], input[name="email"]', username)
-    await page.fill('input[type="password"], input[name="password"]', password)
-    async with page.expect_navigation(wait_until="networkidle", timeout=60000):
-        await page.click('button[type="submit"]')
-    if "login" in page.url.lower():
-        await add_log("error", "Falha no login Dropper — verifique credenciais")
-        return False
-    await add_log("success", "Login Dropper OK")
-    return True
-
-
-async def _open_catalog(page) -> None:
-    """Open catalog page, apply filter 'Todos que eu não cadastrei'."""
-    last_err = None
-    for attempt in range(3):
-        try:
-            await page.goto(DROPPER_CATALOG_BASE_URL, wait_until="domcontentloaded", timeout=60000)
-            last_err = None
-            break
-        except Exception as e:
-            last_err = e
-            msg = str(e)
-            if "ERR_ABORTED" in msg or "ERR_TIMED_OUT" in msg:
-                await add_log("info", f"Catálogo: nav aborted, retry {attempt + 1}/3")
-                await page.wait_for_timeout(2500)
-                continue
-            raise
-    if last_err:
-        raise last_err
-
-    await add_log("info", "Acessando catálogo Dropper...")
-
-    applied_via_ui = False
     try:
-        selects = await page.query_selector_all("select")
-        for sel in selects:
-            options_text = await sel.evaluate(
-                "el => Array.from(el.options).map(o => o.textContent).join('||')"
-            )
-            if options_text and ("não cadastrei" in options_text.lower() or "sem integração" in options_text.lower()):
-                opt_value = await sel.evaluate(
-                    "el => { const o = Array.from(el.options).find(x => { const t = (x.textContent || '').toLowerCase(); return t.includes('não cadastrei') || t.includes('sem integração'); }); return o ? o.value : null; }"
-                )
-                if opt_value is not None:
-                    await sel.select_option(value=opt_value)
-                    await add_log("info", "Filtro 'não cadastrei / sem integração' selecionado")
-                    applied_via_ui = True
-                break
-        if applied_via_ui:
-            search_btn = await page.query_selector(
-                'button[type="submit"], button:has(i.fa-search), button:has(svg.lucide-search)'
-            )
-            if search_btn:
-                await search_btn.click()
-                await page.wait_for_load_state("networkidle", timeout=30000)
-                await add_log("info", "Botão de busca clicado")
+        await page.goto(DROPPER_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
     except Exception as e:
-        await add_log("warning", f"Falha ao aplicar filtro via UI ({str(e)[:120]}). Usando URL.")
-
-    if not applied_via_ui:
-        await page.goto(DROPPER_CATALOG_URL, wait_until="networkidle", timeout=60000)
-
+        await add_log("error", f"Não abriu a página de login: {str(e)[:160]}")
+        return False
+    await page.wait_for_timeout(1500)
     try:
-        await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+        await page.fill('input[type="email"], input[name="email"]', username)
+        await page.fill('input[type="password"], input[name="password"]', password)
+    except Exception as e:
+        await add_log("error", f"Campos de login não encontrados: {str(e)[:160]}")
+        return False
+    try:
+        await page.click('button[type="submit"]')
     except Exception:
-        await add_log("warning", "Selector de produtos não apareceu em 15s — sem produtos pendentes ou layout mudou")
+        try:
+            await page.keyboard.press("Enter")
+        except Exception:
+            await add_log("error", "Não consegui enviar o formulário de login")
+            return False
 
-
-async def _select_integration(page) -> bool:
-    """Click the TotyShop-Bling integration card on the product create page."""
-    try:
-        loc = page.locator(f'text="{INTEGRATION_NAME}"').first
-        if await loc.count() > 0:
-            await loc.click()
-            await page.wait_for_timeout(500)
+    # SPA: espera a URL sair de /login (sem expect_navigation, que dá timeout)
+    for _ in range(40):
+        if "login" not in (page.url or "").lower():
+            await add_log("success", "Login Dropper OK")
             return True
-    except Exception:
-        pass
-    try:
-        clicked = await page.evaluate(
-            f"""
-            () => {{
-                const els = Array.from(document.querySelectorAll('div, label, button, span'));
-                const target = els.find(e =>
-                    (e.innerText || '').trim() === '{INTEGRATION_NAME}'
-                );
-                if (target) {{
-                    (target.closest('label') || target).click();
-                    return true;
-                }}
-                return false;
-            }}
-            """
-        )
-        if clicked:
-            await page.wait_for_timeout(500)
-            return True
-    except Exception:
-        pass
-    await add_log("warning", f"Não encontrei o botão da integração '{INTEGRATION_NAME}'")
+        await page.wait_for_timeout(1000)
+    await add_log("error", "Falha no login Dropper — a página continuou em /login")
     return False
 
 
-async def _clean_sku_field(page) -> Optional[str]:
-    """Read SKU field, strip non-alphanumeric (except hyphen) AND descriptive suffixes."""
-    sku_input = await page.query_selector('input[name="sku"], input#sku, input[placeholder*="Sku"], input[placeholder*="SKU"]')
-    if not sku_input:
+async def _open_products_page(page) -> None:
+    """Abre a lista de produtos do Dropper."""
+    for attempt in range(3):
+        try:
+            await page.goto(DROPPER_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(2500)
+            return
+        except Exception as e:
+            if attempt == 2:
+                await add_log("warning", f"Catálogo do Dropper com problema: {str(e)[:140]}")
+            else:
+                await page.wait_for_timeout(2000)
+
+
+def _product_id_from_url(url: str) -> Optional[str]:
+    """``.../cliente/produtos/abc123`` -> ``abc123``."""
+    if not url:
         return None
-    current = (await sku_input.input_value() or "").strip()
-    SUFFIX_RE = re.compile(
-        r"(com\s*tampa|sem\s*tampa|com\s*tampa\.?|c/?tampa|s/?tampa|"
-        r"com\s*alça|sem\s*alça|com\s*nf|sem\s*nf|"
-        r"\bml\b|\bun\b|\bunid\b|\bpcs?\b|\bkit\b)",
-        re.IGNORECASE,
-    )
-    cleaned_text = SUFFIX_RE.sub("", current).strip()
-    cleaned = SKU_ALLOWED_RE.sub("", cleaned_text)
-    cleaned = cleaned.strip("-")
-    if cleaned and cleaned != current:
-        await sku_input.fill(cleaned)
-        await add_log("info", f"SKU limpo: '{current}' → '{cleaned}'")
-    return cleaned or None
+    m = re.search(r"/cliente/produtos/([A-Za-z0-9_-]+)", url)
+    return m.group(1) if m else None
 
 
-async def _fill_sale_price(page, sale_price: int) -> bool:
-    """Fill the 'Preço de Venda' field."""
-    value_str = str(sale_price)
-    handle = await page.evaluate_handle(
-        """
-        () => {
-            const norm = s => (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
-            const target = 'preco de venda';
-            const isVisible = (el) => {
-                if (!el) return false;
-                const r = el.getBoundingClientRect();
-                if (r.width === 0 || r.height === 0) return false;
-                const st = window.getComputedStyle(el);
-                if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
-                return true;
-            };
-            const candidates = [];
-            for (const inp of document.querySelectorAll('input')) {
-                if (norm(inp.placeholder).includes(target)) candidates.push(inp);
-            }
-            const labels = Array.from(document.querySelectorAll('label, span, div, td, th, p'))
-                .filter(el => {
-                    const t = norm(el.innerText || el.textContent || '');
-                    return t === target || (t.includes(target) && t.length < 60);
-                });
-            const findInputNear = (el) => {
-                const found = [];
-                let sib = el.nextElementSibling;
-                for (let i = 0; i < 4 && sib; i++) {
-                    for (const inp of sib.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')) {
-                        const ph = norm(inp.placeholder), nm = norm(inp.name);
-                        if (!ph.includes('custo') && !nm.includes('cost')) found.push(inp);
-                    }
-                    if (sib.tagName === 'INPUT') {
-                        const ph = norm(sib.placeholder);
-                        if (!ph.includes('custo')) found.push(sib);
-                    }
-                    sib = sib.nextElementSibling;
-                }
-                let parent = el.parentElement;
-                for (let i = 0; i < 5 && parent; i++) {
-                    for (const inp of parent.querySelectorAll('input[type="text"], input[type="number"], input:not([type])')) {
-                        const ph = norm(inp.placeholder), nm = norm(inp.name);
-                        if (!ph.includes('custo') && !nm.includes('cost')) found.push(inp);
-                    }
-                    parent = parent.parentElement;
-                }
-                return found;
-            };
-            for (const lbl of labels) candidates.push(...findInputNear(lbl));
-            const seen = new Set();
-            const unique = candidates.filter(c => !seen.has(c) && seen.add(c));
-            const visible = unique.find(isVisible);
-            return visible || unique[0] || null;
-        }
-        """
-    )
-    elem = handle.as_element() if handle else None
-    if not elem:
-        await add_log("error", "Input 'Preço de Venda' não localizado no DOM")
-        return False
-    try:
-        is_visible = False
+async def _collect_product_urls(page, max_products: int) -> List[str]:
+    """Colhe as URLs dos produtos na lista (rolando até parar de aparecer).
+
+    O ID do produto está na URL; assim abrimos cada produto direto, sem clicar
+    em card (clicar dava erro de navegação em SPA).
+    """
+    found: List[str] = []
+    seen: set = set()
+    stagnant = 0
+
+    for _ in range(80):
+        if robot.stop_flag:
+            break
         try:
-            is_visible = await elem.is_visible()
-        except Exception:
-            is_visible = False
-        if not is_visible:
-            await add_log("warning", "Campo 'Preço de Venda' está oculto — tentando expandir/scroll via JS")
-            await page.evaluate(
-                """el => {
-                    el.scrollIntoView({block: 'center'});
-                    let cur = el;
-                    for (let i = 0; i < 6 && cur; i++) {
-                        const s = window.getComputedStyle(cur);
-                        if (s.display === 'none') cur.style.display = 'block';
-                        if (s.visibility === 'hidden') cur.style.visibility = 'visible';
-                        cur = cur.parentElement;
-                    }
-                    el.focus();
-                }""",
-                elem,
+            hrefs = await page.evaluate(
+                """() => Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => a.getAttribute('href') || '')
+                        .filter(h => h.includes('/cliente/produtos/'))"""
             )
-            await page.wait_for_timeout(400)
-        try:
-            await elem.scroll_into_view_if_needed(timeout=5000)
         except Exception:
-            pass
+            hrefs = []
+        for href in hrefs or []:
+            pid = _product_id_from_url(href)
+            if pid and pid not in seen:
+                seen.add(pid)
+                found.append(DROPPER_PRODUCT_URL.format(pid=pid))
+        if max_products and len(found) >= max_products:
+            break
+        before = len(found)
         try:
-            await elem.click(click_count=3, timeout=5000)
+            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(1400)
         except Exception:
-            await elem.focus()
-        await page.keyboard.press("Backspace")
-        for ch in value_str:
-            await page.keyboard.type(ch, delay=40)
-        await page.keyboard.press("Tab")
-        try:
-            final_value = await elem.input_value()
-        except Exception:
-            final_value = ""
-        if not final_value:
-            try:
-                await page.evaluate(
-                    """([el, v]) => {
-                        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                        setter.call(el, v);
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                        el.dispatchEvent(new Event('blur', {bubbles: true}));
-                    }""",
-                    [elem, value_str],
-                )
-                await page.wait_for_timeout(300)
-                final_value = await elem.input_value()
-            except Exception:
-                pass
-        if not final_value:
-            await add_log("warning", f"Preço de Venda parece vazio após digitar ({value_str})")
-            return False
-        await add_log("info", f"Preço de Venda preenchido: '{final_value}' (esperado: {value_str})")
-        return True
-    except Exception as e:
-        await add_log("error", f"Erro ao digitar preço: {e}")
-        return False
+            break
+        stagnant = stagnant + 1 if len(found) == before else 0
+        if stagnant >= 3:
+            break
+
+    if max_products:
+        found = found[:max_products]
+    await add_log("info", f"Produtos encontrados no catálogo: {len(found)}")
+    return found
 
 
-async def _read_product_fields(page) -> Tuple[str, float]:
-    """Read raw title and cost from Dropper product creation form."""
-    raw_title = ""
-    if await page.query_selector('input[name="name"], input#name, input[placeholder*="Nome"]'):
-        raw_title = await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
-    cost = 0.0
-    cost_input = await page.query_selector('input[placeholder*="Custo"], input[name="cost"], input#cost')
-    if cost_input:
-        cost_text = (await cost_input.input_value() or "0").strip()
-        cost = _parse_brl_number(cost_text)
-    return raw_title, cost
+async def _read_page_text(page) -> str:
+    """Texto visível da página do produto (é dele que tudo é lido)."""
+    try:
+        await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(700)
+        await page.evaluate("() => window.scrollTo(0, 0)")
+        await page.wait_for_timeout(300)
+    except Exception:
+        pass
+    try:
+        return await page.inner_text("body")
+    except Exception:
+        try:
+            return await page.evaluate("() => document.body ? document.body.innerText : ''")
+        except Exception:
+            return ""
 
 
 async def _read_product_images(page, quiet: bool = False) -> list:
@@ -667,286 +455,243 @@ async def _read_product_images(page, quiet: bool = False) -> list:
         return []
 
 
-async def _read_product_description(page) -> str:
-    """Read the raw product description from Dropper."""
+async def _read_variations(page) -> list:
+    """Variações (cor/tamanho) da página — ainda NÃO lidas nesta versão.
+
+    O seletor de variações do Dropper não foi mapeado (não apareceu em nenhum
+    print), e chutar aqui geraria linha de variação errada na planilha. Fica
+    desligado; quando o usuário abrir um produto com variação, mapeamos.
+    """
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# Um produto
+# --------------------------------------------------------------------------- #
+
+
+async def _read_one_product(page, url: str, use_ai: bool):
+    """Lê um produto. Devolve ``(rows, origem_desc, produto, limpo)`` ou None."""
     try:
-        desc = await page.evaluate(
-            """
-            () => {
-                const selectors = [
-                    'textarea[name="description"]',
-                    'textarea[name="descricao"]',
-                    'textarea#description',
-                    'textarea[placeholder*="Descrição"]',
-                    'textarea[placeholder*="descricao"]',
-                    '[contenteditable="true"]',
-                ];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const val = el.value || el.innerText || '';
-                        if (val.trim().length > 20) return val.trim();
-                    }
-                }
-                const headers = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,label,div'));
-                const header = headers.find(h => (h.innerText || '').toUpperCase().includes('DESCRIÇÃO DO PRODUTO') || (h.innerText || '').toUpperCase().includes('DESCRICAO'));
-                if (header) {
-                    let p = header.parentElement;
-                    for (let i = 0; i < 4 && p; i++) {
-                        const ta = p.querySelector('textarea, [contenteditable="true"]');
-                        if (ta) return (ta.value || ta.innerText || '').trim();
-                        p = p.parentElement;
-                    }
-                }
-                return '';
-            }
-            """
-        )
-        return desc or ""
-    except Exception:
-        return ""
-
-
-def _parse_brl_number(text: str) -> float:
-    """Parse a price string handling both BR ('21,99' or '1.234,56') and EN ('21.99') formats."""
-    if not text:
-        return 0.0
-    text = text.strip().replace("R$", "").replace(" ", "")
-    if "," in text:
-        text = text.replace(".", "").replace(",", ".")
-    try:
-        return float(text)
-    except Exception:
-        return 0.0
-
-
-async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: str) -> bool:
-    """Click the green 'Criar Produto' button and wait for the post-submit redirect."""
-    try:
-        clicked = False
-        for sel in [
-            'button:has-text("Criar Produto")',
-            'button.btn-success:has-text("Criar")',
-            'button[type="submit"]:has-text("Criar")',
-        ]:
-            btn = await page.query_selector(sel)
-            if btn:
-                await btn.scroll_into_view_if_needed()
-                await btn.click()
-                clicked = True
-                break
-        if not clicked:
-            await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
-            return False
-
-        await page.wait_for_timeout(2500)
-        try:
-            dup_text = await page.evaluate(
-                """() => {
-                    const sels = ['.toast', '.alert-danger', '.swal2-popup', '.notyf__message',
-                                  '[role="alert"]', '.error-message', '.invalid-feedback'];
-                    for (const s of sels) {
-                        const els = document.querySelectorAll(s);
-                        for (const el of els) {
-                            const t = (el.innerText || '').trim();
-                            if (!t) continue;
-                            if (/sku|c[óo]digo|j[áa]\\s+(cadastrad|exist|registrad)|duplicad|conflito/i.test(t)) {
-                                return t.slice(0, 240);
-                            }
-                        }
-                    }
-                    return null;
-                }"""
-            )
-        except Exception:
-            dup_text = None
-        if dup_text:
-            await add_log(
-                "warning",
-                f"SKU já cadastrado/duplicado no Dropper — pulando: {dup_text}",
-                raw_title=raw_title,
-                cleaned_title=cleaned_title,
-            )
-            try:
-                await page.goto(DROPPER_CATALOG_URL, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(1500)
-            except Exception:
-                pass
-            return False
-
-        try:
-            await page.wait_for_function(
-                "() => !window.location.pathname.includes('createv2')",
-                timeout=45000,
-            )
-        except Exception:
-            pass
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=20000)
-        except Exception:
-            pass
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(1500)
-
-        await add_log(
-            "success",
-            f"Cadastrado: {cleaned_title}",
-            raw_title=raw_title,
-            cleaned_title=cleaned_title,
-            sale_price=sale_price,
-        )
-        return True
     except Exception as e:
-        await add_log("error", f"Falha ao submeter: {e}", raw_title=raw_title)
-        return False
+        await add_log("error", f"Não abriu o produto: {str(e)[:140]}")
+        return None
 
+    text = await _read_page_text(page)
+    if not text or len(text) < 40:
+        await add_log("error", "Página do produto sem texto legível")
+        return None
 
-async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
-    """Process the next pending product card. Returns True if a card was found and handled."""
-    buttons = await page.query_selector_all(CARD_SELECTOR)
-    if not buttons:
-        await add_log("info", "Nenhum produto pendente encontrado nesta página")
-        return False
+    images = await _read_product_images(page, quiet=True)
+    product = dropper_reader.parse_product_text(text, url, images=images)
+    if not product.code:
+        product.code = _product_id_from_url(url) or ""
+    if not product.title:
+        await add_log("error", f"Título não encontrado no produto {product.code}")
+        return None
 
-    chosen = None
-    for btn in buttons:
+    variations = await _read_variations(page)
+    if variations:
+        product.variations = dropper_reader.parse_variations(variations)
+
+    sale_price = None
+    if product.cost is None:
+        await add_log("warning", f"{product.code}: custo não encontrado no Dropper")
+    else:
         try:
-            href = await btn.get_attribute("href") or ""
-        except Exception:
-            href = ""
-        if href and href in seen_skus:
-            continue
-        chosen = btn
-        if href:
-            seen_skus.add(href)
-        break
+            price = await lookup_price(product.cost)
+            if price.found:
+                sale_price = price.sale_price_int
+            else:
+                await add_log(
+                    "warning",
+                    f"{product.code}: custo R$ {product.cost:.2f} fora da tabela de preços",
+                )
+        except Exception as e:
+            await add_log("warning", f"{product.code}: falha ao consultar preço ({str(e)[:100]})")
 
-    if chosen is None:
-        await add_log("info", "Não há mais produtos NOVOS nesta página")
-        return False
+    cleaned = clean_title(product.title, preferred_code=product.code)
+    curta, compl, origem = await dropper_descriptions.build_descriptions(
+        cleaned.get("cleaned") or product.title, product.description, use_ai=use_ai
+    )
+
+    rows = sheet.build_rows(
+        product,
+        cleaned_title=cleaned.get("cleaned"),
+        short_description=curta,
+        complementary_description=compl,
+        sale_price=sale_price,
+    )
+    return rows, origem, product, cleaned.get("cleaned") or product.title
+
+
+def _preview_line(product, rows, origem: str) -> str:
+    """Resumo curto de um produto, para o log do modo teste."""
+    v = rows[0].values
+    peso = v.get("Peso líquido (Kg)") or "-"
+    preco = v.get("Preço") or "-"
+    ncm = v.get("NCM") or "SEM NCM"
+    imgs = len([u for u in (v.get("URL Imagens Externas") or "").split(",") if u.strip()])
+    return (
+        f"{v.get('Código', '')} | NCM {ncm} | custo {v.get('Preço de custo') or '-'} "
+        f"→ venda {preco} | peso {peso} kg | {imgs} img | desc: {origem}"
+    )
+
+
+async def _write_output(rows, reports: List[str], dry_run: bool) -> Optional[Path]:
+    """Grava o CSV + o relatório de revisão. Devolve o caminho do CSV."""
+    if not rows:
+        await add_log("warning", "Nenhuma linha para gravar — planilha não gerada")
+        return None
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    prefix = "planilha_bling_TESTE" if dry_run else "planilha_bling"
+    path = EXPORT_DIR / f"{prefix}_{stamp}.csv"
+
+    path = sheet.write_sheet(rows, path)
+
+    stats = sheet.summarize(rows)
+    header = [
+        "RELATÓRIO DE REVISÃO — planilha de importação Bling",
+        f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        "Origem dos dados: produtos lidos no Dropper (nada foi inventado)",
+        "",
+        f"Linhas: {stats['linhas']}  (produtos: {stats['produtos']}, variações: {stats['variacoes']})",
+        f"Sem NCM: {stats['sem_ncm']} · Sem preço: {stats['sem_preco']} · Sem imagem: {stats['sem_imagem']}",
+        "",
+        "=" * 70,
+        "",
+    ]
+    report_path = path.with_name(path.stem + "_revisao.txt")
+    report_path.write_text("\n".join(header) + "\n\n".join(reports), encoding="utf-8")
+
+    STATE["file"] = path.name
+    STATE["test_file"] = dry_run
+    STATE["rows"] = stats["linhas"]
+    STATE["products"] = stats["produtos"]
+    return path
+
+
+def _mock_text(code: str, title: str) -> str:
+    """Texto de exemplo no formato da página real (para o modo sem navegador)."""
+    return (
+        f"{code}\nFERAMENTAS MANUAIS · Classe Bronze\nDisponível\n{title}\n"
+        "SEU CUSTO DE COMPRA\nR$ 190,44\nESTOQUE\n7\n"
+        "Enviado por\nDropping\nMarca\nVONDER\nCategoria\nFERAMENTAS MANUAIS\n"
+        "Unidade\nKIT\nEAN\n2003990403811\nNCM\n82130000\n"
+        "DESCRIÇÃO\nTESOURA MULTIUSO VONDER\n"
+        "Indicada para cortes em geral.\n- Material da lâmina: aço inox\n"
+        "- Comprimento total: 250 mm\n- Peso aproximado do produto: 108 g\n"
+        "- Código Vonder: 30.85.250.000\n"
+    )
+
+
+async def _run_mock(max_products: int, dry_run: bool = True):
+    """Modo sem navegador: exercita o mesmo pipeline com um produto de exemplo."""
+    samples = [
+        ("ProdDPF2589", "Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder"),
+        ("ProdDPF2590", "Jogo de Chaves de Fenda 6 Peças Vonder"),
+    ]
+    rows_all: List[sheet.SheetRow] = []
+    reports: List[str] = []
+    for code, title in (samples[:max_products] if max_products else samples):
+        if robot.stop_flag:
+            break
+        robot.current_product = title[:60]
+        product = dropper_reader.parse_product_text(
+            _mock_text(code, title), url="", images=[f"https://exemplo/{code}-{i}.jpg" for i in range(1, 4)]
+        )
+        sale = None
+        if product.cost is not None:
+            try:
+                price = await lookup_price(product.cost)
+                sale = price.sale_price_int if price.found else None
+            except Exception:
+                sale = None
+        cleaned = clean_title(product.title, preferred_code=product.code)
+        curta, compl, origem = await dropper_descriptions.build_descriptions(
+            cleaned.get("cleaned") or product.title, product.description, use_ai=False
+        )
+        rows = sheet.build_rows(
+            product,
+            cleaned_title=cleaned.get("cleaned"),
+            short_description=curta,
+            complementary_description=compl,
+            sale_price=sale,
+        )
+        rows_all.extend(rows)
+        reports.append(sheet.build_report(rows, product_title=f"[EXEMPLO] {cleaned.get('cleaned')}"))
+        robot.processed += 1
+        robot.success += 1
+        await add_log("info", "[MOCKED] " + _preview_line(product, rows, origem), raw_title=title)
+        await asyncio.sleep(0.3)
+
+    await _write_output(rows_all, reports, dry_run=True)
+    robot.state = "idle"
+
+
+# --------------------------------------------------------------------------- #
+# Orquestração
+# --------------------------------------------------------------------------- #
+
+
+async def run_bot(max_products: int = 10, dry_run: bool = True):
+    """Lê os produtos no Dropper e gera a planilha do Bling."""
+    robot.reset()
+    robot.state = "running"
+    robot.started_at = datetime.now(timezone.utc)
+    STATE.update({"file": None, "test_file": False, "rows": 0, "products": 0, "failing": []})
+    await add_log(
+        "info",
+        f"Robô Dropper iniciado — LER produtos e gerar planilha Bling "
+        f"(produtos={'todos' if not max_products else max_products}, "
+        f"modo={'TESTE' if dry_run else 'GERAR ARQUIVO'})",
+    )
+
+    creds = await _get_credentials()
+    if not creds:
+        robot.state = "error"
+        robot.message = "Credenciais Dropper não configuradas"
+        robot.finished_at = datetime.now(timezone.utc)
+        await add_log("error", "Credenciais Dropper ausentes. Configure em Configurações.")
+        return
+
+    if not await _playwright_available():
+        robot.message = "Playwright/Chromium indisponível — gerando com dados de exemplo"
+        await add_log("warning", "Playwright indisponível — rodando em modo MOCKED (dados de exemplo)")
+        await _run_mock(max_products, dry_run=True)
+        robot.finished_at = datetime.now(timezone.utc)
+        return
 
     try:
-        async with page.expect_navigation(wait_until="networkidle", timeout=60000):
-            await chosen.click()
+        await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
     except Exception as e:
-        await add_log("error", f"Erro ao abrir produto: {e}")
-        robot.failed += 1
-        robot.processed += 1
-        return True
-
-    # 1. Select the TotyShop-Bling integration
-    await _select_integration(page)
-
-    # 2. Read raw title + cost
-    raw_title, cost = await _read_product_fields(page)
-    robot.current_product = raw_title[:60]
-
-    # 2b. Read raw description (used later for Bling enrichment)
-    raw_description = await _read_product_description(page)
-    raw_images = await _read_product_images(page)
-
-    # 3. Clean SKU
-    sku = await _clean_sku_field(page)
-    if sku:
-        seen_skus.add(sku)
-
-    # 4. Lookup sale price
-    price = await lookup_price(cost)
-    if not price.found:
-        await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw_title)
-        robot.failed += 1
-        robot.processed += 1
-        await _open_catalog(page)
-        return True
-
-    # 5. Clean title and fill
-    cleaned = clean_title(raw_title, preferred_code=sku)
-    await page.fill('input[name="name"], input#name', cleaned["cleaned"])
-
-    # 6. Fill sale price
-    price_ok = await _fill_sale_price(page, price.sale_price_int)
-    if not price_ok:
-        await add_log("error", "Não foi possível preencher o campo 'Preço de Venda'", raw_title=raw_title)
-        robot.failed += 1
-        robot.processed += 1
-        await _open_catalog(page)
-        return True
-
-    # 7. Submit (or just log if dry-run)
-    submitted_ok = False
-    if dry_run:
-        await add_log(
-            "info",
-            f"[DRY-RUN] Pronto: {cleaned['cleaned']} | SKU: {sku} | Preço: {price.sale_price_int}",
-            raw_title=raw_title,
-            cleaned_title=cleaned["cleaned"],
-            sale_price=price.sale_price_int,
-        )
-        robot.success += 1
-        submitted_ok = True
-    elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
-        robot.success += 1
-        submitted_ok = True
-        # Extract Dropper product ID from the URL (.../createv2/<id>) BEFORE leaving the page
-        dropper_id = None
-        try:
-            m = re.search(r"/createv2/(\d+)", page.url or "")
-            if m:
-                dropper_id = m.group(1)
-        except Exception:
-            dropper_id = None
-        # ARQUITETURA: o robô Dropper SÓ cadastra. NÃO dispara enriquecimento
-        # imediatamente — Dropper sincroniza com Bling de forma assíncrona.
-        # Salvamos o SKU em `enrich_pending` e o worker detecta quando está completo.
-        if sku:
-            try:
-                from db import db as _db
-                from datetime import datetime, timezone
-                await _db.enrich_pending.update_one(
-                    {"sku": sku},
-                    {"$set": {
-                        "sku": sku,
-                        "raw_title": cleaned["cleaned"],
-                        "raw_description": raw_description,
-                        "dropper_id": dropper_id,
-                        "cost": cost,
-                        "images": raw_images,
-                        "source": "dropper",
-                        "status": "pending",
-                        "queued_at": datetime.now(timezone.utc).isoformat(),
-                        "attempts": 0,
-                    }},
-                    upsert=True,
-                )
-                await add_log(
-                    "info",
-                    f"Produto {sku} cadastrado no Dropper. Aguardando sync→Bling. "
-                    "Worker vai enriquecer automaticamente quando estiver completo.",
-                )
-            except Exception as e:
-                await add_log("warning", f"Falhou ao agendar enriquecimento de {sku}: {e}")
-    else:
-        robot.failed += 1
-
-    robot.processed += 1
-
-    if submitted_ok and not dry_run:
-        robot.current_product = f"⏸ Aguardando {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo..."
-        await add_log("info", f"Pausa de {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo cadastro")
-        await asyncio.sleep(DELAY_BETWEEN_PRODUCTS_S)
-
-    await _open_catalog(page)
-    await asyncio.sleep(1.0)
-    return True
+        robot.state = "error"
+        robot.message = f"Falha na leitura do Dropper: {str(e)[:160]}"
+        await add_log("error", f"Playwright falhou: {str(e)[:200]}")
+    finally:
+        robot.finished_at = datetime.now(timezone.utc)
+        if robot.state == "running":
+            robot.state = "idle"
 
 
 async def _run_playwright(username: str, password: str, max_products: int, dry_run: bool):
-    """Playwright automation orchestrator against dropper.dropping.com.br"""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = await pw.chromium.launch(
+            headless=_HEADLESS,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
         context = await browser.new_context(viewport={"width": 1366, "height": 900})
         page = await context.new_page()
+
+        rows_all: List[sheet.SheetRow] = []
+        reports: List[str] = []
+        use_ai = True
+        ai_misses = 0
 
         try:
             if not await _login_dropper(page, username, password):
@@ -954,30 +699,75 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                 robot.message = "Login falhou"
                 return
 
-            await _open_catalog(page)
+            await _open_products_page(page)
+            urls = await _collect_product_urls(page, max_products)
+            if not urls:
+                robot.message = "Nenhum produto encontrado no catálogo do Dropper"
+                await add_log("error", "Nenhum produto encontrado em /cliente/produtos")
+                return
 
-            seen_skus: set = set()
-            processed_count = 0
-            while processed_count < max_products:
+            for index, url in enumerate(urls, start=1):
                 if robot.stop_flag:
-                    await add_log("warning", "Robô interrompido")
+                    await add_log("warning", "Robô interrompido pelo usuário")
                     break
-                if robot.llm_budget_exhausted:
-                    await add_log(
-                        "warning",
-                        "🛑 Saldo da IA esgotado — robô parado para evitar gastos extras.",
-                    )
-                    break
-                if not await _process_one_product(page, dry_run, seen_skus):
-                    break
-                processed_count += 1
+                pid = _product_id_from_url(url) or ""
+                robot.current_product = f"[{index}/{len(urls)}] {pid}"
+                result = await _read_one_product(page, url, use_ai)
+                robot.processed += 1
+                if result is None:
+                    robot.failed += 1
+                    STATE["failing"].append(pid)
+                    continue
+
+                rows, origem, product, limpo = result
+                rows_all.extend(rows)
+                reports.append(sheet.build_report(rows, product_title=limpo))
+                robot.success += 1
+
+                if origem != "ia":
+                    ai_misses += 1
+                    if use_ai and ai_misses >= 2:
+                        use_ai = False
+                        await add_log(
+                            "warning",
+                            "IA de texto indisponível (chave/saldo). Seguindo com a descrição "
+                            "do fornecedor — o relatório marca esses produtos.",
+                        )
+                else:
+                    ai_misses = 0
+
+                await add_log("info", f"[{index}/{len(urls)}] {_preview_line(product, rows, origem)}")
+                await asyncio.sleep(DELAY_BETWEEN_PRODUCTS_S)
+
+            path = await _write_output(rows_all, reports, dry_run)
+            if path:
+                stats = sheet.summarize(rows_all)
+                robot.message = (
+                    f"Planilha gerada: {path.name} — {stats['produtos']} produtos, "
+                    f"{stats['linhas']} linhas"
+                )
+                await add_log(
+                    "success",
+                    f"Planilha {'de TESTE ' if dry_run else ''}gerada → {path.name} "
+                    f"({stats['produtos']} produtos, {stats['linhas']} linhas)",
+                )
+                await add_log(
+                    "info",
+                    f"Alertas: sem NCM {stats['sem_ncm']} · sem preço {stats['sem_preco']} · "
+                    f"sem imagem {stats['sem_imagem']} · arquivo em {EXPORT_DIR}",
+                )
+                await add_log("info", f"Relatório de revisão: {path.stem}_revisao.txt")
         finally:
-            await browser.close()
+            try:
+                await browser.close()
+            except Exception:
+                pass
             if robot.state == "running":
                 robot.state = "idle"
             await add_log(
                 "info",
-                f"Robô Dropper finalizado. Processados={robot.processed} Sucesso={robot.success} Falhas={robot.failed}",
+                f"Robô Dropper finalizado. Lidos={robot.processed} "
+                f"OK={robot.success} Falhas={robot.failed}",
             )
 
 
@@ -998,3 +788,160 @@ async def save_dropper_credentials(username: str, password: str):
 
 async def get_dropper_credentials():
     return await _get_credentials()
+
+
+# --------------------------------------------------------------------------- #
+# Arquivos gerados (para a tela do robô)
+# --------------------------------------------------------------------------- #
+
+
+def _sheet_files() -> List[Path]:
+    """Planilhas geradas, mais nova primeiro."""
+    if not EXPORT_DIR.exists():
+        return []
+    # ordena por data de modificação e, no empate, pelo nome (que já tem o
+    # carimbo AAAAmmdd-HHMM) — assim a "mais recente" é sempre a esperada
+    return sorted(
+        (p for p in EXPORT_DIR.glob("planilha_bling_*.csv")),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
+
+
+def latest_sheet() -> Optional[Path]:
+    files = _sheet_files()
+    return files[0] if files else None
+
+
+def resolve_sheet(name: Optional[str] = None) -> Optional[Path]:
+    """Acha a planilha pelo nome (ou a mais recente), sem sair da pasta."""
+    if not name:
+        return latest_sheet()
+    safe = os.path.basename(name)
+    path = EXPORT_DIR / safe
+    return path if path.is_file() else None
+
+
+def sheet_status() -> dict:
+    """Estado da geração para a tela: arquivo, contagens, relatório."""
+    path = latest_sheet()
+    if not path:
+        return {"file": None, "report": None, "size": 0, "modified": None,
+                "products": 0, "rows": 0}
+    report = path.with_name(path.stem + "_revisao.txt")
+    return {
+        "file": path.name,
+        "report": report.name if report.is_file() else None,
+        "size": path.stat().st_size,
+        "modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+        "products": STATE.get("products") or 0,
+        "rows": STATE.get("rows") or 0,
+        "is_test": path.name.startswith("planilha_bling_TESTE"),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Diagnóstico (uma execução, para conferir a leitura no site real)
+# --------------------------------------------------------------------------- #
+
+_DIAG_JS = """
+() => {
+    const anchors = Array.from(document.querySelectorAll('a[href]'));
+    const hrefs = anchors.map(a => a.getAttribute('href') || '');
+    const produtos = hrefs.filter(h => h.includes('/cliente/produtos/'));
+    return {
+        total_links: anchors.length,
+        links_produto: produtos.length,
+        amostra_produto: produtos.slice(0, 8),
+        amostra_links: hrefs.filter(h => h && h !== '#').slice(0, 25),
+    };
+}
+"""
+
+
+async def diagnostico_dropper(max_chars: int = 3500) -> str:
+    """Abre o catálogo e o primeiro produto e devolve um relatório em texto.
+
+    Serve para conferir, numa única execução, se o robô está achando as URLs
+    dos produtos e se o texto lido da página do produto tem todos os campos.
+    """
+    creds = await _get_credentials()
+    if not creds:
+        return "Credenciais do Dropper não configuradas (Configurações)."
+    if not await _playwright_available():
+        return "Playwright/Chromium indisponível no servidor."
+
+    from playwright.async_api import async_playwright
+
+    linhas: List[str] = ["DIAGNÓSTICO DO ROBÔ DROPPER", "=" * 40]
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=_HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = await browser.new_context(viewport={"width": 1366, "height": 900})
+        page = await context.new_page()
+        try:
+            if not await _login_dropper(page, creds["username"], creds["password"]):
+                linhas.append("FALHA NO LOGIN — a página continuou em /login.")
+                return "\n".join(linhas)
+
+            await _open_products_page(page)
+            linhas.append(f"Catálogo aberto em: {page.url}")
+            try:
+                info = await page.evaluate(_DIAG_JS)
+            except Exception as e:
+                info = {}
+                linhas.append(f"Falha ao inspecionar a página: {str(e)[:120]}")
+            linhas.append(f"Links na página: {info.get('total_links', 0)}")
+            linhas.append(f"Links de produto (/cliente/produtos/): {info.get('links_produto', 0)}")
+            amostra = info.get("amostra_produto") or []
+            if amostra:
+                linhas.append("Exemplos de link de produto:")
+                linhas.extend(f"  - {a}" for a in amostra)
+            else:
+                linhas.append("Nenhum link de produto. Primeiros links da página:")
+                linhas.extend(f"  - {a}" for a in (info.get("amostra_links") or [])[:15])
+
+            urls = await _collect_product_urls(page, 1)
+            if not urls:
+                linhas.append("")
+                linhas.append("NÃO ENCONTREI PRODUTO PARA ABRIR — me mande este relatório.")
+                return "\n".join(linhas)
+
+            linhas.append("")
+            linhas.append(f"ABRINDO PRODUTO: {urls[0]}")
+            try:
+                await page.goto(urls[0], wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                linhas.append(f"Falha ao abrir o produto: {str(e)[:140]}")
+                return "\n".join(linhas)
+
+            texto = await _read_page_text(page)
+            imagens = await _read_product_images(page, quiet=True)
+            produto = dropper_reader.parse_product_text(texto, urls[0], images=imagens)
+            linhas.append(f"Imagens encontradas: {len(imagens)}")
+            linhas.append("")
+            linhas.append("CAMPOS INTERPRETADOS PELO ROBÔ")
+            linhas.append(f"  código:    {produto.code!r}")
+            linhas.append(f"  título:    {produto.title!r}")
+            linhas.append(f"  custo:     {produto.cost!r}")
+            linhas.append(f"  estoque:   {produto.stock!r}")
+            linhas.append(f"  marca:     {produto.brand!r}")
+            linhas.append(f"  categoria: {produto.category!r}")
+            linhas.append(f"  unidade:   {produto.unit!r}")
+            linhas.append(f"  EAN:       {produto.ean!r}")
+            linhas.append(f"  NCM:       {produto.ncm!r}")
+            linhas.append(f"  fornecedor:{produto.supplier!r}")
+            linhas.append(f"  descrição: {len(produto.description)} caracteres")
+            linhas.append("")
+            linhas.append("TEXTO BRUTO DA PÁGINA (para conferência)")
+            linhas.append("-" * 40)
+            linhas.append((texto or "")[:max_chars])
+            return "\n".join(linhas)
+        except Exception as e:
+            linhas.append(f"Erro no diagnóstico: {str(e)[:200]}")
+            return "\n".join(linhas)
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass

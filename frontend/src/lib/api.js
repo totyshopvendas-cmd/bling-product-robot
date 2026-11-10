@@ -64,6 +64,13 @@ export const endpoints = {
   dropperStop: () => api.post("/dropper/stop"),
   dropperStatus: () => api.get("/dropper/status"),
   dropperLogs: (limit = 100) => api.get(`/dropper/logs?limit=${limit}`),
+  dropperSheet: () => api.get("/dropper/sheet"),
+  dropperSheetDownload: (name) =>
+    api.get("/dropper/sheet/download", {
+      params: name ? { name } : {},
+      responseType: "blob",
+      timeout: 120000,
+    }),
 
   robotStart: (max_products, dry_run) =>
     api.post("/robot/start", { max_products, dry_run }),

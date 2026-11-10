@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
-import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2 } from "lucide-react";
+import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2, FileSpreadsheet, FileText, Stethoscope } from "lucide-react";
 import { toast } from "sonner";
 
 const LOG_DOT_COLORS = {
@@ -27,19 +27,25 @@ export default function DropperRobotPage() {
   const [logs, setLogs] = useState([]);
   const [chromium, setChromium] = useState(null);
   const [installing, setInstalling] = useState(false);
+  const [sheetInfo, setSheetInfo] = useState(null);
+  const [downloading, setDownloading] = useState(null);
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
 
   const [ready, setReady] = useState(null);
 
   const tick = useCallback(async () => {
     try {
-      const [{ data: s }, { data: l }, { data: c }] = await Promise.all([
+      const [{ data: s }, { data: l }, { data: c }, { data: sh }] = await Promise.all([
         endpoints.dropperStatus(),
         endpoints.dropperLogs(50),
         api.get("/system/chromium-status"),
+        api.get("/dropper/sheet"),
       ]);
       setStatus(s);
       setLogs(l);
       setChromium(c);
+      setSheetInfo(sh);
     } catch (err) {
       logger.error("dropper status:", err);
       setChromium((prev) => prev || { installed: false });
@@ -87,13 +93,48 @@ export default function DropperRobotPage() {
     }
   };
 
+  const runDiagnostico = async () => {
+    setDiagLoading(true);
+    try {
+      const { data } = await api.get("/dropper/diagnostico", { timeout: 180000 });
+      setDiag(data.report);
+      toast.success("Diagnóstico concluído");
+    } catch (e) {
+      logger.error("dropper diagnostico:", e);
+      toast.error(e?.response?.data?.detail || "Falha no diagnóstico");
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
+  const downloadSheet = async (name) => {
+    setDownloading(name || "latest");
+    try {
+      const res = await endpoints.dropperSheetDownload(name);
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name || sheetInfo?.file || "planilha_bling.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      logger.error("dropper sheet download:", e);
+      toast.error("Não foi possível baixar o arquivo");
+    } finally {
+      setDownloading(null);
+    }
+  };
+
   const start = async () => {
-    if (!dryRun && chromium && !chromium.installed) {
+    if (chromium && !chromium.installed) {
       toast.error("Chromium não está pronto — clique em 'Instalar Chromium' primeiro");
       return;
     }
     try {
-      await endpoints.dropperStart(parseInt(maxProducts, 10) || 5, dryRun);
+      const limite = parseInt(maxProducts, 10);
+      await endpoints.dropperStart(Number.isFinite(limite) ? limite : 5, dryRun);
       toast.success("Robô Dropper iniciado");
       tick();
     } catch (e) {
@@ -114,25 +155,34 @@ export default function DropperRobotPage() {
     <div className="space-y-6">
       <div>
         <div className="label-overline mb-1">Automação Dropper</div>
-        <h1 className="font-display text-3xl font-bold tracking-tighter">Robô de Cadastro — Dropper</h1>
+        <h1 className="font-display text-3xl font-bold tracking-tighter">Robô Dropper → Planilha Bling</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-          O robô faz login na <strong>Dropper (dropper.dropping.com.br)</strong>, abre o catálogo,
-          limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>.
-          Depois, o mesmo enriquecimento do Bling (descrição, marca, variações) é aplicado automaticamente.
+          O robô entra na <strong>Dropper (dropper.dropping.com.br)</strong>, abre cada produto do catálogo
+          e <strong>lê tudo que está lá</strong>: título, descrição, imagens, código, custo, NCM, EAN,
+          marca, categoria, unidade e estoque. Depois busca o preço de venda na tabela, gera as descrições
+          e monta a <strong>planilha de importação do Bling</strong> — no formato de 59 colunas, pronta
+          para importar.
+        </p>
+        <p className="text-xs text-zinc-600 mt-2 max-w-3xl">
+          O robô <strong>não cadastra nada no Dropper</strong> e <strong>não usa a API do Bling</strong>.
+          Nada é inventado: campo que não existe no produto fica vazio e aparece no relatório de revisão.
         </p>
         <p className="text-xs text-amber-700 mt-2 max-w-3xl">
-          ⚠️ Por padrão começa em <strong>MODO TESTE (Dry-Run)</strong> — só simula sem cadastrar.
-          Desmarque a caixa para cadastrar de verdade. Usuário e senha da Dropper são digitados em{" "}
-          <strong>Configurações</strong> (nunca neste chat).
+          ℹ️ Em <strong>MODO TESTE</strong> a planilha é gerada com o nome{" "}
+          <code>planilha_bling_TESTE_...</code> — mesmo conteúdo, só marcada como teste, sem nada
+          enviado para o Dropper. Desmarque para gerar o arquivo "oficial". Usuário e senha da Dropper
+          são digitados em <strong>Configurações</strong> (nunca neste chat).
         </p>
       </div>
 
       <div className="border border-border bg-white p-4 text-sm space-y-1">
-        <div className="label-overline mb-2">Antes de cadastrar de verdade</div>
+        <div className="label-overline mb-2">Antes de gerar a planilha</div>
         <p>{ready?.dropper ? "✓" : "✗"} Dropper (e-mail/senha em Configurações)</p>
         <p>{ready?.pricing_rows > 0 ? "✓" : "✗"} Tabela de preços ({ready?.pricing_rows?.toLocaleString?.("pt-BR") || 0} linhas)</p>
         <p>{ready?.chromium ? "✓" : "✗"} Chromium do robô</p>
-        <p>{ready?.bling ? "✓" : "✗"} Bling conectado (enriquecimento e estoque)</p>
+        <p className="text-xs text-muted-foreground pt-1">
+          Bling conectado não é necessário nesta etapa (a planilha é importada manualmente no Bling).
+        </p>
       </div>
 
       {chromium && (
@@ -163,7 +213,7 @@ export default function DropperRobotPage() {
               <p className="text-xs leading-relaxed">
                 {chromiumReady
                   ? chromium.path
-                  : "Necessário para o modo REAL do robô Dropper. Roda invisível no servidor — não abre janela no seu PC."}
+                  : "Necessário para o robô ler as páginas do Dropper. Roda invisível no servidor — não abre janela no seu PC."}
               </p>
             </div>
           </div>
@@ -206,7 +256,7 @@ export default function DropperRobotPage() {
 
           <div className="grid grid-cols-3 border border-border divide-x divide-border">
             <div className="p-4">
-              <div className="label-overline">Processados</div>
+              <div className="label-overline">Produtos lidos</div>
               <div className="font-display text-2xl font-bold" data-testid="counter-processed">{status?.processed || 0}</div>
             </div>
             <div className="p-4">
@@ -230,12 +280,12 @@ export default function DropperRobotPage() {
         <div className="border border-border bg-white p-6 space-y-4">
           <div className="label-overline">Controles</div>
           <div>
-            <label className="text-xs text-muted-foreground">Máx. produtos por execução</label>
+            <label className="text-xs text-muted-foreground">Máx. produtos por execução (0 = todos)</label>
             <input
               data-testid="max-products-input"
               type="number"
-              min={1}
-              max={100}
+              min={0}
+              max={2000}
               value={maxProducts}
               onChange={(e) => setMaxProducts(e.target.value)}
               className="w-full text-sm border border-border rounded-sm px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
@@ -254,11 +304,11 @@ export default function DropperRobotPage() {
               className="h-4 w-4 mt-0.5"
             />
             <div className="flex-1">
-              <div className="font-semibold">{dryRun ? "🟡 MODO TESTE (Dry-Run)" : "🟢 MODO REAL"}</div>
+              <div className="font-semibold">{dryRun ? "🟡 MODO TESTE (arquivo marcado como teste)" : "🟢 GERAR ARQUIVO OFICIAL"}</div>
               <div className="text-xs mt-1 text-zinc-700">
                 {dryRun
-                  ? "Robô SIMULA o cadastro sem clicar 'Criar Produto' — NADA será salvo no Dropper."
-                  : "Robô CADASTRA de verdade no Dropper. Produtos aparecerão em 'Meus Produtos'."}
+                  ? "Lê os produtos e gera a planilha com o nome ..._TESTE_..., sem enviar nada para o Dropper."
+                  : "Lê os produtos e gera a planilha oficial para importar no Bling. Nada é enviado para o Dropper."}
               </div>
             </div>
           </label>
@@ -273,7 +323,7 @@ export default function DropperRobotPage() {
               }`}
             >
               <Play className="h-4 w-4" />
-              {dryRun ? "Iniciar Robô Dropper (Teste)" : "Iniciar Robô Dropper (REAL)"}
+              {dryRun ? "Ler Dropper (MODO TESTE)" : "Ler Dropper e gerar planilha"}
             </button>
             <button
               data-testid="stop-dropper-btn"
@@ -284,6 +334,15 @@ export default function DropperRobotPage() {
               <Square className="h-4 w-4" /> Parar
             </button>
             <button
+              data-testid="diagnostico-btn"
+              onClick={runDiagnostico}
+              disabled={diagLoading || status?.state === "running"}
+              className="w-full border border-border text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-zinc-50 disabled:opacity-50 inline-flex items-center justify-center gap-2"
+            >
+              {diagLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Stethoscope className="h-4 w-4" />}
+              {diagLoading ? "Lendo o site…" : "Diagnóstico (o robô consegue ler?)"}
+            </button>
+            <button
               data-testid="refresh-btn"
               onClick={tick}
               className="w-full text-xs text-muted-foreground hover:text-foreground inline-flex items-center justify-center gap-1.5 py-1"
@@ -292,6 +351,96 @@ export default function DropperRobotPage() {
             </button>
           </div>
         </div>
+      </div>
+
+      {diag && (
+        <div className="border border-border bg-white" data-testid="diagnostico-box">
+          <div className="px-6 py-3 border-b border-border flex items-center justify-between">
+            <span className="label-overline">Resultado do diagnóstico</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  navigator.clipboard?.writeText(diag);
+                  toast.success("Copiado — cole aqui no chat");
+                }}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Copiar
+              </button>
+              <button onClick={() => setDiag(null)} className="text-xs text-muted-foreground hover:text-foreground">
+                Fechar
+              </button>
+            </div>
+          </div>
+          <pre className="px-6 py-4 text-[11px] leading-relaxed overflow-x-auto max-h-[420px] overflow-y-auto whitespace-pre-wrap font-mono">
+            {diag}
+          </pre>
+        </div>
+      )}
+
+      <div className="border border-border bg-white" data-testid="sheet-box">
+        <div className="px-6 py-3 border-b border-border flex items-center justify-between">
+          <span className="label-overline">Planilha gerada</span>
+          {sheetInfo?.modified && (
+            <span className="text-xs text-muted-foreground">
+              {new Date(sheetInfo.modified).toLocaleString("pt-BR")}
+            </span>
+          )}
+        </div>
+        {!sheetInfo?.file ? (
+          <div className="px-6 py-10 text-sm text-muted-foreground text-center">
+            Nenhuma planilha gerada ainda. Clique em <strong>Ler Dropper</strong> para criar a primeira.
+          </div>
+        ) : (
+          <div className="px-6 py-4 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span className="font-mono text-sm truncate" data-testid="sheet-file">
+                    {sheetInfo.file}
+                  </span>
+                  {sheetInfo.is_test && (
+                    <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 border border-amber-400 bg-amber-50 text-amber-700 rounded-sm">
+                      teste
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {sheetInfo.products > 0 && `${sheetInfo.products} produtos · `}
+                  {sheetInfo.rows > 0 && `${sheetInfo.rows} linhas · `}
+                  {(sheetInfo.size / 1024).toFixed(1)} KB
+                </p>
+              </div>
+              <button
+                data-testid="download-sheet-btn"
+                onClick={() => downloadSheet(sheetInfo.file)}
+                disabled={downloading === sheetInfo.file}
+                className="text-sm font-medium px-4 py-2 rounded-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-2 shrink-0"
+              >
+                {downloading === sheetInfo.file ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                Baixar CSV (Bling)
+              </button>
+            </div>
+            {sheetInfo.report && (
+              <button
+                data-testid="download-report-btn"
+                onClick={() => downloadSheet(sheetInfo.report)}
+                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+              >
+                <FileText className="h-3.5 w-3.5" /> Baixar relatório de revisão (.txt)
+              </button>
+            )}
+            <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-border pt-2">
+              No Bling: <strong>Produtos → Importar</strong> → escolha este arquivo. O separador é
+              ponto e vírgula e o arquivo já vai com acentuação correta (UTF-8).
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="border border-border bg-white">
