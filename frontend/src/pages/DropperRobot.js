@@ -93,6 +93,19 @@ export default function DropperRobotPage() {
     }
   };
 
+  const resetHistorico = async () => {
+    if (!window.confirm("Zerar o histórico? O robô vai ler TODOS os produtos de novo, inclusive os que já estão nas planilhas anteriores.")) {
+      return;
+    }
+    try {
+      const { data } = await endpoints.dropperResetHistorico();
+      toast.success(`Histórico zerado (${data.removidos} registros)`);
+      tick();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha ao zerar o histórico");
+    }
+  };
+
   const runDiagnostico = async () => {
     setDiagLoading(true);
     try {
@@ -389,7 +402,22 @@ export default function DropperRobotPage() {
         </div>
         {!sheetInfo?.file ? (
           <div className="px-6 py-10 text-sm text-muted-foreground text-center">
-            Nenhuma planilha gerada ainda. Clique em <strong>Ler Dropper</strong> para criar a primeira.
+            {sheetInfo.historico > 0 ? (
+              <>
+                Nenhuma planilha nesta pasta, mas o histórico já tem{" "}
+                <strong>{sheetInfo.historico}</strong> registro(s).{" "}
+                <button
+                  onClick={resetHistorico}
+                  className="text-rose-600 hover:text-rose-800 underline"
+                >
+                  Zerar histórico
+                </button>
+              </>
+            ) : (
+              <>
+                Nenhuma planilha gerada ainda. Clique em <strong>Ler Dropper</strong> para criar a primeira.
+              </>
+            )}
           </div>
         ) : (
           <div className="px-6 py-4 space-y-3">
@@ -435,7 +463,21 @@ export default function DropperRobotPage() {
                 <FileText className="h-3.5 w-3.5" /> Baixar relatório de revisão (.txt)
               </button>
             )}
-            <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-border pt-2">
+            <div className="flex items-center justify-between gap-3 border-t border-border pt-2">
+              <span className="text-xs text-muted-foreground" data-testid="historico-info">
+                Produtos já processados que serão <strong>pulados</strong>:{" "}
+                <strong>{sheetInfo.historico || 0}</strong>
+              </span>
+              <button
+                data-testid="reset-historico-btn"
+                onClick={resetHistorico}
+                disabled={!sheetInfo.historico || status?.state === "running"}
+                className="text-xs text-rose-600 hover:text-rose-800 disabled:opacity-40 shrink-0"
+              >
+                Zerar histórico
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
               No Bling: <strong>Produtos → Importar</strong> → escolha este arquivo. O separador é
               ponto e vírgula e o arquivo já vai com acentuação correta (UTF-8).
             </p>

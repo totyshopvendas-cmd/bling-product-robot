@@ -232,3 +232,75 @@ def test_read_one_product_sem_titulo_falha_sem_explodir():
     assert asyncio.run(
         dropper_bot._read_one_product(page, "https://dropper/cliente/produtos/xyz", use_ai=False)
     ) is None
+
+
+# --------------------------------------------------------------------------- #
+# Histórico: não repetir produto entre execuções
+# --------------------------------------------------------------------------- #
+
+URL = "https://dropper.dropping.com.br/cliente/produtos/{}"
+
+
+def test_historico_vazio_quando_nao_existe(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    assert dropper_bot.load_history() == {}
+
+
+def test_historico_corrompido_nao_explode(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    (tmp_path / dropper_bot.HISTORY_NAME).write_text("{lixo", encoding="utf-8")
+    assert dropper_bot.load_history() == {}
+
+
+def test_record_e_salvar_historico(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    hist = dropper_bot.record_history({}, [("abc123", "ProdDPF1", "Tesoura")])
+    dropper_bot.save_history(hist)
+
+    lido = dropper_bot.load_history()
+    assert "id:abc123" in lido
+    assert "cod:ProdDPF1" in lido
+    assert lido["cod:ProdDPF1"]["title"] == "Tesoura"
+
+
+def test_filter_new_urls_separa_novos_dos_ja_lidos(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    hist = dropper_bot.record_history({}, [("abc123", "ProdDPF1", "Tesoura")])
+    novos, ja = dropper_bot.filter_new_urls(
+        [URL.format("abc123"), URL.format("novo999")], hist
+    )
+    assert novos == [URL.format("novo999")]
+    assert ja == [URL.format("abc123")]
+
+
+def test_filter_new_urls_remove_repetido_na_mesma_lista():
+    novos, ja = dropper_bot.filter_new_urls(
+        [URL.format("x1"), URL.format("x1"), URL.format("x2")], {}
+    )
+    assert novos == [URL.format("x1"), URL.format("x2")]
+    assert ja == []
+
+
+def test_filter_new_urls_por_codigo_quando_o_id_muda(tmp_path, monkeypatch):
+    """Mesmo SKU vindo de outro id também é pulado."""
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    hist = {"cod:ProdDPF1": {"pid": "antigo"}}
+    novos, ja = dropper_bot.filter_new_urls([URL.format("id-novo")], hist)
+    assert novos == [URL.format("id-novo")]      # id diferente e desconhecido -> continua novo
+    assert dropper_bot._is_known("", "ProdDPF1", hist) is True
+
+
+def test_reset_history_esquece_tudo(tmp_path, monkeypatch):
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    dropper_bot.save_history(dropper_bot.record_history({}, [("a1", "SKU1", "A"), ("a2", "SKU2", "B")]))
+    removidos = dropper_bot.reset_history()
+    assert removidos >= 2
+    assert dropper_bot.load_history() == {}
+    assert dropper_bot.reset_history() == 0      # idempotente
+
+
+def test_historico_nao_mistura_com_planilha(tmp_path, monkeypatch):
+    """O arquivo de histórico não pode aparecer como planilha na tela."""
+    monkeypatch.setattr(dropper_bot, "EXPORT_DIR", tmp_path)
+    dropper_bot.save_history({"id:x": {}})
+    assert dropper_bot.latest_sheet() is None

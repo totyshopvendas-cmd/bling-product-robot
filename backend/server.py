@@ -544,6 +544,15 @@ async def dropper_diagnostico() -> dict:
     return {"ok": True, "report": report}
 
 
+@api.post("/dropper/historico/reset")
+async def dropper_historico_reset() -> dict:
+    """Esquece os produtos já processados (o próximo run lê todos de novo)."""
+    if dropper_bot.robot.state == "running":
+        raise HTTPException(400, "Robô em execução — pare antes de zerar o histórico")
+    removidos = dropper_bot.reset_history()
+    return {"ok": True, "removidos": removidos}
+
+
 @api.get("/dropper/sheet")
 async def dropper_sheet_status() -> dict:
     """Última planilha Bling gerada pelo robô Dropper."""

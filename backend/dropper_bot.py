@@ -35,7 +35,7 @@ if (
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
@@ -466,6 +466,94 @@ async def _read_variations(page) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Histórico — quais produtos já entraram em alguma planilha
+# --------------------------------------------------------------------------- #
+
+#: arquivo (dentro de EXPORT_DIR) com os produtos já processados
+HISTORY_NAME = "dropper_lidos.json"
+
+
+def _history_path() -> Path:
+    return EXPORT_DIR / HISTORY_NAME
+
+
+def load_history() -> dict:
+    """Lê o histórico. Nunca levanta exceção: histórico corrompido vira vazio."""
+    path = _history_path()
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_history(history: dict) -> None:
+    import json
+
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _history_path().with_suffix(".tmp")
+    tmp.write_text(json.dumps(history, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(_history_path())
+
+
+def reset_history() -> int:
+    """Apaga o histórico (o robô volta a ler todos). Devolve quantos foram esquecidos."""
+    history = load_history()
+    try:
+        _history_path().unlink()
+    except FileNotFoundError:
+        pass
+    return len(history)
+
+
+def _is_known(pid: str, code: str, history: dict) -> bool:
+    """O produto já foi para alguma planilha antes? (pelo id da URL ou pelo código)"""
+    if pid and f"id:{pid}" in history:
+        return True
+    if code and f"cod:{code}" in history:
+        return True
+    return False
+
+
+def filter_new_urls(urls: List[str], history: dict) -> Tuple[List[str], List[str]]:
+    """Separa ``(novos, ja_lidos)`` a partir das URLs do catálogo.
+
+    Usa o id que está na URL do produto. Produtos que já apareceram em alguma
+    planilha ficam de fora — é isso que evita repetir produto entre execuções.
+    """
+    novos: List[str] = []
+    ja: List[str] = []
+    vistos: set = set()
+    for url in urls:
+        pid = _product_id_from_url(url) or ""
+        if pid and pid in vistos:
+            continue
+        if pid:
+            vistos.add(pid)
+        (ja if _is_known(pid, "", history) else novos).append(url)
+    return novos, ja
+
+
+def record_history(history: dict, entries: list) -> dict:
+    """Marca no histórico os produtos que entraram na planilha.
+
+    ``entries`` é uma lista de ``(pid, code, title)``. Grava o id e o código
+    (``cod:``) para não repetir o mesmo SKU vindo de outro id.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    for pid, code, title in entries:
+        if pid:
+            history[f"id:{pid}"] = {"code": code or "", "title": (title or "")[:120], "lido_em": now}
+        if code:
+            history[f"cod:{code}"] = {"pid": pid or "", "title": (title or "")[:120], "lido_em": now}
+    return history
+
+
+# --------------------------------------------------------------------------- #
 # Um produto
 # --------------------------------------------------------------------------- #
 
@@ -700,11 +788,32 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                 return
 
             await _open_products_page(page)
-            urls = await _collect_product_urls(page, max_products)
+            # Pede mais URLs do que o limite para compensar os já processados
+            history = load_history()
+            urls = await _collect_product_urls(page, 0 if not max_products else max_products + len(history))
             if not urls:
                 robot.message = "Nenhum produto encontrado no catálogo do Dropper"
                 await add_log("error", "Nenhum produto encontrado em /cliente/produtos")
                 return
+
+            urls, ja_lidos = filter_new_urls(urls, history)
+            if ja_lidos:
+                await add_log(
+                    "info",
+                    f"{len(ja_lidos)} produto(s) já entraram em planilha antes — serão pulados "
+                    f"(total no histórico: {len(history)} registros)",
+                )
+            if max_products:
+                urls = urls[:max_products]
+            if not urls:
+                robot.message = (
+                    "Todos os produtos do catálogo já foram processados. "
+                    "Use 'Zerar histórico' se quiser refazer."
+                )
+                await add_log("success", "Nada novo para ler — todos os produtos já estão no histórico")
+                return
+            await add_log("info", f"Produtos NOVOS nesta execução: {len(urls)}")
+            processados: list = []
 
             for index, url in enumerate(urls, start=1):
                 if robot.stop_flag:
@@ -720,6 +829,7 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                     continue
 
                 rows, origem, product, limpo = result
+                processados.append((pid, product.code, limpo))
                 rows_all.extend(rows)
                 reports.append(sheet.build_report(rows, product_title=limpo))
                 robot.success += 1
@@ -740,6 +850,21 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                 await asyncio.sleep(DELAY_BETWEEN_PRODUCTS_S)
 
             path = await _write_output(rows_all, reports, dry_run)
+            if path and not dry_run:
+                # Só grava o histórico quando o arquivo oficial existe de verdade:
+                # se algo quebrar antes, os produtos não são "perdidos".
+                save_history(record_history(load_history(), processados))
+                await add_log(
+                    "info",
+                    f"Histórico atualizado: {len(load_history())} registros "
+                    f"({len(processados)} produto(s) desta execução)",
+                )
+            elif path:
+                await add_log(
+                    "info",
+                    "MODO TESTE: o histórico não é gravado — os mesmos produtos "
+                    "continuam disponíveis na execução oficial.",
+                )
             if path:
                 stats = sheet.summarize(rows_all)
                 robot.message = (
@@ -827,7 +952,7 @@ def sheet_status() -> dict:
     path = latest_sheet()
     if not path:
         return {"file": None, "report": None, "size": 0, "modified": None,
-                "products": 0, "rows": 0}
+                "products": 0, "rows": 0, "historico": len(load_history())}
     report = path.with_name(path.stem + "_revisao.txt")
     return {
         "file": path.name,
@@ -837,6 +962,7 @@ def sheet_status() -> dict:
         "products": STATE.get("products") or 0,
         "rows": STATE.get("rows") or 0,
         "is_test": path.name.startswith("planilha_bling_TESTE"),
+        "historico": len(load_history()),
     }
 
 

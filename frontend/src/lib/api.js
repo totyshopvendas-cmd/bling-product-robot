@@ -65,6 +65,7 @@ export const endpoints = {
   dropperStatus: () => api.get("/dropper/status"),
   dropperLogs: (limit = 100) => api.get(`/dropper/logs?limit=${limit}`),
   dropperSheet: () => api.get("/dropper/sheet"),
+  dropperResetHistorico: () => api.post("/dropper/historico/reset"),
   dropperSheetDownload: (name) =>
     api.get("/dropper/sheet/download", {
       params: name ? { name } : {},
