@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Sparkles, Tags, Bot, Package, ScrollText, Settings as SettingsIcon,
-  CircleDot, Power, Menu, X, Layers, ListChecks, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2, FileSpreadsheet,
+  CircleDot, Power, Menu, X, Layers, ListChecks, List, Share2, Megaphone, CalendarClock, Rocket, Activity as ActivityIcon, RefreshCw, Link2, FileSpreadsheet,
 } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
