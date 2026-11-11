@@ -1183,3 +1183,148 @@ async def diagnostico_dropper(max_chars: int = 3500) -> str:
                 await browser.close()
             except Exception:
                 pass
+
+
+# --------------------------------------------------------------------------- #
+# Piloto: criar UM produto no Bling pela API (Fase 2)
+# --------------------------------------------------------------------------- #
+
+
+async def _piloto_um(page, url: str, use_ai: bool, resultado: dict) -> dict:
+    """Lê uma URL e cria no Bling, preenchendo ``resultado``."""
+    import dropper_bling_create as creator
+
+    resultado["etapa"] = f"lendo {_product_id_from_url(url)}"
+    lido = await _read_one_product(page, url, use_ai)
+    if lido is None:
+        resultado["erro"] = "produto pulado na leitura (bloqueado, sem código ou página vazia)"
+        return resultado
+
+    rows, origem, product, limpo = lido
+    resultado["produto"] = {
+        "code": product.code,
+        "title": limpo,
+        "cost": product.cost,
+        "ncm": product.ncm,
+        "ean": product.ean,
+        "brand": product.brand,
+        "unit": product.unit,
+        "images": len(product.images),
+        "descricao": origem,
+        "linha_planilha": rows[0].values,
+    }
+
+    curta, compl, _origem = await dropper_descriptions.build_descriptions(
+        limpo, product.description, use_ai=use_ai
+    )
+    try:
+        preco = float(str(rows[0].values.get("Preço") or "").replace(",", ".")) or None
+    except ValueError:
+        preco = None
+
+    resultado["etapa"] = "criando no Bling"
+    cfg = load_export_config()
+    criado = await creator.ensure_product(
+        product,
+        title=limpo,
+        short_description=curta,
+        complementary_description=compl,
+        sale_price=preco,
+        supplier_name=cfg["fornecedor"],
+        send_images=False,
+    )
+    resultado.update(
+        payload=criado.get("payload"),
+        resposta=criado.get("response"),
+        fornecedor=criado.get("supplier"),
+        status=criado.get("status"),
+        product_id=criado.get("product_id"),
+        erro=criado.get("error") or "",
+        ok=criado.get("status") in ("created", "skipped"),
+    )
+    return resultado
+
+
+async def piloto_bling(url_produto: str = "", use_ai: bool = True) -> dict:
+    """Lê um produto no Dropper e cria no Bling pela API (sem planilha).
+
+    Devolve TUDO que aconteceu — payload enviado, resposta do Bling, erro
+    traduzido — para a tela mostrar cru.
+    """
+    resultado: dict = {
+        "ok": False,
+        "etapa": "",
+        "produto": None,
+        "payload": None,
+        "resposta": None,
+        "erro": "",
+    }
+    creds = await _get_credentials()
+    if not creds:
+        resultado["erro"] = "Credenciais do Dropper não configuradas"
+        return resultado
+    if not await _playwright_available():
+        resultado["erro"] = "Playwright/Chromium indisponível no servidor"
+        return resultado
+
+    conn = await bling_service_status()
+    if not conn.get("connected"):
+        resultado["erro"] = "Bling não está conectado — conecte em Configurações antes do piloto"
+        return resultado
+
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=_HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        context = await browser.new_context(viewport={"width": 1366, "height": 900})
+        page = await context.new_page()
+        try:
+            resultado["etapa"] = "login no Dropper"
+            if not await _login_dropper(page, creds["username"], creds["password"]):
+                resultado["erro"] = "Login no Dropper falhou"
+                return resultado
+
+            alvo = (url_produto or "").strip()
+            if alvo:
+                return await _piloto_um(page, alvo, use_ai, resultado)
+
+            resultado["etapa"] = "procurando um produto livre no catálogo"
+            await _open_products_page(page)
+            novos, _ja = filter_new_urls(await _collect_product_urls(page, 0), load_history())
+            if not novos:
+                resultado["erro"] = (
+                    "Nenhum produto novo no catálogo (todos já estão no histórico). "
+                    "Zere o histórico ou informe a URL de um produto."
+                )
+                return resultado
+
+            # os primeiros podem estar bloqueados/sem código: tenta até 5
+            for candidato in novos[:5]:
+                tentativa = await _piloto_um(page, candidato, use_ai, dict(resultado))
+                if tentativa.get("produto"):
+                    return tentativa
+                resultado = tentativa
+            resultado["erro"] = (
+                "Os primeiros produtos estavam bloqueados ou sem código — piloto não rodou"
+            )
+            return resultado
+        except Exception as e:
+            resultado["erro"] = f"exceção na etapa '{resultado.get('etapa')}': {str(e)[:300]}"
+            return resultado
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
+async def bling_service_status() -> dict:
+    """Status da conexão com o Bling (sem levantar exceção)."""
+    try:
+        import bling_service
+
+        return await bling_service.status()
+    except Exception:
+        return {"connected": False}

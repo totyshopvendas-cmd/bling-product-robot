@@ -562,6 +562,23 @@ async def dropper_set_config(cfg: DropperExportConfig) -> dict:
     return dropper_bot.save_export_config(cfg.fornecedor, cfg.usar_categoria)
 
 
+class PilotoRequest(BaseModel):
+    url_produto: str = ""
+    use_ai: bool = False
+
+
+@api.post("/dropper/bling/piloto")
+async def dropper_bling_piloto(req: PilotoRequest = Body(default_factory=PilotoRequest)) -> dict:
+    """Cria UM produto no Bling pela API e devolve a resposta crua.
+
+    É o teste seguro da Fase 2: nada de planilha, um produto só, com o motivo
+    exato em caso de erro.
+    """
+    if dropper_bot.robot.state == "running":
+        raise HTTPException(400, "Robô em execução — pare antes de rodar o piloto")
+    return await dropper_bot.piloto_bling(url_produto=req.url_produto, use_ai=req.use_ai)
+
+
 @api.post("/dropper/historico/reset")
 async def dropper_historico_reset() -> dict:
     """Esquece os produtos já processados (o próximo run lê todos de novo)."""

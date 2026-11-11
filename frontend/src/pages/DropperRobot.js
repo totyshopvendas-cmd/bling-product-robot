@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, endpoints } from "@/lib/api";
 import { logger } from "@/lib/logger";
-import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2, FileSpreadsheet, FileText, Stethoscope } from "lucide-react";
+import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2, FileSpreadsheet, FileText, Stethoscope, Rocket } from "lucide-react";
 import { toast } from "sonner";
 
 const LOG_DOT_COLORS = {
@@ -31,6 +31,8 @@ export default function DropperRobotPage() {
   const [downloading, setDownloading] = useState(null);
   const [cfg, setCfg] = useState(null);
   const [savingCfg, setSavingCfg] = useState(false);
+  const [piloto, setPiloto] = useState(null);
+  const [pilotoLoading, setPilotoLoading] = useState(false);
   const [diag, setDiag] = useState(null);
   const [diagLoading, setDiagLoading] = useState(false);
 
@@ -126,6 +128,28 @@ export default function DropperRobotPage() {
       tick();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Falha ao zerar o histórico");
+    }
+  };
+
+  const runPiloto = async () => {
+    setPilotoLoading(true);
+    setPiloto(null);
+    try {
+      const { data } = await endpoints.dropperPiloto("", false);
+      setPiloto(data);
+      if (data.ok) {
+        toast.success(
+          data.status === "created"
+            ? `Produto criado no Bling (id ${data.product_id})`
+            : "Esse SKU já existia no Bling — nada foi duplicado"
+        );
+      } else {
+        toast.error(data.erro || "O Bling recusou — veja o detalhe abaixo");
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha no piloto");
+    } finally {
+      setPilotoLoading(false);
     }
   };
 
@@ -410,6 +434,15 @@ export default function DropperRobotPage() {
               <Square className="h-4 w-4" /> Parar
             </button>
             <button
+              data-testid="piloto-bling-btn"
+              onClick={runPiloto}
+              disabled={pilotoLoading || status?.state === "running"}
+              className="w-full text-white text-sm font-medium px-4 py-2.5 rounded-sm bg-[#0F4C81] hover:bg-[#0C3C66] disabled:opacity-50 inline-flex items-center justify-center gap-2"
+            >
+              {pilotoLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+              {pilotoLoading ? "Criando no Bling…" : "Testar 1 produto no Bling (API)"}
+            </button>
+            <button
               data-testid="diagnostico-btn"
               onClick={runDiagnostico}
               disabled={diagLoading || status?.state === "running"}
@@ -428,6 +461,74 @@ export default function DropperRobotPage() {
           </div>
         </div>
       </div>
+
+      {piloto && (
+        <div className="border border-border bg-white" data-testid="piloto-box">
+          <div className="px-6 py-3 border-b border-border flex items-center justify-between">
+            <span className="label-overline">
+              Teste no Bling pela API — {piloto.ok ? "deu certo" : "recusado"}
+            </span>
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(JSON.stringify(piloto, null, 2));
+                toast.success("Copiado — cole aqui no chat");
+              }}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Copiar tudo
+            </button>
+          </div>
+          <div className="px-6 py-4 space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+              <div><span className="text-muted-foreground">Etapa:</span> {piloto.etapa}</div>
+              <div>
+                <span className="text-muted-foreground">Situação:</span>{" "}
+                <strong>{piloto.status || "—"}</strong>
+              </div>
+              {piloto.produto && (
+                <>
+                  <div><span className="text-muted-foreground">Código:</span> {piloto.produto.code}</div>
+                  <div><span className="text-muted-foreground">Título:</span> {piloto.produto.title}</div>
+                  <div><span className="text-muted-foreground">Custo:</span> {piloto.produto.cost ?? "—"}</div>
+                  <div><span className="text-muted-foreground">NCM:</span> {piloto.produto.ncm || "—"}</div>
+                  <div><span className="text-muted-foreground">Marca:</span> {piloto.produto.brand || "—"}</div>
+                  <div><span className="text-muted-foreground">Unidade:</span> {piloto.produto.unit || "—"}</div>
+                  <div><span className="text-muted-foreground">Imagens:</span> {piloto.produto.images}</div>
+                  <div><span className="text-muted-foreground">Descrição:</span> {piloto.produto.descricao}</div>
+                </>
+              )}
+              {piloto.product_id && (
+                <div><span className="text-muted-foreground">Id no Bling:</span> <strong>{piloto.product_id}</strong></div>
+              )}
+              {piloto.fornecedor && (
+                <div className="col-span-2">
+                  <span className="text-muted-foreground">Fornecedor:</span> {piloto.fornecedor.detalhe}
+                  {piloto.fornecedor.id ? ` (id ${piloto.fornecedor.id})` : ""}
+                </div>
+              )}
+            </div>
+
+            {piloto.erro && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 text-xs">
+                <strong>Mensagem do Bling:</strong> {piloto.erro}
+              </div>
+            )}
+
+            <div>
+              <div className="label-overline mb-1">O que foi enviado para o Bling</div>
+              <pre className="text-[11px] bg-zinc-50 border border-border p-3 overflow-x-auto max-h-56 font-mono">
+{JSON.stringify(piloto.payload || {}, null, 2)}
+              </pre>
+            </div>
+            <div>
+              <div className="label-overline mb-1">O que o Bling respondeu</div>
+              <pre className="text-[11px] bg-zinc-50 border border-border p-3 overflow-x-auto max-h-56 font-mono">
+{JSON.stringify(piloto.resposta || {}, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       {diag && (
         <div className="border border-border bg-white" data-testid="diagnostico-box">

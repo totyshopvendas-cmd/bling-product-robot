@@ -67,6 +67,8 @@ export const endpoints = {
   dropperSheet: () => api.get("/dropper/sheet"),
   dropperResetHistorico: () => api.post("/dropper/historico/reset"),
   dropperGetConfig: () => api.get("/dropper/config"),
+  dropperPiloto: (url_produto = "", use_ai = false) =>
+    api.post("/dropper/bling/piloto", { url_produto, use_ai }, { timeout: 300000 }),
   dropperSetConfig: (fornecedor, usar_categoria) =>
     api.post("/dropper/config", { fornecedor, usar_categoria }),
   dropperSheetDownload: (name) =>
