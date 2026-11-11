@@ -467,6 +467,38 @@ async def _read_variations(page) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Preço de venda: a tabela pode estar em centavos
+# --------------------------------------------------------------------------- #
+
+#: acima disso o valor da tabela só pode estar em centavos
+_SUSPEITO = 20.0
+
+
+def sale_price_reais(value, cost: Optional[float] = None) -> Optional[float]:
+    """Converte o preço da tabela para REAIS.
+
+    A tabela guarda "101,50" como ``10150`` (centavos) quando a célula tem
+    casas decimais. Sem converter, a planilha sairia com R$ 10.150,00 num
+    produto de R$ 49,60.
+
+    A decisão usa o custo como referência: se o valor for mais de 20x o custo
+    e o valor dividido por 100 ficar numa faixa normal (1x a 20x o custo),
+    então está em centavos.
+    """
+    try:
+        valor = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if valor <= 0:
+        return None
+    if cost and cost > 0 and valor / cost > _SUSPEITO:
+        alternativo = valor / 100.0
+        if 1.0 <= alternativo / cost <= _SUSPEITO:
+            return round(alternativo, 2)
+    return round(valor, 2)
+
+
+# --------------------------------------------------------------------------- #
 # Configuração do arquivo (fornecedor e categoria)
 # --------------------------------------------------------------------------- #
 
@@ -650,7 +682,13 @@ async def _read_one_product(page, url: str, use_ai: bool):
         try:
             price = await lookup_price(product.cost)
             if price.found:
-                sale_price = price.sale_price_int
+                sale_price = sale_price_reais(price.sale_price_int, product.cost)
+                if sale_price != price.sale_price_int and sale_price:
+                    await add_log(
+                        "info",
+                        f"{product.code}: preço da tabela {price.sale_price_int} "
+                        f"interpretado como centavos → R$ {sale_price:.2f}",
+                    )
             else:
                 await add_log(
                     "warning",
@@ -682,6 +720,11 @@ def _preview_line(product, rows, origem: str) -> str:
     v = rows[0].values
     peso = v.get("Peso líquido (Kg)") or "-"
     preco = v.get("Preço") or "-"
+    if preco != "-":
+        try:
+            preco = f"R$ {float(str(preco).replace(',', '.')):.2f}"
+        except ValueError:
+            pass
     ncm = v.get("NCM") or "SEM NCM"
     imgs = len([u for u in (v.get("URL Imagens Externas") or "").split(",") if u.strip()])
     return (
@@ -757,7 +800,7 @@ async def _run_mock(max_products: int, dry_run: bool = True):
         if product.cost is not None:
             try:
                 price = await lookup_price(product.cost)
-                sale = price.sale_price_int if price.found else None
+                sale = sale_price_reais(price.sale_price_int, product.cost) if price.found else None
             except Exception:
                 sale = None
         cleaned = clean_title(product.title, preferred_code=product.code)

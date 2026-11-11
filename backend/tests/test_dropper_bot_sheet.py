@@ -358,3 +358,48 @@ def test_produto_sem_codigo_e_pulado(monkeypatch):
         dropper_bot._read_one_product(page, URL.format("cmw123abc"), use_ai=False)
     ) is None
     assert dropper_bot.STATE["pulados"]
+
+
+# --------------------------------------------------------------------------- #
+# Preço de venda: centavos x reais
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    "valor,custo,esperado",
+    [
+        (10150, 49.6, 101.5),      # centavos (o caso real: R$ 10.150,00 errado)
+        (101.5, 49.6, 101.5),      # já em reais
+        (285, 190.44, 285.0),      # tabela congelada em reais
+        (1500, 500, 1500.0),       # 3x o custo: reais
+        (4990, 10.0, 49.9),        # centavos
+        (0, 10.0, None),
+        (None, 10.0, None),
+        (150, None, 150.0),        # sem custo: mantém como está
+    ],
+)
+def test_sale_price_reais(valor, custo, esperado):
+    assert dropper_bot.sale_price_reais(valor, custo) == esperado
+
+
+def test_preco_centavos_chega_na_planilha_como_reais(monkeypatch):
+    """Fim a fim: tabela em centavos (4990) -> coluna Preço = 49,9 (não 4990)."""
+
+    class _Resposta:
+        found = True
+        sale_price_int = 4990          # R$ 49,90 guardado em centavos
+
+    async def fake_lookup(_cost):
+        return _Resposta()
+
+    monkeypatch.setattr(dropper_bot, "lookup_price", fake_lookup)
+
+    page = _FakePage(
+        dropper_bot._mock_text("ProdDPF999", "Tesoura Vonder Teste").replace("R$ 190,44", "R$ 49,60")
+    )
+    resultado = asyncio.run(
+        dropper_bot._read_one_product(page, URL.format("abc999"), use_ai=False)
+    )
+    assert resultado is not None
+    rows = resultado[0]
+    preco = rows[0].values["Preço"]
+    assert preco == "49,9", f"esperado 49,9, veio {preco!r}"
