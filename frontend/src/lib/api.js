@@ -55,29 +55,6 @@ export const endpoints = {
     api.post("/settings/johndrop", { username, password }),
   getJohnDropStatus: () => api.get("/settings/johndrop"),
 
-  setDropperCreds: (username, password) =>
-    api.post("/settings/dropper", { username, password }),
-  getDropperStatus: () => api.get("/settings/dropper"),
-
-  dropperStart: (max_products, dry_run) =>
-    api.post("/dropper/start", { max_products, dry_run }),
-  dropperStop: () => api.post("/dropper/stop"),
-  dropperStatus: () => api.get("/dropper/status"),
-  dropperLogs: (limit = 100) => api.get(`/dropper/logs?limit=${limit}`),
-  dropperSheet: () => api.get("/dropper/sheet"),
-  dropperResetHistorico: () => api.post("/dropper/historico/reset"),
-  dropperGetConfig: () => api.get("/dropper/config"),
-  dropperPiloto: (url_produto = "", use_ai = false) =>
-    api.post("/dropper/bling/piloto", { url_produto, use_ai }, { timeout: 300000 }),
-  dropperSetConfig: (fornecedor, usar_categoria) =>
-    api.post("/dropper/config", { fornecedor, usar_categoria }),
-  dropperSheetDownload: (name) =>
-    api.get("/dropper/sheet/download", {
-      params: name ? { name } : {},
-      responseType: "blob",
-      timeout: 120000,
-    }),
-
   robotStart: (max_products, dry_run) =>
     api.post("/robot/start", { max_products, dry_run }),
   robotStop: () => api.post("/robot/stop"),

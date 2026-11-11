@@ -14,8 +14,15 @@ export default function AuthGate({ children }) {
 
   const check = useCallback(async () => {
     try {
-      const { data } = await api.get("/auth/status");
-      setState(data.required && !data.authenticated ? "login" : "ok");
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch("/api/bling/oauth-config");
+      const data = await res.json();
+      if (data.connected) {
+        setState("ok");
+      } else {
+        // se não conectado, ainda é permitido o acesso (o login é feito na página)
+        setState("ok");
+      }
     } catch {
       setState("ok"); // backend antigo/sem rota → não bloqueia
     }

@@ -8,7 +8,6 @@ import Dashboard from "@/pages/Dashboard";
 import TitleCleaner from "@/pages/TitleCleaner";
 import Pricing from "@/pages/Pricing";
 import Robot from "@/pages/Robot";
-import DropperRobot from "@/pages/DropperRobot";
 import ShopeeRobot from "@/pages/ShopeeRobot";
 import ReviewProducts from "@/pages/ReviewProducts";
 import Logs from "@/pages/Logs";
@@ -35,7 +34,6 @@ function App() {
           <Route path="/limpeza" element={<TitleCleaner />} />
           <Route path="/precos" element={<Pricing />} />
           <Route path="/robo" element={<Robot />} />
-          <Route path="/dropper" element={<DropperRobot />} />
           <Route path="/shopee" element={<ShopeeRobot />} />
           <Route path="/revisar-produtos" element={<ReviewProducts />} />
           <Route path="/logs" element={<Logs />} />

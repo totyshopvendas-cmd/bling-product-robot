@@ -1,24 +1,16 @@
-"""Robô Dropper — LÊ os produtos no Dropper e gera a planilha do Bling.
+"""Robô JohnDrop — LÊ os produtos no JohnDrop e gera a planilha do Bling.
 
-Mudança de objetivo (v3): o robô **não cadastra mais nada no Dropper** e **não
-usa a API do Bling**. Ele percorre o catálogo do Dropper, abre a página de cada
-produto (``/cliente/produtos/<id>``), lê tudo que existe lá (título, descrição,
-imagens, código, custo, NCM, EAN, marca, categoria, unidade, estoque) e escreve
-uma planilha ``.csv`` no formato de importação do Bling — 59 colunas, ponto e
-vírgula, UTF-8 com BOM.
+Mudança de objetivo (v3): o robô **não cadastra mais nada no JohnDrop** e **usa a API do Bling**
+para criar produtos (plano B). A planilha continua existindo como plano B.
 
 Fluxo:
 
-1. login no Dropper;
-2. colher as URLs do catálogo (``/cliente/produtos``);
-3. para cada produto: abrir a página, ler o texto, normalizar
-   (:mod:`dropper_reader`), buscar o preço de venda na tabela de preços
-   (custo -> venda) e gerar as descrições (:mod:`dropper_descriptions`);
-4. montar as linhas (:func:`bling_sheet_export.build_rows`) e gravar o arquivo
-   com um relatório de revisão do lado.
-
-Regra de ouro: **nada é inventado**. Campo que não vem do Dropper fica vazio e
-aparece no relatório; NCM/CEST/EAN nunca são chutados.
+1. carregar configuração de exportação (`load_export_config`);
+2. para cada produto: abrir a página, ler o texto, normalizar
+   (:mod:`johndrop_reader`), buscar o preço de venda na tabela de preços
+   (custo -> venda) e gerar as descrições (:mod:`johndrop_descriptions`);
+3. (opcional) montar as linhas (:func:`bling_sheet_export.build_rows`) e gravar o arquivo
+   com um relatório de revisão do lado (plano B).
 """
 import asyncio
 import os
@@ -43,24 +35,24 @@ from robot_service import robot, add_log
 from db import db
 
 import bling_sheet_export as sheet
-import dropper_reader
-import dropper_descriptions
+import johndrop_reader
+import johndrop_descriptions
 
 
-# URLs do Dropper — ajustar se o site mudar de layout.
-DROPPER_BASE_URL = "https://dropper.dropping.com.br"
-DROPPER_LOGIN_URL = f"{DROPPER_BASE_URL}/login"
-DROPPER_PRODUCTS_URL = f"{DROPPER_BASE_URL}/cliente/produtos"
-DROPPER_PRODUCT_URL = f"{DROPPER_BASE_URL}/cliente/produtos/{{pid}}"
+# URLs do JohnDrop — ajustar se o site mudar de layout.
+JOHNDROP_BASE_URL = "https://johndrop.dropping.com.br"
+JOHNDROP_LOGIN_URL = f"{JOHNDROP_BASE_URL}/login"
+JOHNDROP_PRODUCTS_URL = f"{JOHNDROP_BASE_URL}/cliente/produtos"
+JOHNDROP_PRODUCT_URL = f"{JOHNDROP_BASE_URL}/cliente/produtos/{{pid}}"
 
 #: pasta dos arquivos gerados (mesma pasta da planilha do JohnDrop)
 EXPORT_DIR = Path(__file__).parent / "exports"
 
 #: pausa entre um produto e outro (segundos) — não irritar o site
-DELAY_BETWEEN_PRODUCTS_S = float(os.environ.get("DROPPER_PAGE_DELAY", "1.0"))
+DELAY_BETWEEN_PRODUCTS_S = float(os.environ.get("JOHNDROP_PAGE_DELAY", "1.0"))
 
-#: navegador visível (foi o que funcionou); DROPPER_HEADLESS=1 esconde a janela
-_HEADLESS = os.environ.get("DROPPER_HEADLESS", "0").strip() in ("1", "true", "True")
+#: navegador visível (foi o que funcionou); JOHNDROP_HEADLESS=1 esconde a janela
+_HEADLESS = os.environ.get("JOHNDROP_HEADLESS", "0").strip() in ("1", "true", "True")
 
 #: estado da geração atual (independente do robô JohnDrop)
 STATE: dict = {
@@ -76,25 +68,25 @@ STATE: dict = {
 async def _save_credentials(username: str, password: str):
     value = {"username": username, "password": password}
     await db.settings.update_one(
-        {"key": "dropper_creds"},
-        {"$set": {"key": "dropper_creds", "value": value}},
+        {"key": "johndrop_creds"},
+        {"$set": {"key": "johndrop_creds", "value": value}},
         upsert=True,
     )
     try:
         import secrets_store
-        secrets_store.write("dropper", value)
+        secrets_store.write("johndrop", value)
     except Exception:
         pass
 
 
 async def _get_credentials():
-    doc = await db.settings.find_one({"key": "dropper_creds"}, {"_id": 0})
+    doc = await db.settings.find_one({"key": "johndrop_creds"}, {"_id": 0})
     value = (doc or {}).get("value") if doc else None
     if value and value.get("username"):
         return value
     try:
         import secrets_store
-        stored = secrets_store.read("dropper")
+        stored = secrets_store.read("johndrop")
         if stored and stored.get("username"):
             return stored
     except Exception:
@@ -107,7 +99,7 @@ def browsers_path() -> str:
     if override:
         return override
     if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\\AppData\\Local")
+        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
         return os.path.join(local, "ms-playwright")
     if sys.platform == "darwin":
         return os.path.expanduser("~/Library/Caches/ms-playwright")
@@ -250,11 +242,11 @@ async def _playwright_available() -> bool:
 # --------------------------------------------------------------------------- #
 
 
-async def _login_dropper(page, username: str, password: str) -> bool:
-    """Login no Dropper. Devolve True quando sai da tela de /login."""
-    await add_log("info", "Abrindo página de login Dropper...")
+async def _login_johndrop(page, username: str, password: str) -> bool:
+    """Login no JohnDrop. Devolve True quando sai da tela de /login."""
+    await add_log("info", "Abrindo página de login JohnDrop...")
     try:
-        await page.goto(DROPPER_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(JOHNDROP_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
     except Exception as e:
         await add_log("error", f"Não abriu a página de login: {str(e)[:160]}")
         return False
@@ -277,23 +269,23 @@ async def _login_dropper(page, username: str, password: str) -> bool:
     # SPA: espera a URL sair de /login (sem expect_navigation, que dá timeout)
     for _ in range(40):
         if "login" not in (page.url or "").lower():
-            await add_log("success", "Login Dropper OK")
+            await add_log("success", "Login JohnDrop OK")
             return True
         await page.wait_for_timeout(1000)
-    await add_log("error", "Falha no login Dropper — a página continuou em /login")
+    await add_log("error", "Falha no login JohnDrop — a página continuou em /login")
     return False
 
 
 async def _open_products_page(page) -> None:
-    """Abre a lista de produtos do Dropper."""
+    """Abre a lista de produtos do JohnDrop."""
     for attempt in range(3):
         try:
-            await page.goto(DROPPER_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.goto(JOHNDROP_PRODUCTS_URL, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(2500)
             return
         except Exception as e:
             if attempt == 2:
-                await add_log("warning", f"Catálogo do Dropper com problema: {str(e)[:140]}")
+                await add_log("warning", f"Catálogo do JohnDrop com problema: {str(e)[:140]}")
             else:
                 await page.wait_for_timeout(2000)
 
@@ -331,7 +323,7 @@ async def _collect_product_urls(page, max_products: int) -> List[str]:
             pid = _product_id_from_url(href)
             if pid and pid not in seen:
                 seen.add(pid)
-                found.append(DROPPER_PRODUCT_URL.format(pid=pid))
+                found.append(JOHNDROP_PRODUCT_URL.format(pid=pid))
         if max_products and len(found) >= max_products:
             break
         before = len(found)
@@ -369,7 +361,7 @@ async def _read_page_text(page) -> str:
 
 
 async def _read_product_images(page, quiet: bool = False) -> list:
-    """Extract all image URLs from Dropper product creation form."""
+    """Extract all image URLs from JohnDrop product creation form."""
     try:
         try:
             await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight/2)")
@@ -415,7 +407,7 @@ async def _read_product_images(page, quiet: bool = False) -> list:
                 );
                 for (const el of containers) {
                     const bg = window.getComputedStyle(el).backgroundImage;
-                    const m = bg.match(/url\\(["']?(.+?)["']?\\)/);
+                    const m = bg.match(/url\\([\\"']?(.+?)[\\"']?\\)/);
                     if (m && isProductLike(m[1])) out.add(m[1]);
                 }
                 return Array.from(out);
@@ -445,7 +437,7 @@ async def _read_product_images(page, quiet: bool = False) -> list:
         if not quiet:
             await add_log(
                 "info",
-                f"Imagens extraídas do Dropper: {len(final)} (brutas={len(result)}, após limpeza={len(cleaned)})",
+                f"Imagens extraídas do JohnDrop: {len(final)} (brutas={len(result)}, após limpeza={len(cleaned)})",
             )
         return final
     except Exception as e:
@@ -459,7 +451,7 @@ async def _read_product_images(page, quiet: bool = False) -> list:
 async def _read_variations(page) -> list:
     """Variações (cor/tamanho) da página — ainda NÃO lidas nesta versão.
 
-    O seletor de variações do Dropper não foi mapeado (não apareceu em nenhum
+    O seletor de variações do JohnDrop não foi mapeado (não apareceu em nenhum
     print), e chutar aqui geraria linha de variação errada na planilha. Fica
     desligado; quando o usuário abrir um produto com variação, mapeamos.
     """
@@ -492,7 +484,7 @@ def sale_price_reais(value, cost: Optional[float] = None) -> Optional[float]:
     if valor <= 0:
         return None
     if cost and cost > 0 and valor / cost > _SUSPEITO:
-        alternativo = valor / 100.0
+        alternativo = value / 100.0
         if 1.0 <= alternativo / cost <= _SUSPEITO:
             return round(alternativo, 2)
     return round(valor, 2)
@@ -503,13 +495,13 @@ def sale_price_reais(value, cost: Optional[float] = None) -> Optional[float]:
 # --------------------------------------------------------------------------- #
 
 #: guardado em backend/.secrets junto com as demais credenciais
-CONFIG_NAME = "dropper_export"
+CONFIG_NAME = "johndrop_export"
 
 
 def load_export_config() -> dict:
     """Fornecedor e categoria usados na planilha.
 
-    O fornecedor precisa ser o nome EXATO do cadastro no Bling: com "DROPPING"
+    O fornecedor precisa ser o nome EXATO do cadastro no Bling: com "JOHNDROP"
     solto o import recusa a linha ("fornecedor inválido").
     """
     cfg = {
@@ -545,7 +537,7 @@ def save_export_config(fornecedor: str, usar_categoria: bool) -> dict:
 # --------------------------------------------------------------------------- #
 
 #: arquivo (dentro de EXPORT_DIR) com os produtos já processados
-HISTORY_NAME = "dropper_lidos.json"
+HISTORY_NAME = "johndrop_lidos.json"
 
 
 def _history_path() -> Path:
@@ -648,7 +640,7 @@ async def _read_one_product(page, url: str, use_ai: bool):
         return None
 
     # Produto que exige reserva/pagamento de saldo NÃO entra na planilha.
-    bloqueio = dropper_reader.page_is_blocked(text)
+    bloqueio = johndrop_reader.page_is_blocked(text)
     if bloqueio:
         await add_log(
             "warning",
@@ -658,12 +650,12 @@ async def _read_one_product(page, url: str, use_ai: bool):
         return None
 
     images = await _read_product_images(page, quiet=True)
-    product = dropper_reader.parse_product_text(text, url, images=images)
+    product = johndrop_reader.parse_product_text(text, url, images=images)
     if not product.code:
-        # sem "ProdDPFxxxx" não há SKU: o id da URL é um cuid ilegível
+        # sem "ProdJDPxxxx" não há SKU: o id da URL é um cuid ilegível
         await add_log(
             "warning",
-            f"Produto sem código (ProdDPF...) — pulado para não virar SKU ilegível no Bling: {url}",
+            f"Produto sem código (ProdJDP...) — pulado para não virar SKU ilegível no Bling: {url}",
         )
         STATE.setdefault("pulados", []).append(_product_id_from_url(url) or url)
         return None
@@ -673,11 +665,11 @@ async def _read_one_product(page, url: str, use_ai: bool):
 
     variations = await _read_variations(page)
     if variations:
-        product.variations = dropper_reader.parse_variations(variations)
+        product.variations = johndrop_reader.parse_variations(variations)
 
     sale_price = None
     if product.cost is None:
-        await add_log("warning", f"{product.code}: custo não encontrado no Dropper")
+        await add_log("warning", f"{product.code}: custo não encontrado no JohnDrop")
     else:
         try:
             price = await lookup_price(product.cost)
@@ -698,7 +690,7 @@ async def _read_one_product(page, url: str, use_ai: bool):
             await add_log("warning", f"{product.code}: falha ao consultar preço ({str(e)[:100]})")
 
     cleaned = clean_title(product.title, preferred_code=product.code)
-    curta, compl, origem = await dropper_descriptions.build_descriptions(
+    curta, compl, origem = await johndrop_descriptions.build_descriptions(
         cleaned.get("cleaned") or product.title, product.description, use_ai=use_ai
     )
 
@@ -749,7 +741,7 @@ async def _write_output(rows, reports: List[str], dry_run: bool) -> Optional[Pat
     header = [
         "RELATÓRIO DE REVISÃO — planilha de importação Bling",
         f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}",
-        "Origem dos dados: produtos lidos no Dropper (nada foi inventado)",
+        "Origem dos dados: produtos lidos no JohnDrop (nada foi inventado)",
         "",
         f"Linhas: {stats['linhas']}  (produtos: {stats['produtos']}, variações: {stats['variacoes']})",
         f"Sem NCM: {stats['sem_ncm']} · Sem preço: {stats['sem_preco']} · Sem imagem: {stats['sem_imagem']}",
@@ -772,7 +764,7 @@ def _mock_text(code: str, title: str) -> str:
     return (
         f"{code}\nFERAMENTAS MANUAIS · Classe Bronze\nDisponível\n{title}\n"
         "SEU CUSTO DE COMPRA\nR$ 190,44\nESTOQUE\n7\n"
-        "Enviado por\nDropping\nMarca\nVONDER\nCategoria\nFERAMENTAS MANUAIS\n"
+        "Enviado por\nJohnDrop\nMarca\nVONDER\nCategoria\nFERAMENTAS MANUAIS\n"
         "Unidade\nKIT\nEAN\n2003990403811\nNCM\n82130000\n"
         "DESCRIÇÃO\nTESOURA MULTIUSO VONDER\n"
         "Indicada para cortes em geral.\n- Material da lâmina: aço inox\n"
@@ -784,8 +776,8 @@ def _mock_text(code: str, title: str) -> str:
 async def _run_mock(max_products: int, dry_run: bool = True):
     """Modo sem navegador: exercita o mesmo pipeline com um produto de exemplo."""
     samples = [
-        ("ProdDPF2589", "Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder"),
-        ("ProdDPF2590", "Jogo de Chaves de Fenda 6 Peças Vonder"),
+        ("ProdJDP2589", "Kit 12 Tesouras Multiuso 25 cm Lâmina Inox Vonder"),
+        ("ProdJDP2590", "Jogo de Chaves de Fenda 6 Peças Vonder"),
     ]
     rows_all: List[sheet.SheetRow] = []
     reports: List[str] = []
@@ -793,7 +785,7 @@ async def _run_mock(max_products: int, dry_run: bool = True):
         if robot.stop_flag:
             break
         robot.current_product = title[:60]
-        product = dropper_reader.parse_product_text(
+        product = johndrop_reader.parse_product_text(
             _mock_text(code, title), url="", images=[f"https://exemplo/{code}-{i}.jpg" for i in range(1, 4)]
         )
         sale = None
@@ -804,7 +796,7 @@ async def _run_mock(max_products: int, dry_run: bool = True):
             except Exception:
                 sale = None
         cleaned = clean_title(product.title, preferred_code=product.code)
-        curta, compl, origem = await dropper_descriptions.build_descriptions(
+        curta, compl, origem = await johndrop_descriptions.build_descriptions(
             cleaned.get("cleaned") or product.title, product.description, use_ai=False
         )
         rows = sheet.build_rows(
@@ -831,7 +823,7 @@ async def _run_mock(max_products: int, dry_run: bool = True):
 
 
 async def run_bot(max_products: int = 10, dry_run: bool = True):
-    """Lê os produtos no Dropper e gera a planilha do Bling."""
+    """Lê os produtos no JohnDrop e gera a planilha do Bling."""
     robot.reset()
     robot.state = "running"
     robot.started_at = datetime.now(timezone.utc)
@@ -839,7 +831,7 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
                   "failing": [], "pulados": []})
     await add_log(
         "info",
-        f"Robô Dropper iniciado — LER produtos e gerar planilha Bling "
+        f"Robô JohnDrop iniciado — LER produtos e gerar planilha Bling "
         f"(produtos={'todos' if not max_products else max_products}, "
         f"modo={'TESTE' if dry_run else 'GERAR ARQUIVO'})",
     )
@@ -847,9 +839,9 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
     creds = await _get_credentials()
     if not creds:
         robot.state = "error"
-        robot.message = "Credenciais Dropper não configuradas"
+        robot.message = "Credenciais JohnDrop não configuradas"
         robot.finished_at = datetime.now(timezone.utc)
-        await add_log("error", "Credenciais Dropper ausentes. Configure em Configurações.")
+        await add_log("error", "Credenciais JohnDrop ausentes. Configure em Configurações.")
         return
 
     if not await _playwright_available():
@@ -863,7 +855,7 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
         await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
     except Exception as e:
         robot.state = "error"
-        robot.message = f"Falha na leitura do Dropper: {str(e)[:160]}"
+        robot.message = f"Falha na leitura do JohnDrop: {str(e)[:160]}"
         await add_log("error", f"Playwright falhou: {str(e)[:200]}")
     finally:
         robot.finished_at = datetime.now(timezone.utc)
@@ -888,7 +880,7 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
         ai_misses = 0
 
         try:
-            if not await _login_dropper(page, username, password):
+            if not await _login_johndrop(page, username, password):
                 robot.state = "error"
                 robot.message = "Login falhou"
                 return
@@ -898,7 +890,7 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
             history = load_history()
             urls = await _collect_product_urls(page, 0 if not max_products else max_products + len(history))
             if not urls:
-                robot.message = "Nenhum produto encontrado no catálogo do Dropper"
+                robot.message = "Nenhum produto encontrado no catálogo do JohnDrop"
                 await add_log("error", "Nenhum produto encontrado em /cliente/produtos")
                 return
 
@@ -1003,7 +995,7 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
                 robot.state = "idle"
             await add_log(
                 "info",
-                f"Robô Dropper finalizado. Lidos={robot.processed} "
+                f"Robô JohnDrop finalizado. Lidos={robot.processed} "
                 f"OK={robot.success} Falhas={robot.failed}",
             )
 
@@ -1016,14 +1008,14 @@ async def start_bot(max_products: int = 10, dry_run: bool = True):
 
 async def stop_bot():
     robot.stop_flag = True
-    await add_log("warning", "Sinal de parada enviado ao robô Dropper")
+    await add_log("warning", "Sinal de parada enviado ao robô JohnDrop")
 
 
-async def save_dropper_credentials(username: str, password: str):
+async def save_johndrop_credentials(username: str, password: str):
     await _save_credentials(username, password)
 
 
-async def get_dropper_credentials():
+async def get_johndrop_credentials():
     return await _get_credentials()
 
 
@@ -1097,7 +1089,7 @@ _DIAG_JS = """
 """
 
 
-async def diagnostico_dropper(max_chars: int = 3500) -> str:
+async def diagnostico_johndrop(max_chars: int = 3500) -> str:
     """Abre o catálogo e o primeiro produto e devolve um relatório em texto.
 
     Serve para conferir, numa única execução, se o robô está achando as URLs
@@ -1105,19 +1097,19 @@ async def diagnostico_dropper(max_chars: int = 3500) -> str:
     """
     creds = await _get_credentials()
     if not creds:
-        return "Credenciais do Dropper não configuradas (Configurações)."
+        return "Credenciais do JohnDrop não configuradas (Configurações)."
     if not await _playwright_available():
         return "Playwright/Chromium indisponível no servidor."
 
     from playwright.async_api import async_playwright
 
-    linhas: List[str] = ["DIAGNÓSTICO DO ROBÔ DROPPER", "=" * 40]
+    linhas: List[str] = ["DIAGNÓSTICO DO ROBÔ JOHNDROP", "=" * 40]
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=_HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = await browser.new_context(viewport={"width": 1366, "height": 900})
         page = await context.new_page()
         try:
-            if not await _login_dropper(page, creds["username"], creds["password"]):
+            if not await _login_johndrop(page, creds["username"], creds["password"]):
                 linhas.append("FALHA NO LOGIN — a página continuou em /login.")
                 return "\n".join(linhas)
 
@@ -1155,7 +1147,7 @@ async def diagnostico_dropper(max_chars: int = 3500) -> str:
 
             texto = await _read_page_text(page)
             imagens = await _read_product_images(page, quiet=True)
-            produto = dropper_reader.parse_product_text(texto, urls[0], images=imagens)
+            produto = johndrop_reader.parse_product_text(texto, urls[0], images=imagens)
             linhas.append(f"Imagens encontradas: {len(imagens)}")
             linhas.append("")
             linhas.append("CAMPOS INTERPRETADOS PELO ROBÔ")
@@ -1186,145 +1178,159 @@ async def diagnostico_dropper(max_chars: int = 3500) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Piloto: criar UM produto no Bling pela API (Fase 2)
+# Arquivos gerados (para a tela do robô)
 # --------------------------------------------------------------------------- #
 
 
-async def _piloto_um(page, url: str, use_ai: bool, resultado: dict) -> dict:
-    """Lê uma URL e cria no Bling, preenchendo ``resultado``."""
-    import dropper_bling_create as creator
+def _sheet_files() -> List[Path]:
+    """Planilhas geradas, mais nova primeiro."""
+    if not EXPORT_DIR.exists():
+        return []
+    # ordena por data de modificação e, no empate, pelo nome (que já tem o
+    # carimbo AAAAmmdd-HHMM) — assim a "mais recente" é sempre a esperada
+    return sorted(
+        (p for p in EXPORT_DIR.glob("planilha_bling_*.csv")),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
 
-    resultado["etapa"] = f"lendo {_product_id_from_url(url)}"
-    lido = await _read_one_product(page, url, use_ai)
-    if lido is None:
-        resultado["erro"] = "produto pulado na leitura (bloqueado, sem código ou página vazia)"
-        return resultado
 
-    rows, origem, product, limpo = lido
-    resultado["produto"] = {
-        "code": product.code,
-        "title": limpo,
-        "cost": product.cost,
-        "ncm": product.ncm,
-        "ean": product.ean,
-        "brand": product.brand,
-        "unit": product.unit,
-        "images": len(product.images),
-        "descricao": origem,
-        "linha_planilha": rows[0].values,
+def latest_sheet() -> Optional[Path]:
+    files = _sheet_files()
+    return files[0] if files else None
+
+
+def resolve_sheet(name: Optional[str] = None) -> Optional[Path]:
+    """Acha a planilha pelo nome (ou a mais recente), sem sair da pasta."""
+    if not name:
+        return latest_sheet()
+    safe = os.path.basename(name)
+    path = EXPORT_DIR / safe
+    return path if path.is_file() else None
+
+
+def sheet_status() -> dict:
+    """Estado da geração para a tela: arquivo, contagens, relatório."""
+    path = latest_sheet()
+    if not path:
+        return {"file": None, "report": None, "size": 0, "modified": None,
+                "products": 0, "rows": 0, "historico": len(load_history())}
+    report = path.with_name(path.stem + "_revisao.txt")
+    return {
+        "file": path.name,
+        "report": report.name if report.is_file() else None,
+        "size": path.stat().st_size,
+        "modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+        "products": STATE.get("products") or 0,
+        "rows": STATE.get("rows") or 0,
+        "is_test": path.name.startswith("planilha_bling_TESTE"),
+        "historico": len(load_history()),
     }
 
-    curta, compl, _origem = await dropper_descriptions.build_descriptions(
-        limpo, product.description, use_ai=use_ai
-    )
-    try:
-        preco = float(str(rows[0].values.get("Preço") or "").replace(",", ".")) or None
-    except ValueError:
-        preco = None
 
-    resultado["etapa"] = "criando no Bling"
-    cfg = load_export_config()
-    criado = await creator.ensure_product(
-        product,
-        title=limpo,
-        short_description=curta,
-        complementary_description=compl,
-        sale_price=preco,
-        supplier_name=cfg["fornecedor"],
-        send_images=False,
-    )
-    resultado.update(
-        payload=criado.get("payload"),
-        resposta=criado.get("response"),
-        fornecedor=criado.get("supplier"),
-        status=criado.get("status"),
-        product_id=criado.get("product_id"),
-        erro=criado.get("error") or "",
-        ok=criado.get("status") in ("created", "skipped"),
-    )
-    return resultado
+# --------------------------------------------------------------------------- #
+# Diagnóstico (uma execução, para conferir a leitura no site real)
+# --------------------------------------------------------------------------- #
+
+_DIAG_JS = """
+() => {
+    const anchors = Array.from(document.querySelectorAll('a[href]'));
+    const hrefs = anchors.map(a => a.getAttribute('href') || '');
+    const produtos = hrefs.filter(h => h.includes('/cliente/produtos/'));
+    return {
+        total_links: anchors.length,
+        links_produto: produtos.length,
+        amostra_produto: produtos.slice(0, 8),
+        amostra_links: hrefs.filter(h => h && h !== '#').slice(0, 25),
+    };
+}
+"""
 
 
-async def piloto_bling(url_produto: str = "", use_ai: bool = True) -> dict:
-    """Lê um produto no Dropper e cria no Bling pela API (sem planilha).
+async def diagnostico_johndrop(max_chars: int = 3500) -> str:
+    """Abre o catálogo e o primeiro produto e devolve um relatório em texto.
 
-    Devolve TUDO que aconteceu — payload enviado, resposta do Bling, erro
-    traduzido — para a tela mostrar cru.
+    Serve para conferir, numa única execução, se o robô está achando as URLs
+    dos produtos e se o texto lido da página do produto tem todos os campos.
     """
-    resultado: dict = {
-        "ok": False,
-        "etapa": "",
-        "produto": None,
-        "payload": None,
-        "resposta": None,
-        "erro": "",
-    }
     creds = await _get_credentials()
     if not creds:
-        resultado["erro"] = "Credenciais do Dropper não configuradas"
-        return resultado
+        return "Credenciais do JohnDrop não configuradas (Configurações)."
     if not await _playwright_available():
-        resultado["erro"] = "Playwright/Chromium indisponível no servidor"
-        return resultado
-
-    conn = await bling_service_status()
-    if not conn.get("connected"):
-        resultado["erro"] = "Bling não está conectado — conecte em Configurações antes do piloto"
-        return resultado
+        return "Playwright/Chromium indisponível no servidor."
 
     from playwright.async_api import async_playwright
 
+    linhas: List[str] = ["DIAGNÓSTICO DO ROBÔ JOHNDROP", "=" * 40]
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=_HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
+        browser = await pw.chromium.launch(headless=_HEADLESS, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = await browser.new_context(viewport={"width": 1366, "height": 900})
         page = await context.new_page()
         try:
-            resultado["etapa"] = "login no Dropper"
-            if not await _login_dropper(page, creds["username"], creds["password"]):
-                resultado["erro"] = "Login no Dropper falhou"
-                return resultado
+            if not await _login_johndrop(page, creds["username"], creds["password"]):
+                linhas.append("FALHA NO LOGIN — a página continuou em /login.")
+                return "\n".join(linhas)
 
-            alvo = (url_produto or "").strip()
-            if alvo:
-                return await _piloto_um(page, alvo, use_ai, resultado)
-
-            resultado["etapa"] = "procurando um produto livre no catálogo"
             await _open_products_page(page)
-            novos, _ja = filter_new_urls(await _collect_product_urls(page, 0), load_history())
-            if not novos:
-                resultado["erro"] = (
-                    "Nenhum produto novo no catálogo (todos já estão no histórico). "
-                    "Zere o histórico ou informe a URL de um produto."
-                )
-                return resultado
+            linhas.append(f"Catálogo aberto em: {page.url}")
+            try:
+                info = await page.evaluate(_DIAG_JS)
+            except Exception as e:
+                info = {}
+                linhas.append(f"Falha ao inspecionar a página: {str(e)[:120]}")
+            linhas.append(f"Links na página: {info.get('total_links', 0)}")
+            linhas.append(f"Links de produto (/cliente/produtos/): {info.get('links_produto', 0)}")
+            amostra = info.get("amostra_produto") or []
+            if amostra:
+                linhas.append("Exemplos de link de produto:")
+                linhas.extend(f"  - {a}" for a in amostra)
+            else:
+                linhas.append("Nenhum link de produto. Primeiros links da página:")
+                linhas.extend(f"  - {a}" for a in (info.get("amostra_links") or [])[:15])
 
-            # os primeiros podem estar bloqueados/sem código: tenta até 5
-            for candidato in novos[:5]:
-                tentativa = await _piloto_um(page, candidato, use_ai, dict(resultado))
-                if tentativa.get("produto"):
-                    return tentativa
-                resultado = tentativa
-            resultado["erro"] = (
-                "Os primeiros produtos estavam bloqueados ou sem código — piloto não rodou"
-            )
-            return resultado
+            urls = await _collect_product_urls(page, 1)
+            if not urls:
+                linhas.append("")
+                linhas.append("NÃO ENCONTREI PRODUTO PARA ABRIR — me mande este relatório.")
+                return "\n".join(linhas)
+
+            linhas.append("")
+            linhas.append(f"ABRINDO PRODUTO: {urls[0]}")
+            try:
+                await page.goto(urls[0], wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                linhas.append(f"Falha ao abrir o produto: {str(e)[:140]}")
+                return "\n".join(linhas)
+
+            texto = await _read_page_text(page)
+            imagens = await _read_product_images(page, quiet=True)
+            produto = johndrop_reader.parse_product_text(texto, urls[0], images=imagens)
+            linhas.append(f"Imagens encontradas: {len(imagens)}")
+            linhas.append("")
+            linhas.append("CAMPOS INTERPRETADOS PELO ROBÔ")
+            linhas.append(f"  código:    {produto.code!r}")
+            linhas.append(f"  título:    {produto.title!r}")
+            linhas.append(f"  custo:     {produto.cost!r}")
+            linhas.append(f"  estoque:   {produto.stock!r}")
+            linhas.append(f"  marca:     {produto.brand!r}")
+            linhas.append(f"  categoria: {produto.category!r}")
+            linhas.append(f"  unidade:   {produto.unit!r}")
+            linhas.append(f"  EAN:       {produto.ean!r}")
+            linhas.append(f"  NCM:       {produto.ncm!r}")
+            linhas.append(f"  fornecedor:{produto.supplier!r}")
+            linhas.append(f"  descrição: {len(produto.description)} caracteres")
+            linhas.append("")
+            linhas.append("TEXTO BRUTO DA PÁGINA (para conferência)")
+            linhas.append("-" * 40)
+            linhas.append((texto or "")[:max_chars])
+            return "\n".join(linhas)
         except Exception as e:
-            resultado["erro"] = f"exceção na etapa '{resultado.get('etapa')}': {str(e)[:300]}"
-            return resultado
+            linhas.append(f"Erro no diagnóstico: {str(e)[:200]}")
+            return "\n".join(linhas)
         finally:
             try:
                 await browser.close()
             except Exception:
                 pass
 
-
-async def bling_service_status() -> dict:
-    """Status da conexão com o Bling (sem levantar exceção)."""
-    try:
-        import bling_service
-
-        return await bling_service.status()
-    except Exception:
-        return {"connected": False}
