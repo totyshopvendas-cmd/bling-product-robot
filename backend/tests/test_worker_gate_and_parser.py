@@ -19,7 +19,12 @@ from enrich_worker import (
     _is_totyshop_bling_integration,
     _source_text_for_enrichment,
 )
-from bling_enrichment import _is_sortido, _parse_variations, _parse_variation_quantities
+from bling_enrichment import (
+    _extract_johndrop_id_from_observations,
+    _is_sortido,
+    _parse_variations,
+    _parse_variation_quantities,
+)
 from bling_variations import _build_stock_plan
 
 
@@ -73,6 +78,20 @@ def test_manual_johndrop_uses_original_bling_description():
     )
     assert title == "Lanterna manual"
     assert description == "Cor:\n- Preto\n- Azul"
+
+
+def test_extracts_johndrop_supplier_id_from_observations():
+    product = {"observacoes": "Integração Jonhdrop id : 209544"}
+    assert _extract_johndrop_id_from_observations(product) == "209544"
+
+
+def test_extracts_johndrop_supplier_id_from_alternate_observation_shape():
+    product = {"observacaoInterna": {"texto": "Integração JohnDrop código # 99881"}}
+    assert _extract_johndrop_id_from_observations(product) == "99881"
+
+
+def test_missing_johndrop_observation_does_not_invent_supplier_id():
+    assert _extract_johndrop_id_from_observations({"observacoes": "Cadastro interno"}) is None
 
 
 # ---------- Variation parser ----------

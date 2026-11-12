@@ -785,6 +785,39 @@ async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None
 
 _SUPPLIER_CACHE: dict = {}
 
+# JohnDrop's native Bling integration writes the supplier product identifier in
+# the product's Observações field, e.g. "Integração Jonhdrop id : 209544".
+# Accept both spellings used in the UI: JonhDrop and JohnDrop.
+_JOHNDROP_OBSERVATION_ID_RE = re.compile(
+    r"\b(?:integra(?:ç|c)[aã]o\s*)?(?:jonh|john)\s*drop\s*"
+    r"(?:id|c[oó]digo)?\s*[:#=\-]?\s*(\d{3,})\b",
+    re.IGNORECASE,
+)
+
+
+def _observation_text(value: object) -> str:
+    """Flatten the observation field returned by different Bling API shapes."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_observation_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_observation_text(item) for item in value)
+    return ""
+
+
+def _extract_johndrop_id_from_observations(product: Optional[dict]) -> Optional[str]:
+    """Read the JohnDrop supplier code stored in Bling product observations."""
+    if not product:
+        return None
+    # API field names vary by endpoint/version; inspect the common variants.
+    text = " ".join(
+        _observation_text(product.get(key))
+        for key in ("observacoes", "observacao", "observacoesInternas", "observacaoInterna")
+    )
+    match = _JOHNDROP_OBSERVATION_ID_RE.search(text)
+    return match.group(1) if match else None
+
 
 async def update_bling_product(
     product_id: int,
@@ -1147,6 +1180,19 @@ async def enrich_product_by_sku(
         full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
     else:
         full_after_sync = await _fetch_bling_product_full(product_id) or product
+
+    # The native JohnDrop integration leaves its product ID in Observações.
+    # Prefer that value when present so the JONH VARIEDADES supplier record in
+    # Bling receives the same code the user sees in the product screen.
+    observation_johndrop_id = _extract_johndrop_id_from_observations(full_after_sync or product)
+    if observation_johndrop_id:
+        if observation_johndrop_id != str(johndrop_id or ""):
+            await add_log(
+                "info",
+                f"Bling: ID JohnDrop {observation_johndrop_id} lido das observações para {sku}",
+            )
+        johndrop_id = observation_johndrop_id
+
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
     bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]
