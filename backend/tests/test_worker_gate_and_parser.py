@@ -15,7 +15,8 @@ import asyncio
 import pytest
 
 from enrich_worker import _is_ready_for_enrichment
-from bling_enrichment import _parse_variations
+from bling_enrichment import _parse_variations, _parse_variation_quantities
+from bling_variations import _build_stock_plan
 
 
 # ---------- Worker gate ----------
@@ -78,6 +79,86 @@ def test_parse_simple_colors():
     raw = "Disponível nas cores: Azul, Verde, Vermelho"
     out = _parse_variations(raw)
     assert set(out) >= {"Azul", "Verde", "Vermelho"}, out
+
+
+def test_markdown_esgotado_creates_variation_with_zero_stock():
+    """The supplier's Markdown list must keep the sold-out option as a child."""
+    raw = (
+        "**Disponível nas cores:**  \n"
+        "- Branco  \n"
+        "- Cinza Escuro (ESGOTADO)"
+    )
+    variations = _parse_variations(raw)
+    quantities = _parse_variation_quantities(raw, variations)
+
+    assert variations == ["Branco", "Cinza Escuro"]
+    assert quantities == {"Cinza Escuro": 0}
+    # With 12 units in the parent, the available option gets all 12 while the
+    # sold-out option still exists and is explicitly assigned zero.
+    assert _build_stock_plan(12, variations, quantities) == {
+        "Branco": 12,
+        "Cinza Escuro": 0,
+    }
+
+
+def test_stock_plan_subtracts_explicit_amount_before_split():
+    """Explicit quantities and sold-out children cannot inflate total stock."""
+    plan = _build_stock_plan(
+        20,
+        ["Branco", "Cinza", "Preto"],
+        {"Cinza": 0, "Preto": 8},
+    )
+    assert plan == {"Branco": 12, "Cinza": 0, "Preto": 8}
+    assert sum(plan.values()) == 20
+
+
+def test_create_variations_applies_zero_to_esgotado_child(monkeypatch):
+    """The initial creation flow must send an explicit zero to Bling."""
+    import bling_variations
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.status_code = 200
+            self._data = data
+            self.text = ""
+
+        def json(self):
+            return self._data
+
+    async def fake_request(method, path, **_kwargs):
+        if method == "PATCH":
+            return FakeResponse({"data": {"variations": {"saved": [
+                {"id": 101, "nomeVariacao": "Cor:Branco"},
+                {"id": 102, "nomeVariacao": "Cor:Cinza Escuro"},
+            ]}}})
+        return FakeResponse({"data": {"midia": {"imagens": {"internas": []}}}})
+
+    stocks = []
+
+    async def capture_stock(ids, quantity):
+        stocks.append((ids[0], quantity))
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def default_deposit():
+        return 1
+
+    monkeypatch.setattr(bling_variations.bling_service, "bling_request", fake_request)
+    monkeypatch.setattr(bling_variations, "_set_children_stock", capture_stock)
+    monkeypatch.setattr(bling_variations, "_get_default_deposito_id", default_deposit)
+    monkeypatch.setattr(bling_variations, "add_log", noop)
+
+    result = asyncio.run(bling_variations.create_variations(
+        99,
+        {"nome": "Produto", "codigo": "SKU-1", "preco": 10},
+        ["Branco", "Cinza Escuro"],
+        total_stock=12,
+        explicit_quantities={"Cinza Escuro": 0},
+    ))
+
+    assert result["created"] == 2
+    assert dict(stocks) == {101: 12, 102: 0}
 
 
 def test_parse_single_color_returns_empty():
