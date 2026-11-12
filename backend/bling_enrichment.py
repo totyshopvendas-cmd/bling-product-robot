@@ -465,9 +465,10 @@ def _parse_variation_quantities(raw_description: str, variations: List[str]) -> 
 def _parse_variations(raw_description: str) -> List[str]:
     """Extract variation names from descriptions following strict TotyShop rules:
 
-    1. Must contain the trigger word "Disponível" / "Disponíveis" together with
-       "cores" / "tamanhos" / "modelos". Without "Disponível", NO variations are
-       extracted (avoids descriptive text being mistaken for variations).
+    1. Recognises "Disponível" / "Disponíveis" together with "cores" /
+       "tamanhos" / "modelos", OR an explicit section heading such as
+       "Cor:", "Tamanho:" or "Modelo:". A section still needs at least two
+       listed options to become variations.
     2. If the description says "conforme disponibilidade do estoque" / "seguindo
        a disponibilidade" / "de acordo com o estoque" anywhere, the seller doesn't
        let the buyer choose → NO variations extracted.
@@ -510,6 +511,10 @@ def _parse_variations(raw_description: str) -> List[str]:
         (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
         # Singular com "Disponível" — só será aceito se body tiver 2+ itens
         (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
+        # Alguns fornecedores usam só uma seção explícita, como "Cor:" ou
+        # "Tamanho:", sem a palavra "Disponível". Só criaremos variações se
+        # houver duas ou mais opções após o título.
+        (r"(?:^|\n)\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", False),
     ]
     body = ""
     kind = ""

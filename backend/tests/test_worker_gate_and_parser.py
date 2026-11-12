@@ -81,6 +81,28 @@ def test_parse_simple_colors():
     assert set(out) >= {"Azul", "Verde", "Vermelho"}, out
 
 
+def test_explicit_cor_section_without_disponivel_creates_variations():
+    """Supplier sections headed only by 'Cor:' are selectable variations."""
+    raw = (
+        "Lanterna LED Super Brilhante\n\n"
+        "**Características Técnicas:**\n"
+        "- Material: Liga de alumínio resistente.\n"
+        "- Tipo de Iluminação: LED Super Brilhante.\n\n"
+        "**Cor:**\n"
+        "- Preto\n"
+        "- Vermelho\n"
+        "- Dourado\n"
+        "- Azul\n\n"
+        "**Medidas da embalagem:** 5 x 5 x 12 cm"
+    )
+    assert _parse_variations(raw) == ["Preto", "Vermelho", "Dourado", "Azul"]
+
+
+def test_explicit_tamanho_section_without_disponivel_creates_variations():
+    raw = "Tamanho:\n- P\n- M\n- G\n\nMedidas: consulte a tabela"
+    assert _parse_variations(raw) == ["P", "M", "G"]
+
+
 def test_markdown_esgotado_creates_variation_with_zero_stock():
     """The supplier's Markdown list must keep the sold-out option as a child."""
     raw = (
