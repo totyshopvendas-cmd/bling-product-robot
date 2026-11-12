@@ -40,7 +40,9 @@ export default function AISettings() {
 
   const load = useCallback(async () => {
     try {
-      const { data } = await api.get("/settings/ai");
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch("/api/settings/ai");
+      const data = await res.json();
       setStatus(data);
     } catch (err) {
       logger.error("ai settings:", err);
@@ -59,7 +61,13 @@ export default function AISettings() {
     }
     setSaving(true);
     try {
-      const { data } = await api.post("/settings/ai", payload);
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch("/api/settings/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
       setStatus(data);
       setKeys({});
       toast.success("Chaves de IA salvas");
@@ -74,7 +82,9 @@ export default function AISettings() {
   const test = async (provider) => {
     setTesting(provider);
     try {
-      const { data } = await api.post("/settings/ai/test", { provider }, { timeout: 90000 });
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch(`/api/settings/ai/test?provider=${provider}`, { timeout: 90000 });
+      const data = await res.json();
       setResults((r) => ({ ...r, [provider]: data }));
       if (data.ok) toast.success(`${provider}: funcionando`);
       else toast.error(`${provider}: ${data.error}`);

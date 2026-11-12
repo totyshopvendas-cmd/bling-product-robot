@@ -36,7 +36,6 @@ import pricing_service
 import bling_service
 import robot_service
 import johndrop_bot
-import dropper_bot
 import shopee_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
@@ -458,20 +457,6 @@ async def get_johndrop_creds_status() -> dict:
     return {"configured": True, "username": creds.get("username")}
 
 
-# ---------- Dropper settings ----------
-@api.post("/settings/dropper")
-async def set_dropper_creds(creds: JohnDropCreds) -> dict:
-    await dropper_bot.save_dropper_credentials(creds.username, creds.password)
-    return {"ok": True}
-
-
-@api.get("/settings/dropper")
-async def get_dropper_creds_status() -> dict:
-    creds = await dropper_bot.get_dropper_credentials()
-    if not creds:
-        return {"configured": False}
-    return {"configured": True, "username": creds.get("username")}
-
 
 # ---------- Brand settings (item 4) ----------
 class BrandSettings(BaseModel):
@@ -503,42 +488,6 @@ async def save_brand_settings(req: BrandSettings) -> dict:
     )
     return await get_brand_settings()
 
-
-# ---------- Dropper Robot ----------
-@api.post("/dropper/start", response_model=RobotStatusResponse)
-async def dropper_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
-    if dropper_bot.robot.state == "running":
-        raise HTTPException(400, "Robô Dropper já está em execução")
-    creds = await dropper_bot.get_dropper_credentials()
-    if not creds or not creds.get("username"):
-        raise HTTPException(400, "Salve o e-mail e a senha do Dropper em Configurações")
-    if not cfg.dry_run:
-        cr = johndrop_bot.chromium_status()
-        if not cr.get("installed"):
-            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium na tela do Robô JohnDrop.")
-        n = await db.pricing.count_documents({})
-        if n == 0:
-            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
-    await dropper_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
-    return RobotStatusResponse(**robot_service.robot.to_dict())
-
-
-@api.post("/dropper/stop")
-async def dropper_stop() -> dict:
-    await dropper_bot.stop_bot()
-    return {"ok": True}
-
-
-@api.get("/dropper/status", response_model=RobotStatusResponse)
-async def dropper_status() -> RobotStatusResponse:
-    return RobotStatusResponse(**robot_service.robot.to_dict())
-
-
-@api.get("/dropper/logs")
-async def dropper_logs(limit: int = 100) -> list:
-    # O robô Dropper compartilha o mesmo estado/logs do robô JohnDrop (robot_service),
-    # então devolvemos os logs gerais — o usuário vê a atividade do Dropper neles.
-    return await robot_service.get_logs(limit)
 
 
 # ---------- Shopee Robot ----------

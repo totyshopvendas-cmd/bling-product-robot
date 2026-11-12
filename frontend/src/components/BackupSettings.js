@@ -11,10 +11,12 @@ export default function BackupSettings() {
   const download = async () => {
     setBusy("backup");
     try {
-      const res = await api.get("/admin/backup", { responseType: "blob", timeout: 300000 });
-      const cd = res.headers["content-disposition"] || "";
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch("/api/admin/backup", { timeout: 300000 });
+      const blob = await res.blob();
+      const cd = res.headers.get("content-disposition") || "";
       const m = cd.match(/filename="([^"]+)"/);
-      const url = URL.createObjectURL(res.data);
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = m ? m[1] : "totyshop_backup.json";
@@ -38,7 +40,13 @@ export default function BackupSettings() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const { data } = await api.post("/admin/restore", fd, { timeout: 300000 });
+      // endpoints.blingOAuthConfig foi removido, agora usamos a API direta
+      const res = await fetch("/api/admin/restore", {
+        method: "POST",
+        body: fd,
+        timeout: 300000,
+      });
+      const data = await res.json();
       const total = Object.values(data.restored || {}).reduce((a, b) => a + b, 0);
       toast.success(`Restaurado: ${total} registros em ${Object.keys(data.restored || {}).length} tabelas`);
     } catch (err) {
