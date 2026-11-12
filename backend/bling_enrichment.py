@@ -270,10 +270,16 @@ async def _save_review(
 
 # --------------------------------------------------- sortido (item 2) --------
 SORTIDO_RE = re.compile(
-    r"(conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque|"
+    r"(conforme\s+(?:a\s+)?disponibilidade\s+(?:(?:do|de|em)\s+)?estoque|"
     r"seguindo\s+(?:a\s+)?disponibilidade|"
     r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)|"
     r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade|"
+    # Ex.: "As cores são enviadas aleatoriamente conforme disponibilidade em estoque".
+    # Há lista de cores, mas o comprador não pode escolher uma variação.
+    r"enviad[oa]s?\s+(?:de\s+forma\s+)?aleatoriamente|"
+    r"envio\s+(?:de\s+forma\s+)?aleat[oó]rio|"
+    r"(?:cores?|modelos?|tamanhos?)\s+(?:aleat[oó]ri[oa]s?|sortid[oa]s?)|"
+    r"aleatoriamente\s+(?:conforme|seguindo|de\s+acordo\s+com)?\s*(?:a\s+)?disponibilidade|"
     r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade|"
     r"\bsortid[oa]s?\b|\bvariad[oa]s?\b|\bconforme\s+estoque\b)",
     re.IGNORECASE,
@@ -477,19 +483,11 @@ def _parse_variations(raw_description: str) -> List[str]:
     # poderiam virar uma falsa variação chamada "**".
     text = re.sub(r"\*\*|__|`", "", raw_description)
 
-    # GATE 1: "conforme disponibilidade do estoque" → buyer doesn't choose → no variations
-    # Estes disclaimers bloqueiam qualquer tipo de variação (o vendedor manda
-    # o que tiver, comprador não escolhe).
-    global_disclaimers = [
-        r"conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque",
-        r"seguindo\s+(?:a\s+)?disponibilidade",
-        r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
-        r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
-        r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
-    ]
-    for dp in global_disclaimers:
-        if re.search(dp, text, re.IGNORECASE):
-            return []
+    # GATE 1: fornecedor escolhe por disponibilidade/aleatoriamente → não há
+    # variação selecionável. Usa a mesma regra do fluxo de enriquecimento para
+    # evitar que o diagnóstico e o cadastro cheguem a conclusões diferentes.
+    if _is_sortido(text):
+        return []
 
     # GATE 1b: disclaimers ESPECÍFICOS por tipo — "cor única" só bloqueia
     # variações de COR; "tamanho único" só bloqueia TAMANHO; etc.

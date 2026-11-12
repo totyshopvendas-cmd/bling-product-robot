@@ -15,7 +15,7 @@ import asyncio
 import pytest
 
 from enrich_worker import _is_ready_for_enrichment
-from bling_enrichment import _parse_variations, _parse_variation_quantities
+from bling_enrichment import _is_sortido, _parse_variations, _parse_variation_quantities
 from bling_variations import _build_stock_plan
 
 
@@ -173,6 +173,20 @@ def test_parse_disclaimer_blocks_variations():
     raw = "Cores disponíveis conforme disponibilidade do estoque: Azul, Verde"
     out = _parse_variations(raw)
     assert out == [], "Disclaimer deve bloquear extração"
+
+
+def test_markdown_random_colors_do_not_create_variations():
+    """A list of colors is not selectable when the supplier sends one at random."""
+    raw = (
+        "**Disponível nas cores:**  \n"
+        "**- Preto**  \n"
+        "**- Rosa**  \n"
+        "**- Branco**  \n"
+        "**- Azul**  \n"
+        "**(As cores são enviadas aleatoriamente conforme disponibilidade em estoque)**"
+    )
+    assert _is_sortido(raw) is True
+    assert _parse_variations(raw) == []
 
 
 def test_parse_filters_descriptive_phrases():
