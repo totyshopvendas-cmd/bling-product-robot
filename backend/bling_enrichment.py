@@ -541,9 +541,31 @@ def _parse_variations(raw_description: str) -> List[str]:
         # NOTE: we KEEP items marked as "(esgotado)" — variations with 0 stock should be
         # created in Bling with quantity=0 (per TotyShop manual). The status info is
         # extracted later by _parse_variation_quantities.
-        # Remove parenthetical content (e.g. "(esgotado)" or "(5)") for the name itself
+        # Remove parenthetical content (e.g. "(esgotado)" or "(5)") for the name itself.
         p_clean = re.sub(r"\([^)]*\)", "", p).strip()
+        # An option can include its own stock status ("Azul: 5" or
+        # "Azul - Esgotado"). Keep only the option name before applying the
+        # attribute gate below.
+        p_clean = re.sub(
+            r"\s*[:\-–]\s*(?:\d{1,4}\s*(?:un|unidade?s?|pcs|peças?)?|"
+            r"esgotad[oa]?|sem\s+estoque|indispon[ií]ve[il])\s*$",
+            "", p_clean, flags=re.IGNORECASE,
+        ).strip()
         if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
+            continue
+        # A colon still present means this is a specification key/value, not an
+        # option. Without this gate, a characteristic block such as
+        # "Cor: Preto / Material: EVA" became fake variations in TrimPro.
+        if ":" in p_clean:
+            continue
+        # Reject common technical-property rows even when a supplier omitted
+        # the colon. Real colors, sizes and model options remain eligible.
+        if re.match(
+            r"^(?:material|tipo|peso|medidas?|dimens(?:ão|oes|ões)?|voltagem|"
+            r"capacidade|conte[uú]do|embalagem|origem|ncm|marca|uso|indica(?:ç|c)[aã]o|"
+            r"compatibilidade|caracter[ií]sticas?|informa(?:ç|c)[oõ]es?)\b",
+            p_clean, re.IGNORECASE,
+        ):
             continue
         # FILTER: descriptive phrases ("Ideal Para Setups Temáticos" has 4 words)
         # Allow up to 3 words to keep compound colors ("Cinza com preto",
