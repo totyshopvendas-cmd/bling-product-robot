@@ -121,6 +121,24 @@ def test_parse_simple_colors():
     assert set(out) >= {"Azul", "Verde", "Vermelho"}, out
 
 
+def test_inline_colors_stop_before_trimpro_characteristics():
+    """The real TrimPro layout puts features immediately after its inline colors."""
+    raw = (
+        "Características:\n"
+        "Kit com 10 unidades\n"
+        "Modelo: Capacete de Segurança EPI\n"
+        "Material: Plástico\n"
+        "Cores disponíveis: Amarelo, Azul, Branco, Preto, Verde e Vermelho\n"
+        "Argola metálica\n"
+        "Leve e prático\n"
+        "Excelente opção para brindes e ações promocionais\n"
+        "Medidas aproximadas de cada chaveiro"
+    )
+    assert _parse_variations(raw) == [
+        "Amarelo", "Azul", "Branco", "Preto", "Verde", "Vermelho",
+    ]
+
+
 def test_explicit_cor_section_without_disponivel_creates_variations():
     """Supplier sections headed only by 'Cor:' are selectable variations."""
     raw = (
