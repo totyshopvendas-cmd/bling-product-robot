@@ -654,11 +654,167 @@ async def _fill_sale_price(page, sale_price: int) -> bool:
         return False
 
 
+_TRIMPRO_NAME_INPUT_SELECTOR = 'input[name="name"], input#name, input[placeholder*="Nome"]'
+
+
+def _choose_trimpro_source_title(candidates: list, field_value: str = "") -> str:
+    """Pick the real supplier title shown between the NOME header and its input.
+
+    TrimPro puts the source title in visible text above the blank ``Nome`` field;
+    unlike JohnDrop it is not the input's initial value.  The browser-side
+    collector returns nearest candidates first, but this pure gate keeps labels
+    such as ``NOME`` and ``Nome (máx. 60 caracteres)`` out of the result.
+    """
+    ignored = {
+        "nome", "name", "informações da categoria", "informacoes da categoria",
+        "informações descritivas", "informacoes descritivas",
+    }
+    for entry in candidates or []:
+        text = entry.get("text", "") if isinstance(entry, dict) else str(entry or "")
+        text = re.sub(r"\s+", " ", text).strip(" -:\t\n")
+        lowered = text.casefold()
+        if not text or lowered in ignored:
+            continue
+        if "máx" in lowered or "max" in lowered or "carac" in lowered:
+            continue
+        if len(text) < 3 or len(text) > 180:
+            continue
+        # Form labels are usually just one short token. A source title must be
+        # meaningful text, e.g. "Mouse Pad Ergonômico com Apoio...".
+        if len(text.split()) == 1 and len(text) < 12:
+            continue
+        return text
+    return (field_value or "").strip()
+
+
+async def _read_trimpro_source_title(page, name_input) -> str:
+    """Read the product title displayed immediately below TrimPro's NOME card."""
+    candidates = []
+    try:
+        candidates = await page.evaluate(
+            """
+            () => {
+                const clean = value => (value || '').replace(/\\s+/g, ' ').trim();
+                const visible = el => {
+                    const r = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && style.display !== 'none' &&
+                        style.visibility !== 'hidden' && style.opacity !== '0';
+                };
+                const input = document.querySelector('input[name="name"], input#name, input[placeholder*="Nome"]');
+                if (!input || !visible(input)) return [];
+
+                const inputBox = input.getBoundingClientRect();
+                const elements = Array.from(document.querySelectorAll('div, p, span, strong, b, small, label, h1, h2, h3, h4'));
+                const sectionHeader = elements.find(el => visible(el) && clean(el.innerText || el.textContent).toLowerCase() === 'nome');
+                const headerBottom = sectionHeader ? sectionHeader.getBoundingClientRect().bottom : inputBox.top - 180;
+                const minTop = Math.max(0, headerBottom - 8);
+                const out = [];
+                const seen = new Set();
+
+                for (const el of elements) {
+                    if (!visible(el)) continue;
+                    const box = el.getBoundingClientRect();
+                    // The source is visually located between the NOME heading
+                    // and the Nome input, in the same column (as in TrimPro).
+                    if (box.top < minTop || box.bottom > inputBox.top + 4) continue;
+                    if (box.right < inputBox.left - 30 || box.left > inputBox.right + 30) continue;
+                    const directText = Array.from(el.childNodes)
+                        .filter(node => node.nodeType === Node.TEXT_NODE)
+                        .map(node => node.textContent || '').join(' ');
+                    const text = clean(directText || (el.children.length === 0 ? el.innerText || el.textContent : ''));
+                    const key = text.toLowerCase();
+                    if (!text || seen.has(key)) continue;
+                    seen.add(key);
+                    out.push({ text, distance: Math.max(0, inputBox.top - box.bottom) });
+                }
+                return out.sort((a, b) => a.distance - b.distance);
+            }
+            """
+        ) or []
+    except Exception:
+        candidates = []
+
+    current_value = ""
+    try:
+        current_value = (await name_input.input_value() or "").strip()
+    except Exception:
+        pass
+    return _choose_trimpro_source_title(candidates, current_value)
+
+
+def _is_poor_trimpro_title(title: str) -> bool:
+    """Flag only titles too vague to be useful in a marketplace listing."""
+    cleaned = (title or "").strip()
+    generic_words = {"produto", "item", "modelo", "novo", "novidade", "acessorio", "acessório"}
+    words = [word.casefold() for word in re.findall(r"[A-Za-zÀ-ÿ0-9-]+", cleaned)]
+    meaningful = [word for word in words if word not in generic_words]
+    return len(cleaned) < 12 or len(meaningful) < 2
+
+
+def _professional_title_from_description(description: str, preferred_code: Optional[str]) -> Optional[dict]:
+    """Use a factual descriptive line when TrimPro's displayed name is too vague.
+
+    This makes a stronger title without inventing product facts or consuming an
+    AI credit. The normal title-cleaning rules and 60-character maximum still
+    apply to the replacement.
+    """
+    plain = re.sub(r"<[^>]+>", " ", description or "")
+    plain = plain.replace("&nbsp;", " ")
+    skip_prefixes = (
+        "descrição", "descricao", "característica", "caracteristica", "informação",
+        "informacao", "material", "cor", "tamanho", "medida", "peso", "sku",
+    )
+    for line in re.split(r"[\r\n.!?]+", plain):
+        line = re.sub(r"^[\s•\-–:]+", "", line).strip()
+        if len(line) < 12 or line.casefold().startswith(skip_prefixes):
+            continue
+        candidate = clean_title(line, preferred_code=preferred_code)
+        if not _is_poor_trimpro_title(candidate["cleaned"]):
+            candidate["method"] = "description_fallback"
+            return candidate
+    return None
+
+
+def _build_trimpro_title(raw_title: str, raw_description: str, preferred_code: Optional[str]) -> dict:
+    """Clean the supplier title, with a factual professional fallback if needed."""
+    cleaned = clean_title(raw_title, preferred_code=preferred_code)
+    if not _is_poor_trimpro_title(cleaned["cleaned"]):
+        return cleaned
+    improved = _professional_title_from_description(raw_description, preferred_code)
+    if improved:
+        improved["raw"] = raw_title
+        return improved
+    return cleaned
+
+
+async def _fill_trimpro_name(page, title: str) -> bool:
+    """Fill and verify TrimPro's editable Nome field."""
+    name_input = await page.query_selector(_TRIMPRO_NAME_INPUT_SELECTOR)
+    if not name_input:
+        await _trimpro_log("error", "Campo 'Nome' da TrimPro não localizado")
+        return False
+    try:
+        await name_input.scroll_into_view_if_needed()
+        await name_input.fill(title)
+        await page.wait_for_timeout(150)
+        final_value = (await name_input.input_value() or "").strip()
+        if final_value != title:
+            await _trimpro_log(
+                "warning",
+                f"Campo 'Nome' não confirmou o título preenchido: '{final_value}'",
+            )
+            return False
+        return True
+    except Exception as exc:
+        await _trimpro_log("error", f"Falha ao preencher o campo 'Nome': {exc}")
+        return False
+
+
 async def _read_product_fields(page) -> Tuple[str, float]:
-    """Read raw title and cost from TrimPro product creation form."""
-    raw_title = ""
-    if await page.query_selector('input[name="name"], input#name, input[placeholder*="Nome"]'):
-        raw_title = await page.input_value('input[name="name"], input#name, input[placeholder*="Nome"]')
+    """Read TrimPro's source title below NOME and its product cost."""
+    name_input = await page.query_selector(_TRIMPRO_NAME_INPUT_SELECTOR)
+    raw_title = await _read_trimpro_source_title(page, name_input) if name_input else ""
     cost = 0.0
     cost_input = await page.query_selector('input[placeholder*="Custo"], input[name="cost"], input#cost')
     if cost_input:
@@ -959,11 +1115,22 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     # 1. Select the TotyShop-Bling integration
     await _select_integration(page)
 
-    # 2. Read raw title + cost
+    # 2. Read TrimPro's source title shown below the NOME heading + cost.
+    # Unlike JohnDrop, TrimPro leaves the editable Nome input blank.
     raw_title, cost = await _read_product_fields(page)
+    if not raw_title:
+        await _trimpro_log(
+            "error",
+            "Título original abaixo de 'NOME' não localizado — produto não foi cadastrado para evitar nome vazio.",
+        )
+        trimpro_robot.failed += 1
+        trimpro_robot.processed += 1
+        await _open_catalog(page)
+        return True
     trimpro_robot.current_product = raw_title[:60]
 
-    # 2b. Read raw description (used later for Bling enrichment)
+    # 2b. Read raw description (used later for Bling enrichment and only as a
+    # factual fallback if the title displayed by the supplier is too poor).
     raw_description = await _read_product_description(page)
     raw_images = await _read_product_images(page)
 
@@ -991,9 +1158,29 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await _open_catalog(page)
         return True
 
-    # 5. Clean title and fill (use the cleaned SKU as preferred code if present)
-    cleaned = clean_title(raw_title, preferred_code=sku)
-    await page.fill('input[name="name"], input#name', cleaned["cleaned"])
+    # 5. Clean the visible source title and fill TrimPro's Nome input. The
+    # shared cleaner keeps the 60-character rule; only poor source titles use
+    # a factual phrase from the product description as a professional fallback.
+    cleaned = _build_trimpro_title(raw_title, raw_description, preferred_code=sku)
+    if cleaned.get("method") == "description_fallback":
+        await _trimpro_log(
+            "info",
+            f"Título TrimPro muito curto/genérico; usado contexto da descrição: '{cleaned['cleaned']}'",
+            raw_title=raw_title,
+            cleaned_title=cleaned["cleaned"],
+        )
+    elif _is_poor_trimpro_title(cleaned["cleaned"]):
+        await _trimpro_log(
+            "warning",
+            f"Título TrimPro curto/genérico sem descrição útil; mantido após limpeza: '{cleaned['cleaned']}'",
+            raw_title=raw_title,
+            cleaned_title=cleaned["cleaned"],
+        )
+    if not await _fill_trimpro_name(page, cleaned["cleaned"]):
+        trimpro_robot.failed += 1
+        trimpro_robot.processed += 1
+        await _open_catalog(page)
+        return True
 
     # 6. Fill sale price
     price_ok = await _fill_sale_price(page, price.sale_price_int)

@@ -16,6 +16,49 @@ def test_trimpro_has_its_own_runtime_state_and_provider_settings():
     assert trimpro_bot.INTEGRATION_NAME == "TotyShop-Bling"
 
 
+def test_trimpro_reads_visible_title_below_nome_not_blank_input():
+    source = trimpro_bot._choose_trimpro_source_title([
+        {"text": "NOME", "distance": 90},
+        {"text": "Mouse Pad Ergonômico com Apoio para Pulso Personalizado", "distance": 60},
+        {"text": "Nome * (máx 60 carac.)", "distance": 10},
+    ])
+    assert source == "Mouse Pad Ergonômico com Apoio para Pulso Personalizado"
+
+
+def test_trimpro_reads_source_text_instead_of_the_empty_nome_input():
+    class EmptyNameInput:
+        async def input_value(self):
+            return ""
+
+    class TrimProCreatePage:
+        async def query_selector(self, selector):
+            if selector == trimpro_bot._TRIMPRO_NAME_INPUT_SELECTOR:
+                return EmptyNameInput()
+            return None
+
+        async def evaluate(self, _script):
+            return [
+                {"text": "NOME", "distance": 90},
+                {"text": "Mouse Pad Ergonômico com Apoio para Pulso Personalizado", "distance": 60},
+                {"text": "Nome * (máx 60 carac.)", "distance": 10},
+            ]
+
+    raw_title, cost = asyncio.run(trimpro_bot._read_product_fields(TrimProCreatePage()))
+    assert raw_title == "Mouse Pad Ergonômico com Apoio para Pulso Personalizado"
+    assert cost == 0.0
+
+
+def test_trimpro_poor_title_uses_a_factual_professional_description_phrase():
+    result = trimpro_bot._build_trimpro_title(
+        "Produto",
+        "Mouse Pad Ergonômico com Apoio para Pulso Personalizado. Material resistente.",
+        preferred_code=None,
+    )
+    assert result["method"] == "description_fallback"
+    assert "Mouse Pad" in result["cleaned"]
+    assert len(result["cleaned"]) <= 60
+
+
 def test_trimpro_log_is_tagged_for_its_own_log_stream(monkeypatch):
     captured = {}
 
