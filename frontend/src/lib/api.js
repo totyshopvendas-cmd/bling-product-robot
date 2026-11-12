@@ -54,13 +54,24 @@ export const endpoints = {
   setJohnDropCreds: (username, password) =>
     api.post("/settings/johndrop", { username, password }),
   getJohnDropStatus: () => api.get("/settings/johndrop"),
+  setTrimProCreds: (username, password) =>
+    api.post("/settings/trimpro", { username, password }),
+  getTrimProStatus: () => api.get("/settings/trimpro"),
 
   robotStart: (max_products, dry_run) =>
     api.post("/robot/start", { max_products, dry_run }),
   robotStop: () => api.post("/robot/stop"),
   robotStatus: () => api.get("/robot/status"),
-  robotLogs: (limit = 100) => api.get(`/robot/logs?limit=${limit}`),
+  robotLogs: (limit = 100, bot) =>
+    api.get("/robot/logs", { params: { limit, ...(bot ? { bot } : {}) } }),
   robotLogsClear: () => api.post("/robot/logs/clear"),
+
+  trimproStart: (max_products, dry_run) =>
+    api.post("/trimpro/start", { max_products, dry_run }),
+  trimproStop: () => api.post("/trimpro/stop"),
+  trimproStatus: () => api.get("/trimpro/status"),
+  trimproLogs: (limit = 100) => api.get(`/trimpro/logs?limit=${limit}`),
+  trimproLogsClear: () => api.post("/trimpro/logs/clear"),
 
   getBrandSettings: () => api.get("/settings/brand"),
   saveBrandSettings: (mode, store_name) =>

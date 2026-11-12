@@ -11,6 +11,7 @@ const NAV = [
   { to: "/limpeza", icon: Sparkles, label: "Limpeza de Título" },
   { to: "/precos", icon: Tags, label: "Tabela de Preços" },
   { to: "/robo", icon: Bot, label: "Robô JohnDrop" },
+  { to: "/robo-trimpro", icon: Bot, label: "Robô TrimPro" },
   { to: "/shopee", icon: Bot, label: "Robô Shopee" },
   { to: "/revisar-produtos", icon: List, label: "Revisar Produtos" },
   { to: "/bling", icon: Layers, label: "Enriquecimento Bling" },

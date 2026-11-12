@@ -59,6 +59,12 @@ class JohnDropCreds(BaseModel):
     password: str
 
 
+class TrimProCreds(BaseModel):
+    """Credentials kept independently from JohnDrop credentials."""
+    username: str
+    password: str
+
+
 class RobotJobConfig(BaseModel):
     max_products: int = 10
     use_llm_fallback: bool = False

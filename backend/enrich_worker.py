@@ -266,7 +266,9 @@ async def _tick() -> None:
                 sku,
                 raw_title,
                 raw_description,
-                johndrop_id=item.get("johndrop_id"),
+                # `supplier_code` is used by providers such as TrimPro;
+                # legacy JohnDrop jobs keep their existing `johndrop_id` key.
+                johndrop_id=item.get("supplier_code") or item.get("johndrop_id"),
                 cost=item.get("cost"),
                 supplier_name=item.get("supplier_name"),
             )
