@@ -267,6 +267,30 @@ def test_parse_filters_descriptive_phrases():
     assert not any("Ideal" in v for v in out), f"Frase descritiva vazou: {out}"
 
 
+def test_characteristics_do_not_become_trimpro_variations():
+    """A key/value feature block is not a selectable color/size/model list."""
+    raw = (
+        "Características do produto:\n"
+        "Cor: Preto\n"
+        "Material: EVA\n"
+        "Tamanho: 30 x 40 cm\n"
+        "Medidas: 30 x 40 cm"
+    )
+    assert _parse_variations(raw) == []
+
+
+def test_explicit_options_ignore_following_trimpro_characteristics():
+    """Real options remain valid; only the later Material/Medidas rows are ignored."""
+    raw = (
+        "Cor:\n"
+        "- Preto\n"
+        "- Azul\n"
+        "Material: EVA\n"
+        "Medidas: 30 x 40 cm"
+    )
+    assert _parse_variations(raw) == ["Preto", "Azul"]
+
+
 def test_parse_tamanho_unico_nao_bloqueia_cores():
     """REGRESSÃO: 'Tamanho: Tamanho Único para Adultos' NÃO deve zerar as
     variações de COR (só bloqueia bloco de TAMANHOS)."""
