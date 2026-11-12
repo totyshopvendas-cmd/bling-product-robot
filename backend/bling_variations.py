@@ -43,6 +43,50 @@ def _attribute_kind(name: str) -> str:
     return "Tamanho" if SIZE_HINTS.match(name.strip()) else "Cor"
 
 
+def _variation_key(name: str) -> str:
+    """Normalise a variation label for matching supplier text to Bling data."""
+    # Bling returns labels such as ``Cor:Branco`` while the JohnDrop description
+    # contains just ``Branco``.
+    label = (name or "").split(":", 1)[-1]
+    return re.sub(r"\s+", " ", label).strip().casefold()
+
+
+def _build_stock_plan(
+    total_stock: int, variation_names: List[str], explicit_quantities: Optional[dict] = None,
+) -> dict:
+    """Return the absolute stock that each child variation must receive.
+
+    An explicit value always wins. In particular, ``Cinza Escuro (ESGOTADO)``
+    becomes ``{"Cinza Escuro": 0}``, so the child is created and intentionally
+    receives zero units. The stock left after explicit values is divided only
+    among the other children.
+    """
+    explicit: dict = {}
+    for name, qty in (explicit_quantities or {}).items():
+        try:
+            explicit[_variation_key(name)] = max(0, int(qty))
+        except (TypeError, ValueError):
+            continue
+
+    plan: dict = {}
+    remaining: List[str] = []
+    explicit_total = 0
+    for name in variation_names:
+        key = _variation_key(name)
+        if key in explicit:
+            plan[name] = explicit[key]
+            explicit_total += explicit[key]
+        else:
+            remaining.append(name)
+
+    available = max(0, int(total_stock or 0) - explicit_total)
+    if remaining:
+        each, remainder = divmod(available, len(remaining))
+        for index, name in enumerate(remaining):
+            plan[name] = each + (1 if index < remainder else 0)
+    return plan
+
+
 async def create_variations(
     parent_id: int,
     parent_current: Optional[dict],
@@ -106,6 +150,10 @@ async def create_variations(
             existing_names.add(nome_var.strip().lower())
 
     new_vars: List[dict] = []
+    # Keep the supplier-facing option name alongside the API payload. The Bling
+    # response may omit ``nomeVariacao``, so this gives us a reliable fallback
+    # for assigning stock to the correct child in request order.
+    new_names: List[str] = []
     skipped = 0
     for raw_name in variations:
         clean = (raw_name or "").strip()
@@ -118,6 +166,7 @@ async def create_variations(
             continue
         sigla = _variation_sigla(clean)
         child_sku = f"{parent_sku}-{sigla}" if parent_sku else ""
+        new_names.append(clean)
         new_vars.append({
             "nome": f"{parent_name} {clean}"[:120],
             "codigo": child_sku,
@@ -159,71 +208,81 @@ async def create_variations(
         return {"created": 0, "per_child_stock": 0}
 
     created = 0
-    saved_ids: List[int] = []
+    saved: List[dict] = []
     try:
-        body = resp.json()
-        vinfo = (body.get("data") or {}).get("variations") or {}
-        saved = vinfo.get("saved") or []
+        body = resp.json() or {}
+        saved = ((body.get("data") or {}).get("variations") or {}).get("saved") or []
         created = len(saved)
-        saved_ids = [s["id"] for s in saved if s.get("id")]
     except Exception:
         created = len(new_vars)
 
-    # Build map: saved variation id → its name (Rosa, Azul, P, M etc) from the response
+    # Resolve each newly saved child to the exact option name found in the
+    # JohnDrop description. ``nomeVariacao`` is preferred, and payload order is
+    # the fallback for Bling responses that only return child IDs.
     name_to_id: dict = {}
-    try:
-        body_data = (resp.json() or {}).get("data") or {}
-        for s in (body_data.get("variations") or {}).get("saved") or []:
-            sid = s.get("id")
-            nome_var = s.get("nomeVariacao") or ""
-            # nomeVariacao format: "Cor:Rosa" → take after the colon
-            label = nome_var.split(":", 1)[-1].strip() if ":" in nome_var else nome_var.strip()
-            if sid and label:
-                name_to_id[label] = sid
-    except Exception:
-        pass
+    saved_ids: List[int] = []
+    for index, item in enumerate(saved):
+        sid = item.get("id")
+        if not sid:
+            continue
+        saved_ids.append(sid)
+        response_name = item.get("nomeVariacao") or item.get("variacao") or ""
+        for label in (response_name, new_names[index] if index < len(new_names) else ""):
+            key = _variation_key(label)
+            if key:
+                name_to_id[key] = sid
 
-    # Distribute stock — explicit quantities first (including ZEROS for out-of-stock),
-    # then equal split for the remaining ones.
+    # A few Bling responses acknowledge the PATCH but omit variation names.
+    # Re-read the parent in that case instead of accidentally giving stock to
+    # an out-of-stock child.
+    target_keys = {_variation_key(name) for name in new_names}
+    if saved_ids and not target_keys.issubset(name_to_id):
+        try:
+            refreshed_response = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
+            if refreshed_response.status_code < 400:
+                refreshed = (refreshed_response.json() or {}).get("data") or {}
+                for child in refreshed.get("variacoes") or []:
+                    sid = child.get("id")
+                    label = ((child.get("variacao") or {}).get("nome") or "")
+                    key = _variation_key(label)
+                    if sid and key in target_keys:
+                        name_to_id[key] = sid
+        except Exception:
+            pass
+
+    # Build a complete absolute-stock plan. E.g. with total=12, Branco and
+    # Cinza Escuro (ESGOTADO), it produces Branco=12 and Cinza Escuro=0.
+    child_names = [name for name in new_names if _variation_key(name) in name_to_id]
+    stock_by_variation = _build_stock_plan(total_stock, child_names, explicit_quantities)
     per_child = 0
-    if saved_ids:
-        explicit_map = explicit_quantities or {}
-        remaining_ids = list(saved_ids)
-        for var_name, qty in explicit_map.items():
-            sid = name_to_id.get(var_name)
-            if not sid:
-                continue
-            qty_int = max(0, int(qty))
-            # Apply absolute (including 0 to ensure out-of-stock variations show 0)
-            await _set_children_stock([sid], qty_int)
-            if sid in remaining_ids:
-                remaining_ids.remove(sid)
-        # Equal split between the ones NOT explicitly quantified
-        if total_stock and total_stock > 0 and remaining_ids:
-            per_child = total_stock // len(remaining_ids)
-            remainder = total_stock - per_child * len(remaining_ids)
-            for i, sid in enumerate(remaining_ids):
-                qty = per_child + (1 if i < remainder else 0)
-                await _set_children_stock([sid], qty)
+    if stock_by_variation:
+        per_child = min(stock_by_variation.values())
+        for name, qty in stock_by_variation.items():
+            await _set_children_stock([name_to_id[_variation_key(name)]], qty)
+    elif saved_ids:
+        await add_log(
+            "warning",
+            f"Variações pid={parent_id}: Bling não retornou IDs suficientes para distribuir estoque",
+        )
 
-        # After distributing, ZERO the parent's stock — Bling tracks parent + children
-        # as separate totals. If we don't zero the parent, the dashboard shows DOUBLE.
-        if total_stock and total_stock > 0:
-            dep_id = await _get_default_deposito_id()
-            if dep_id:
-                try:
-                    await bling_service.bling_request(
-                        "POST", "/estoques",
-                        json={
-                            "produto": {"id": parent_id},
-                            "deposito": {"id": dep_id},
-                            "operacao": "B",
-                            "quantidade": 0,
-                            "observacoes": "Pai zerado — estoque vive nas variações",
-                        },
-                    )
-                except Exception:
-                    pass
+    # After distributing, ZERO the parent's stock — Bling tracks parent + children
+    # as separate totals. If we don't zero the parent, the dashboard shows DOUBLE.
+    if stock_by_variation and total_stock and total_stock > 0:
+        dep_id = await _get_default_deposito_id()
+        if dep_id:
+            try:
+                await bling_service.bling_request(
+                    "POST", "/estoques",
+                    json={
+                        "produto": {"id": parent_id},
+                        "deposito": {"id": dep_id},
+                        "operacao": "B",
+                        "quantidade": 0,
+                        "observacoes": "Pai zerado — estoque vive nas variações",
+                    },
+                )
+            except Exception:
+                pass
 
     # Copy parent images onto each child variation so the Bling listing shows
     # a thumbnail for each variation. We RE-FETCH the parent here so we can pull

@@ -270,10 +270,16 @@ async def _save_review(
 
 # --------------------------------------------------- sortido (item 2) --------
 SORTIDO_RE = re.compile(
-    r"(conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque|"
+    r"(conforme\s+(?:a\s+)?disponibilidade\s+(?:(?:do|de|em)\s+)?estoque|"
     r"seguindo\s+(?:a\s+)?disponibilidade|"
     r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)|"
     r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade|"
+    # Ex.: "As cores são enviadas aleatoriamente conforme disponibilidade em estoque".
+    # Há lista de cores, mas o comprador não pode escolher uma variação.
+    r"enviad[oa]s?\s+(?:de\s+forma\s+)?aleatoriamente|"
+    r"envio\s+(?:de\s+forma\s+)?aleat[oó]rio|"
+    r"(?:cores?|modelos?|tamanhos?)\s+(?:aleat[oó]ri[oa]s?|sortid[oa]s?)|"
+    r"aleatoriamente\s+(?:conforme|seguindo|de\s+acordo\s+com)?\s*(?:a\s+)?disponibilidade|"
     r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade|"
     r"\bsortid[oa]s?\b|\bvariad[oa]s?\b|\bconforme\s+estoque\b)",
     re.IGNORECASE,
@@ -423,7 +429,9 @@ def _parse_variation_quantities(raw_description: str, variations: List[str]) -> 
     out: dict = {}
     if not raw_description or not variations:
         return out
-    text = raw_description
+    # Mantém a leitura igual à do parser de variações quando a descrição vem
+    # formatada em Markdown (por exemplo, título entre **).
+    text = re.sub(r"\*\*|__|`", "", raw_description)
     for v in variations:
         v_re = re.escape(v)
         # Out-of-stock markers FIRST (force 0)
@@ -457,9 +465,10 @@ def _parse_variation_quantities(raw_description: str, variations: List[str]) -> 
 def _parse_variations(raw_description: str) -> List[str]:
     """Extract variation names from descriptions following strict TotyShop rules:
 
-    1. Must contain the trigger word "Disponível" / "Disponíveis" together with
-       "cores" / "tamanhos" / "modelos". Without "Disponível", NO variations are
-       extracted (avoids descriptive text being mistaken for variations).
+    1. Recognises "Disponível" / "Disponíveis" together with "cores" /
+       "tamanhos" / "modelos", OR an explicit section heading such as
+       "Cor:", "Tamanho:" or "Modelo:". A section still needs at least two
+       listed options to become variations.
     2. If the description says "conforme disponibilidade do estoque" / "seguindo
        a disponibilidade" / "de acordo com o estoque" anywhere, the seller doesn't
        let the buyer choose → NO variations extracted.
@@ -469,29 +478,27 @@ def _parse_variations(raw_description: str) -> List[str]:
     if not raw_description:
         return []
 
-    # GATE 1: "conforme disponibilidade do estoque" → buyer doesn't choose → no variations
-    # Estes disclaimers bloqueiam qualquer tipo de variação (o vendedor manda
-    # o que tiver, comprador não escolhe).
-    global_disclaimers = [
-        r"conforme\s+(?:a\s+)?disponibilidade\s+(?:do\s+|de\s+)?estoque",
-        r"seguindo\s+(?:a\s+)?disponibilidade",
-        r"de\s+acordo\s+com\s+(?:o\s+|a\s+)?(?:estoque|disponibilidade)",
-        r"enviad[oa]s?\s+conforme\s+(?:a\s+)?disponibilidade",
-        r"sujeit[oa]s?\s+(?:à|a)\s+disponibilidade",
-    ]
-    for dp in global_disclaimers:
-        if re.search(dp, raw_description, re.IGNORECASE):
-            return []
+    # Descrições do JohnDrop usam Markdown com frequência, por exemplo:
+    # "**Disponível nas cores:**\n- Branco\n- Cinza Escuro (ESGOTADO)".
+    # Os marcadores de destaque não fazem parte do nome da cor e, se mantidos,
+    # poderiam virar uma falsa variação chamada "**".
+    text = re.sub(r"\*\*|__|`", "", raw_description)
+
+    # GATE 1: fornecedor escolhe por disponibilidade/aleatoriamente → não há
+    # variação selecionável. Usa a mesma regra do fluxo de enriquecimento para
+    # evitar que o diagnóstico e o cadastro cheguem a conclusões diferentes.
+    if _is_sortido(text):
+        return []
 
     # GATE 1b: disclaimers ESPECÍFICOS por tipo — "cor única" só bloqueia
     # variações de COR; "tamanho único" só bloqueia TAMANHO; etc.
     # Um produto pode ter "tamanho único" para adultos MAS ter 5 cores.
     blocked_kinds: set = set()
-    if re.search(r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\bcor\s+(?:[úu]nica|do\s+produto|fixa|principal)\b", text, re.IGNORECASE):
         blocked_kinds.add("cores")
-    if re.search(r"\btamanho\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\btamanho\s+(?:[úu]nico|fixo|padr[ãa]o)\b", text, re.IGNORECASE):
         blocked_kinds.add("tamanhos")
-    if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", raw_description, re.IGNORECASE):
+    if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", text, re.IGNORECASE):
         blocked_kinds.add("modelos")
 
     # GATE 2: aceita PLURAL ("cores"/"tamanhos"/"modelos") sempre; aceita
@@ -504,11 +511,15 @@ def _parse_variations(raw_description: str) -> List[str]:
         (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
         # Singular com "Disponível" — só será aceito se body tiver 2+ itens
         (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
+        # Alguns fornecedores usam só uma seção explícita, como "Cor:" ou
+        # "Tamanho:", sem a palavra "Disponível". Só criaremos variações se
+        # houver duas ou mais opções após o título.
+        (r"(?:^|\n)\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", False),
     ]
     body = ""
     kind = ""
     for pat, _is_plural in patterns:
-        m = re.search(pat, raw_description, re.IGNORECASE)
+        m = re.search(pat, text, re.IGNORECASE)
         if m:
             kind = (m.group(1) or "").lower()
             body = m.group(2)
@@ -524,7 +535,7 @@ def _parse_variations(raw_description: str) -> List[str]:
     parts = re.split(r"\s*(?:[-,;\n]|\s+(?:e|ou)\s+)\s*", body, flags=re.IGNORECASE)
     out: List[str] = []
     for p in parts:
-        p = p.strip(" -")
+        p = p.strip(" -*•\t")
         if not p or len(p) > 30:
             continue
         # NOTE: we KEEP items marked as "(esgotado)" — variations with 0 stock should be
@@ -773,6 +784,39 @@ async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None
 
 
 _SUPPLIER_CACHE: dict = {}
+
+# JohnDrop's native Bling integration writes the supplier product identifier in
+# the product's Observações field, e.g. "Integração Jonhdrop id : 209544".
+# Accept both spellings used in the UI: JonhDrop and JohnDrop.
+_JOHNDROP_OBSERVATION_ID_RE = re.compile(
+    r"\b(?:integra(?:ç|c)[aã]o\s*)?(?:jonh|john)\s*drop\s*"
+    r"(?:id|c[oó]digo)?\s*[:#=\-]?\s*(\d{3,})\b",
+    re.IGNORECASE,
+)
+
+
+def _observation_text(value: object) -> str:
+    """Flatten the observation field returned by different Bling API shapes."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_observation_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_observation_text(item) for item in value)
+    return ""
+
+
+def _extract_johndrop_id_from_observations(product: Optional[dict]) -> Optional[str]:
+    """Read the JohnDrop supplier code stored in Bling product observations."""
+    if not product:
+        return None
+    # API field names vary by endpoint/version; inspect the common variants.
+    text = " ".join(
+        _observation_text(product.get(key))
+        for key in ("observacoes", "observacao", "observacoesInternas", "observacaoInterna")
+    )
+    match = _JOHNDROP_OBSERVATION_ID_RE.search(text)
+    return match.group(1) if match else None
 
 
 async def update_bling_product(
@@ -1136,6 +1180,19 @@ async def enrich_product_by_sku(
         full_after_sync = await _wait_for_johndrop_sync(product_id, sku)
     else:
         full_after_sync = await _fetch_bling_product_full(product_id) or product
+
+    # The native JohnDrop integration leaves its product ID in Observações.
+    # Prefer that value when present so the JONH VARIEDADES supplier record in
+    # Bling receives the same code the user sees in the product screen.
+    observation_johndrop_id = _extract_johndrop_id_from_observations(full_after_sync or product)
+    if observation_johndrop_id:
+        if observation_johndrop_id != str(johndrop_id or ""):
+            await add_log(
+                "info",
+                f"Bling: ID JohnDrop {observation_johndrop_id} lido das observações para {sku}",
+            )
+        johndrop_id = observation_johndrop_id
+
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
     bling_external = [(i.get("link") or "") for i in (bling_imgs.get("externas") or [])]
@@ -1191,13 +1248,27 @@ async def enrich_product_by_sku(
             variations = _parse_variations(raw_description)
             if variations:
                 # ITEM 1 — confirmação de cor por visão IA antes de criar variações.
+                # Uma opção marcada como ESGOTADA continua sendo uma opção real do
+                # fornecedor. Ela é preservada mesmo que não apareça nas fotos e
+                # recebe saldo zero quando as variações são criadas.
+                parsed_quantities = _parse_variation_quantities(raw_description, variations)
+                sold_out_keys = {
+                    name.casefold()
+                    for name, qty in parsed_quantities.items()
+                    if isinstance(qty, (int, float)) and qty == 0
+                }
                 color_candidates = [v for v in variations if _is_color_name(v)]
                 non_color = [v for v in variations if not _is_color_name(v)]
                 confirmed_colors: List[str] = []
                 if color_candidates:
-                    confirmed = await _confirm_colors_by_vision(images, color_candidates)
+                    colors_to_confirm = [c for c in color_candidates if c.casefold() not in sold_out_keys]
+                    confirmed = await _confirm_colors_by_vision(images, colors_to_confirm)
                     confirmed_set = set(confirmed)
-                    confirmed_colors = [c for c in color_candidates if _normalize_color_for_vision(c) in confirmed_set]
+                    confirmed_colors = [
+                        c for c in color_candidates
+                        if c.casefold() in sold_out_keys
+                        or _normalize_color_for_vision(c) in confirmed_set
+                    ]
                     rejected = [c for c in color_candidates if c not in confirmed_colors]
                     if rejected:
                         await add_log(
