@@ -29,13 +29,14 @@ load_dotenv(ROOT_DIR / ".env", override=False)
 from db import db, init_indexes
 from models import (
     TitleCleanRequest, TitleCleanResponse, PriceLookupResponse,
-    JohnDropCreds, RobotJobConfig, RobotStatusResponse, DashboardStats,
+    JohnDropCreds, TrimProCreds, RobotJobConfig, RobotStatusResponse, DashboardStats,
 )
 from title_cleaner import clean_title
 import pricing_service
 import bling_service
 import robot_service
 import johndrop_bot
+import trimpro_bot
 import shopee_bot
 from llm_cleaner import llm_clean_title
 import bling_enrichment
@@ -154,6 +155,7 @@ async def system_chromium_status() -> dict:
 async def system_ready() -> dict:
     """What the robot actually needs before it can cadastre."""
     jd = await johndrop_bot.get_johndrop_credentials()
+    trimpro = await trimpro_bot.get_trimpro_credentials()
     bling = await bling_service.status()
     try:
         pricing_rows = await db.pricing.count_documents({})
@@ -161,18 +163,23 @@ async def system_ready() -> dict:
         pricing_rows = 0
     cr = johndrop_bot.chromium_status()
     johndrop_ok = bool(jd and jd.get("username"))
+    trimpro_ok = bool(trimpro and trimpro.get("username"))
     bling_ok = bool(bling.get("connected"))
     chromium_ok = bool(cr.get("installed"))
     table_ok = pricing_rows > 0
     return {
         "johndrop": johndrop_ok,
         "johndrop_username": (jd or {}).get("username") or "",
+        "trimpro": trimpro_ok,
+        "trimpro_username": (trimpro or {}).get("username") or "",
         "bling": bling_ok,
         "pricing_rows": pricing_rows,
         "chromium": chromium_ok,
         "chromium_path": cr.get("path") or "",
         "can_test": johndrop_ok,
         "can_cadastre": johndrop_ok and table_ok and chromium_ok,
+        "can_trimpro_test": trimpro_ok,
+        "can_trimpro_cadastre": trimpro_ok and table_ok and chromium_ok,
         "can_enrich": bling_ok,
         "can_stock": johndrop_ok and bling_ok and chromium_ok,
     }
@@ -457,6 +464,19 @@ async def get_johndrop_creds_status() -> dict:
     return {"configured": True, "username": creds.get("username")}
 
 
+@api.post("/settings/trimpro")
+async def set_trimpro_creds(creds: TrimProCreds) -> dict:
+    await trimpro_bot.save_trimpro_credentials(creds.username, creds.password)
+    return {"ok": True}
+
+
+@api.get("/settings/trimpro")
+async def get_trimpro_creds_status() -> dict:
+    creds = await trimpro_bot.get_trimpro_credentials()
+    if not creds:
+        return {"configured": False}
+    return {"configured": True, "username": creds.get("username")}
+
 
 # ---------- Brand settings (item 4) ----------
 class BrandSettings(BaseModel):
@@ -522,15 +542,56 @@ async def robot_status() -> RobotStatusResponse:
 
 @api.get("/robot/logs")
 async def robot_logs(limit: int = 100, bot: Optional[str] = None) -> list:
-    logs = await robot_service.get_logs(limit)
-    if bot:
-        logs = [log for log in logs if (log.get("bot") or "johndrop") == bot]
-    return logs
+    # No filter keeps the legacy API behavior. The JohnDrop UI now explicitly
+    # requests its own stream so the independent TrimPro messages do not mix in.
+    return await robot_service.get_logs(limit, bot=bot)
 
 
 @api.post("/robot/logs/clear")
 async def robot_logs_clear() -> dict:
+    # Preserve the legacy endpoint behavior for external callers.
     await robot_service.clear_logs()
+    return {"ok": True}
+
+
+# ---------- TrimPro Robot ----------
+@api.post("/trimpro/start", response_model=RobotStatusResponse)
+async def trimpro_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
+    if trimpro_bot.trimpro_robot.state == "running":
+        raise HTTPException(400, "Robô TrimPro já está em execução")
+    creds = await trimpro_bot.get_trimpro_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da TrimPro em Configurações")
+    if not cfg.dry_run:
+        cr = trimpro_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium nesta tela.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
+    await trimpro_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**trimpro_bot.trimpro_robot.to_dict())
+
+
+@api.post("/trimpro/stop")
+async def trimpro_stop() -> dict:
+    await trimpro_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/trimpro/status", response_model=RobotStatusResponse)
+async def trimpro_status() -> RobotStatusResponse:
+    return RobotStatusResponse(**trimpro_bot.trimpro_robot.to_dict())
+
+
+@api.get("/trimpro/logs")
+async def trimpro_logs(limit: int = 100) -> list:
+    return await robot_service.get_logs(limit, bot="trimpro")
+
+
+@api.post("/trimpro/logs/clear")
+async def trimpro_logs_clear() -> dict:
+    await robot_service.clear_logs(bot="trimpro")
     return {"ok": True}
 
 
@@ -1259,9 +1320,11 @@ async def dashboard_stats() -> DashboardStats:
     bling = await bling_service.status()
     jd = await johndrop_bot.get_johndrop_credentials()
     shopee_creds = await shopee_bot.get_shopee_credentials_status()
-    processed = await robot_service.count_logs_today()
-    success = await robot_service.count_logs_today("success")
-    failed = await robot_service.count_logs_today("error")
+    # Dashboard metrics continue to represent JohnDrop; TrimPro owns a
+    # separate execution screen and log stream.
+    processed = await robot_service.count_logs_today(bot="johndrop")
+    success = await robot_service.count_logs_today("success", bot="johndrop")
+    failed = await robot_service.count_logs_today("error", bot="johndrop")
     return DashboardStats(
         pricing_rows=pricing_count,
         bling_connected=bling.get("connected", False),

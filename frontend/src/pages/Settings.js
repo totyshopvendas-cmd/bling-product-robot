@@ -12,6 +12,9 @@ export default function SettingsPage() {
   const [cfg, setCfg] = useState(null);
   const [jd, setJd] = useState({ configured: false, username: "" });
   const [creds, setCreds] = useState({ username: "", password: "" });
+  const [trimpro, setTrimPro] = useState({ configured: false, username: "" });
+  const [trimproCreds, setTrimProCreds] = useState({ username: "", password: "" });
+  const [savingTrimPro, setSavingTrimPro] = useState(false);
   const [brand, setBrand] = useState({ mode: "fabricante", store_name: "" });
   const [brandInput, setBrandInput] = useState("");
   const [brandMode, setBrandMode] = useState("fabricante");
@@ -38,13 +41,16 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     try {
       const origin = window.location.origin;
-      const [b, j] = await Promise.all([
+      const [b, j, t] = await Promise.all([
         endpoints.blingOAuthConfig(origin),
         endpoints.getJohnDropStatus(),
+        endpoints.getTrimProStatus(),
       ]);
       setCfg(b.data);
       setJd(j.data);
+      setTrimPro(t.data);
       if (j.data.username) setCreds((c) => ({ ...c, username: j.data.username }));
+      if (t.data.username) setTrimProCreds((c) => ({ ...c, username: t.data.username }));
       try {
         const { data: br } = await endpoints.getBrandSettings();
         setBrand(br);
@@ -102,6 +108,22 @@ export default function SettingsPage() {
     }
   };
 
+  const saveTrimPro = async (e) => {
+    e.preventDefault();
+    if (!trimproCreds.username || !trimproCreds.password) {
+      toast.error("Preencha e-mail e senha da TrimPro");
+      return;
+    }
+    setSavingTrimPro(true);
+    try {
+      await endpoints.setTrimProCreds(trimproCreds.username, trimproCreds.password);
+      toast.success("TrimPro salva — o robô já pode entrar");
+      load();
+    } finally {
+      setSavingTrimPro(false);
+    }
+  };
+
 
   const keysOk = Boolean(cfg?.configured);
   const needSecret = lastError?.toLowerCase().includes("secret") || lastError?.toLowerCase().includes("client id");
@@ -112,7 +134,7 @@ export default function SettingsPage() {
         <div className="label-overline mb-1">Integrações</div>
         <h1 className="font-display text-3xl font-bold tracking-tighter">Configurações</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Um clique no Bling. A JohnDrop usa o usuário e a senha salvos aqui.
+          Um clique no Bling. JohnDrop e TrimPro usam suas credenciais próprias salvas aqui.
         </p>
       </div>
 
@@ -250,6 +272,66 @@ export default function SettingsPage() {
         >
           <Save className="h-4 w-4" />
           {saving ? "Salvando…" : "Salvar JohnDrop"}
+        </button>
+      </form>
+
+      <form onSubmit={saveTrimPro} className="border border-border bg-white p-6 space-y-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-sm bg-[#0F766E] grid place-items-center text-white font-display font-bold">T</div>
+            <div>
+              <div className="font-display text-lg font-bold tracking-tight">TrimPro</div>
+              <div className="text-xs text-muted-foreground">Credenciais exclusivas para o catálogo app.trimpro.com.br</div>
+            </div>
+          </div>
+          {trimpro?.configured && (
+            <span className="text-xs px-3 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-sm uppercase font-semibold inline-flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Pronto
+            </span>
+          )}
+        </div>
+
+        {trimpro?.configured && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-sm p-4 text-sm text-emerald-900">
+            TrimPro salva. O robô usa {trimpro.username} e a integração TotyShop-Bling.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="label-overline">E-mail</label>
+            <input
+              data-testid="trimpro-username-input"
+              type="email"
+              name="trimpro-username"
+              autoComplete="off"
+              value={trimproCreds.username}
+              onChange={(e) => setTrimProCreds((c) => ({ ...c, username: e.target.value }))}
+              placeholder="email@exemplo.com"
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+          <div>
+            <label className="label-overline">Senha</label>
+            <input
+              data-testid="trimpro-password-input"
+              type="password"
+              value={trimproCreds.password}
+              onChange={(e) => setTrimProCreds((c) => ({ ...c, password: e.target.value }))}
+              placeholder={trimpro.configured ? "••••••••" : "Senha TrimPro"}
+              className="w-full text-sm border border-border rounded-sm px-3 py-2.5 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+        </div>
+
+        <button
+          data-testid="save-trimpro-btn"
+          type="submit"
+          disabled={savingTrimPro}
+          className="bg-[#EE7B22] text-white text-sm font-medium px-5 py-2.5 rounded-sm hover:bg-[#C9651A] disabled:opacity-50 inline-flex items-center gap-2"
+        >
+          <Save className="h-4 w-4" />
+          {savingTrimPro ? "Salvando…" : "Salvar TrimPro"}
         </button>
       </form>
 

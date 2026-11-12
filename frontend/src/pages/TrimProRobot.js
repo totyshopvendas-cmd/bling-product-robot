@@ -1,0 +1,344 @@
+import { useEffect, useState, useCallback } from "react";
+import { api, endpoints } from "@/lib/api";
+import { logger } from "@/lib/logger";
+import { Play, Square, RefreshCw, Bot, AlertTriangle, CheckCircle2, Download, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+
+const LOG_DOT_COLORS = {
+  success: "bg-emerald-500",
+  error: "bg-rose-500",
+  warning: "bg-amber-500",
+  info: "bg-zinc-400",
+};
+
+const POLL_INTERVAL_MS = 2500;
+
+const STATE_META = {
+  idle: { label: "Ocioso", color: "bg-zinc-100 text-zinc-700 border-zinc-300" },
+  running: { label: "Em execução", color: "bg-emerald-100 text-emerald-700 border-emerald-400" },
+  paused: { label: "Pausado", color: "bg-amber-100 text-amber-700 border-amber-400" },
+  error: { label: "Erro", color: "bg-rose-100 text-rose-700 border-rose-400" },
+};
+
+export default function TrimProRobotPage() {
+  const [status, setStatus] = useState(null);
+  const [maxProducts, setMaxProducts] = useState(5);
+  const [dryRun, setDryRun] = useState(true);
+  const [logs, setLogs] = useState([]);
+  const [chromium, setChromium] = useState(null);
+  const [installing, setInstalling] = useState(false);
+
+  const [ready, setReady] = useState(null);
+
+  const tick = useCallback(async () => {
+    try {
+      const { data: s } = await endpoints.trimproStatus();
+      setStatus(s);
+    } catch (err) {
+      logger.error("robot status:", err);
+    }
+    try {
+      const { data: l } = await endpoints.trimproLogs(50);
+      setLogs(l);
+    } catch (err) {
+      logger.error("robot logs:", err);
+    }
+    try {
+      const { data: c } = await api.get("/system/chromium-status");
+      setChromium(c);
+    } catch (err) {
+      logger.error("chromium status:", err);
+      setChromium((prev) => prev || { installed: false });
+    }
+    try {
+      const { data: r } = await api.get("/system/ready");
+      setReady(r);
+    } catch (err) {
+      logger.error("system ready:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    tick();
+    const timer = setInterval(tick, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [tick]);
+
+  const installChromium = async () => {
+    setInstalling(true);
+    try {
+      const { data } = await api.post("/system/install-chromium");
+      if (data.already_installed) {
+        toast.success("Chromium já está pronto");
+      } else {
+        toast.message("Tentando baixar o Chromium no servidor…");
+      }
+      const startTs = Date.now();
+      const poll = setInterval(async () => {
+        try {
+          const { data: c } = await api.get("/system/chromium-status");
+          setChromium(c);
+          if (c.installed) {
+            clearInterval(poll);
+            setInstalling(false);
+            toast.success("Chromium instalado!");
+            return;
+          }
+          if (Date.now() - startTs > 45000) {
+            clearInterval(poll);
+            setInstalling(false);
+            toast.error("Não foi possível baixar o Chromium nesta prévia (rede bloqueada). O login do Bling não depende disso.");
+          }
+        } catch (err) {
+          logger.error("poll chromium:", err);
+        }
+      }, 4000);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha");
+      setInstalling(false);
+    }
+  };
+
+  const start = async () => {
+    if (!dryRun && chromium && !chromium.installed) {
+      toast.error("Chromium não está pronto — clique em 'Instalar Chromium' primeiro");
+      return;
+    }
+    try {
+      await endpoints.trimproStart(parseInt(maxProducts, 10) || 5, dryRun);
+      toast.success("Robô iniciado");
+      tick();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Falha ao iniciar");
+    }
+  };
+
+  const stop = async () => {
+    await endpoints.trimproStop();
+    toast.info("Parada solicitada");
+    tick();
+  };
+
+  const meta = STATE_META[status?.state] || STATE_META.idle;
+  const chromiumReady = chromium?.installed;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="label-overline mb-1">Automação TrimPro</div>
+        <h1 className="font-display text-3xl font-bold tracking-tighter">Robô de Cadastro</h1>
+        <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
+          O robô faz login no TrimPro, abre o catálogo de produtos sem cadastro, seleciona a integração
+          <strong>TotyShop-Bling</strong>, limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>.
+          Após a sincronização, o enriquecimento usa as mesmas regras do JohnDrop e vincula o fornecedor <strong>TRIMPRO</strong> no Bling.
+        </p>
+        <p className="text-xs text-amber-700 mt-2 max-w-3xl">
+          ⚠️ Por padrão começa em <strong>MODO TESTE (Dry-Run)</strong> — só simula sem cadastrar.
+          Desmarque a caixa para cadastrar de verdade.
+        </p>
+      </div>
+
+      {ready && (
+        <div className="border border-border bg-white p-4 text-sm space-y-1">
+          <div className="label-overline mb-2">Antes de cadastrar de verdade</div>
+          <p>{ready.trimpro ? "✓" : "✗"} TrimPro (e-mail/senha em Configurações)</p>
+          <p>{ready.pricing_rows > 0 ? "✓" : "✗"} Tabela de preços ({ready.pricing_rows.toLocaleString("pt-BR")} linhas)</p>
+          <p>{ready.chromium ? "✓" : "✗"} Chromium do robô</p>
+          <p>{ready.bling ? "✓" : "✗"} Bling conectado (enriquecimento e estoque)</p>
+        </div>
+      )}
+
+      {chromium && (
+        <div
+          data-testid="chromium-status-banner"
+          className={`border p-4 flex items-start justify-between gap-4 ${
+            chromiumReady
+              ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+              : "bg-amber-50 border-amber-300 text-amber-950"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            {chromiumReady ? (
+              <CheckCircle2 className="h-5 w-5 flex-shrink-0 mt-0.5" />
+            ) : installing ? (
+              <Loader2 className="h-5 w-5 flex-shrink-0 mt-0.5 animate-spin" />
+            ) : (
+              <AlertTriangle className="h-5 w-5 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="text-sm space-y-1">
+              <div className="font-semibold">
+                {chromiumReady
+                  ? "Chromium do servidor pronto"
+                  : installing
+                  ? "Instalando Chromium no servidor…"
+                  : "Chromium do servidor não instalado"}
+              </div>
+              <p className="text-xs leading-relaxed">
+                {chromiumReady
+                  ? chromium.path
+                  : "Necessário para o modo REAL do robô TrimPro. Roda invisível no servidor — não abre janela no seu PC. O login do Bling é outra tela (Configurações) e não usa Chromium."}
+              </p>
+            </div>
+          </div>
+          {!chromiumReady && (
+            <button
+              data-testid="install-chromium-btn"
+              onClick={installChromium}
+              disabled={installing}
+              className="text-sm font-medium px-4 py-2 rounded-sm bg-[#EE7B22] text-white hover:bg-[#C9651A] disabled:opacity-60 inline-flex items-center gap-2 shrink-0"
+            >
+              <Download className="h-4 w-4" />
+              {installing ? "Instalando…" : "Instalar Chromium"}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 border border-border bg-white p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="label-overline mb-1">Estado atual</div>
+              <span
+                data-testid="robot-state-badge"
+                className={`inline-flex px-3 py-1 text-xs font-semibold border ${meta.color} rounded-sm uppercase`}
+              >
+                {status?.state === "running" && <span className="h-2 w-2 rounded-full bg-emerald-500 status-pulse mr-2 my-auto" />}
+                {meta.label}
+              </span>
+            </div>
+            <Bot className="h-8 w-8 text-zinc-300" strokeWidth={1.5} />
+          </div>
+
+          {status?.current_product && (
+            <div className="bg-zinc-50 border border-border p-3 text-sm">
+              <div className="label-overline mb-1">Processando</div>
+              <div className="font-mono truncate" data-testid="current-product">{status.current_product}</div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 border border-border divide-x divide-border">
+            <div className="p-4">
+              <div className="label-overline">Processados</div>
+              <div className="font-display text-2xl font-bold" data-testid="counter-processed">{status?.processed || 0}</div>
+            </div>
+            <div className="p-4">
+              <div className="label-overline">Sucessos</div>
+              <div className="font-display text-2xl font-bold text-emerald-600" data-testid="counter-success">{status?.success || 0}</div>
+            </div>
+            <div className="p-4">
+              <div className="label-overline">Falhas</div>
+              <div className="font-display text-2xl font-bold text-rose-600" data-testid="counter-failed">{status?.failed || 0}</div>
+            </div>
+          </div>
+
+          {status?.message && (
+            <div className="bg-rose-50 border border-rose-200 text-rose-700 text-sm p-3 flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 mt-0.5" />
+              <span>{status.message}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="border border-border bg-white p-6 space-y-4">
+          <div className="label-overline">Controles</div>
+          <div>
+            <label className="text-xs text-muted-foreground">Máx. produtos por execução</label>
+            <input
+              data-testid="max-products-input"
+              type="number"
+              min={1}
+              max={100}
+              value={maxProducts}
+              onChange={(e) => setMaxProducts(e.target.value)}
+              className="w-full text-sm border border-border rounded-sm px-3 py-2 mt-1 focus:outline-none focus:ring-2 focus:ring-[#EE7B22]"
+            />
+          </div>
+          <label
+            className={`flex items-start gap-2 text-sm cursor-pointer p-3 rounded-sm border ${
+              dryRun ? "bg-amber-50 border-amber-300" : "bg-emerald-50 border-emerald-300"
+            }`}
+          >
+            <input
+              data-testid="dry-run-toggle"
+              type="checkbox"
+              checked={dryRun}
+              onChange={(e) => setDryRun(e.target.checked)}
+              className="h-4 w-4 mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="font-semibold">
+                {dryRun ? "🟡 MODO TESTE (Dry-Run)" : "🟢 MODO REAL"}
+              </div>
+              <div className="text-xs mt-1 text-zinc-700">
+                {dryRun
+                  ? "Robô SIMULA o cadastro sem clicar 'Criar Produto' — NADA será salvo no TrimPro."
+                  : "Robô CADASTRA de verdade no TrimPro. Produtos aparecerão em 'Meus Produtos'."}
+              </div>
+            </div>
+          </label>
+
+          <div className="flex flex-col gap-2 pt-2">
+            <button
+              data-testid="start-robot-btn"
+              onClick={start}
+              disabled={status?.state === "running"}
+              className={`w-full text-white text-sm font-medium px-4 py-2.5 rounded-sm disabled:opacity-50 inline-flex items-center justify-center gap-2 ${
+                dryRun
+                  ? "bg-[#EE7B22] hover:bg-[#C9651A]"
+                  : "bg-emerald-600 hover:bg-emerald-700"
+              }`}
+            >
+              <Play className="h-4 w-4" />
+              {dryRun ? "Iniciar Robô (Teste)" : "Iniciar Robô (REAL)"}
+            </button>
+            <button
+              data-testid="stop-robot-btn"
+              onClick={stop}
+              disabled={status?.state !== "running"}
+              className="w-full border border-border text-sm font-medium px-4 py-2.5 rounded-sm hover:bg-zinc-50 disabled:opacity-50 inline-flex items-center justify-center gap-2"
+            >
+              <Square className="h-4 w-4" />
+              Parar
+            </button>
+            <button
+              data-testid="refresh-btn"
+              onClick={tick}
+              className="w-full text-xs text-muted-foreground hover:text-foreground inline-flex items-center justify-center gap-1.5 py-1"
+            >
+              <RefreshCw className="h-3.5 w-3.5" /> Atualizar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="border border-border bg-white">
+        <div className="px-6 py-3 border-b border-border flex items-center justify-between">
+          <span className="label-overline">Logs ao vivo (50 últimos)</span>
+          <span className="text-xs text-muted-foreground">{logs.length} entradas</span>
+        </div>
+        <div className="max-h-[420px] overflow-y-auto divide-y divide-border" data-testid="logs-stream">
+          {logs.length === 0 ? (
+            <div className="px-6 py-12 text-sm text-muted-foreground text-center">
+              Nenhum log ainda. Inicie o robô para ver atividade.
+            </div>
+          ) : (
+            logs.map((log) => (
+              <div key={log.id} className="px-6 py-3 flex items-start gap-4 text-sm">
+                <span
+                  className={`mt-1 inline-block h-2 w-2 rounded-full flex-shrink-0 ${LOG_DOT_COLORS[log.level] || LOG_DOT_COLORS.info}`}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {new Date(log.created_at).toLocaleTimeString("pt-BR")}
+                  </div>
+                  <div className="truncate">{log.message}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

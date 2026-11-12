@@ -38,7 +38,7 @@ export default function RobotPage() {
       logger.error("robot status:", err);
     }
     try {
-      const { data: l } = await endpoints.robotLogs(50);
+      const { data: l } = await endpoints.robotLogs(50, "johndrop");
       setLogs(l);
     } catch (err) {
       logger.error("robot logs:", err);

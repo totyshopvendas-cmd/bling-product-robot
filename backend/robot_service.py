@@ -55,13 +55,17 @@ async def add_log(level: str, message: str, **extra):
     await db.robot_logs.insert_one(doc)
 
 
-async def get_logs(limit: int = 100):
-    cur = db.robot_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(limit)
+async def get_logs(limit: int = 100, bot: Optional[str] = None):
+    """Return logs for one robot when requested, without mixing providers."""
+    query = {"bot": bot} if bot else {}
+    cur = db.robot_logs.find(query, {"_id": 0}).sort("created_at", -1).limit(limit)
     return await cur.to_list(limit)
 
 
-async def clear_logs():
-    await db.robot_logs.delete_many({})
+async def clear_logs(bot: Optional[str] = None):
+    """Clear one robot's logs or all logs for the legacy no-filter caller."""
+    query = {"bot": bot} if bot else {}
+    await db.robot_logs.delete_many(query)
 
 
 async def count_logs_today(level: Optional[str] = None, bot: Optional[str] = None) -> int:
