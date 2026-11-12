@@ -14,7 +14,11 @@ enrichment investigation:
 import asyncio
 import pytest
 
-from enrich_worker import _is_ready_for_enrichment
+from enrich_worker import (
+    _is_ready_for_enrichment,
+    _is_totyshop_bling_integration,
+    _source_text_for_enrichment,
+)
 from bling_enrichment import _is_sortido, _parse_variations, _parse_variation_quantities
 from bling_variations import _build_stock_plan
 
@@ -52,6 +56,23 @@ def test_worker_ready_with_many_images():
 def test_worker_waits_with_no_signal():
     ready, _ = asyncio.run(_is_ready_for_enrichment(_product(images=0, stock=0)))
     assert ready is False
+
+
+def test_manual_johndrop_monitor_accepts_only_totyshop_bling():
+    assert _is_totyshop_bling_integration({"integracao": "TotyShop-Bling"}) is True
+    assert _is_totyshop_bling_integration({"canal": "TotyShop Bling"}) is True
+    assert _is_totyshop_bling_integration({"integracao": "TotyShop-Shopee"}) is False
+    assert _is_totyshop_bling_integration({"integracao": "Bling"}) is False
+
+
+def test_manual_johndrop_uses_original_bling_description():
+    """Manual items have no local raw record; the synced Bling text is the source."""
+    title, description = _source_text_for_enrichment(
+        {"raw_title": "Lanterna manual", "raw_description": ""},
+        {"nome": "Outro título", "descricao": "Cor:\n- Preto\n- Azul"},
+    )
+    assert title == "Lanterna manual"
+    assert description == "Cor:\n- Preto\n- Azul"
 
 
 # ---------- Variation parser ----------

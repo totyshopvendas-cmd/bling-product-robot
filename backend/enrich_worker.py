@@ -3,14 +3,17 @@ e dispara o enriquecimento.
 
 Fluxo:
   1. Robô JohnDrop cadastra produto → salva SKU em `enrich_pending` (status=pending)
-  2. Worker roda a cada 90s, busca pendentes
-  3. Para cada pendente: procura no Bling. Se encontra e produto tem imagens
-     (sync da JohnDrop concluiu), dispara enriquecimento e marca status=done
+  2. Produtos criados manualmente na integração TotyShop-Bling também são
+     descobertos periodicamente na lista da JohnDrop e entram na mesma fila
+  3. Worker busca pendentes. Quando o produto chega ao Bling com imagens,
+     dispara enriquecimento e marca status=done
   4. Se não encontrou ou está sem imagens, marca attempts+=1 e tenta na próxima rodada
-  5. Após 30 tentativas (~45min), marca como giveup
+  5. Após 80 tentativas (~2h), marca como giveup
 """
 import asyncio
 import os
+import re
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,13 +28,141 @@ from robot_service import add_log
 router = APIRouter(prefix="/enrich", tags=["enrich-pending-worker"])
 
 POLL_INTERVAL_S = 90  # check pending queue every 90s
+# A consulta leve à página "Meus Produtos" pega cadastros feitos manualmente
+# na JohnDrop. Só considera a integração TotyShop-Bling e roda no máximo a cada
+# cinco minutos, para não sobrecarregar a conta JohnDrop.
+MANUAL_DISCOVERY_INTERVAL_S = 300
+MANUAL_DISCOVERY_MAX_QUEUE = 10
 MAX_ATTEMPTS = 80  # ~2h total wait (suficiente para JohnDrop concluir o sync)
 MIN_IMAGES_REQUIRED = 1  # SOMENTE quando Bling tem ao menos 1 imagem
                           # (imagens chegam como "bagagem" do produto vindo da JohnDrop;
                           # sem imagens, o produto ainda está no ar — não enriquecemos)
 
 
-_WORKER_STATE = {"running": False, "last_tick": None, "task": None}
+_WORKER_STATE = {
+    "running": False,
+    "last_tick": None,
+    "last_manual_discovery": None,
+    "last_manual_discovery_count": 0,
+    "task": None,
+}
+_NEXT_MANUAL_DISCOVERY_AT = 0.0
+
+
+def _is_totyshop_bling_integration(item: dict) -> bool:
+    """True only for a JohnDrop product linked to TotyShop-Bling.
+
+    The filter is deliberately strict: it prevents the automatic monitor from
+    touching products that came to Bling from another supplier or integration.
+    """
+    text = f"{item.get('canal') or ''} {item.get('integracao') or ''}"
+    compact = re.sub(r"[^a-z0-9]+", "", text.casefold())
+    return "totyshopbling" in compact
+
+
+def _source_text_for_enrichment(item: dict, product: dict) -> tuple[str, str]:
+    """Choose raw title/description for both robot and manual JohnDrop queues."""
+    title = (item.get("raw_title") or product.get("nome") or "").strip()
+    description = (
+        item.get("raw_description")
+        or product.get("descricao")
+        or product.get("descricaoCurta")
+        or ""
+    ).strip()
+    return title, description
+
+
+async def _discover_manual_johndrop_products() -> int:
+    """Queue untracked products manually created in JohnDrop for TotyShop-Bling.
+
+    The JohnDrop bot already queues products it creates itself. This monitor
+    covers the other path: the user creates a product directly in JohnDrop,
+    selects TotyShop-Bling, and waits for its native sync to Bling.
+    """
+    try:
+        import johndrop_bot
+        import johndrop_export
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        await add_log("warning", f"Monitor manual JohnDrop indisponível: {exc}")
+        return 0
+
+    creds = await johndrop_bot.get_johndrop_credentials()
+    if not creds or not creds.get("username") or not creds.get("password"):
+        return 0
+
+    rows: list[dict] = []
+    try:
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                env=johndrop_bot.pw_env(),
+            )
+            try:
+                context = await browser.new_context()
+                page = await context.new_page()
+                await johndrop_export._login(page, creds)
+                await johndrop_export._goto(page, johndrop_export.PRODUCTS_URL, creds)
+                # Read only the newest page. JohnDrop lists the recent products
+                # first, and this keeps the monitor fast and non-invasive.
+                try:
+                    await page.evaluate(johndrop_export._SET_PAGE_SIZE_JS, "100")
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                await page.wait_for_selector("table tbody tr", timeout=15000)
+                table = await page.evaluate(johndrop_export._READ_TABLE_JS)
+                rows = johndrop_export.parse_list_rows(
+                    table.get("headers") or [], table.get("rows") or [],
+                )
+            finally:
+                await browser.close()
+    except Exception as exc:
+        await add_log("info", f"Monitor manual JohnDrop: não foi possível ler a lista ({str(exc)[:160]})")
+        return 0
+
+    queued = 0
+    for item in rows:
+        if queued >= MANUAL_DISCOVERY_MAX_QUEUE or not _is_totyshop_bling_integration(item):
+            continue
+        sku = (item.get("sku") or "").strip()
+        if not sku:
+            continue
+
+        # Do not duplicate work done by the robot, an earlier monitor pass, or
+        # an enrichment already concluded manually/em lote.
+        tracked = await db.enrich_pending.find_one({"sku": sku}, {"_id": 1})
+        completed = await db.bling_enrichment_logs.find_one(
+            {"sku": sku, "status": "success"}, {"_id": 1},
+        )
+        if tracked or completed:
+            continue
+
+        await db.enrich_pending.update_one(
+            {"sku": sku},
+            {"$set": {
+                "sku": sku,
+                "raw_title": (item.get("nome") or "").strip(),
+                # The original description is read from Bling once the native
+                # JohnDrop sync completes; it is unavailable in the list view.
+                "raw_description": "",
+                "johndrop_id": item.get("jonhdrop_id") or None,
+                "cost": None,
+                "images": [],
+                "source": "manual_johndrop",
+                "status": "pending",
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+                "attempts": 0,
+            }},
+            upsert=True,
+        )
+        queued += 1
+        await add_log(
+            "info",
+            f"Produto manual JohnDrop detectado: {sku}. Aguardando sync→Bling para enriquecer.",
+        )
+    return queued
 
 
 async def _find_in_bling(sku: str) -> Optional[dict]:
@@ -74,6 +205,19 @@ async def _is_ready_for_enrichment(product: dict) -> tuple[bool, str]:
 
 async def _tick() -> None:
     """One pass through the pending queue."""
+    global _NEXT_MANUAL_DISCOVERY_AT
+    now_monotonic = time.monotonic()
+    if now_monotonic >= _NEXT_MANUAL_DISCOVERY_AT:
+        # Set the next slot before the browser work so a slow/failing JohnDrop
+        # page never makes the 90-second worker repeatedly open new browsers.
+        _NEXT_MANUAL_DISCOVERY_AT = now_monotonic + MANUAL_DISCOVERY_INTERVAL_S
+        try:
+            detected = await _discover_manual_johndrop_products()
+            _WORKER_STATE["last_manual_discovery"] = datetime.now(timezone.utc).isoformat()
+            _WORKER_STATE["last_manual_discovery_count"] = detected
+        except Exception as exc:
+            await add_log("warning", f"Monitor manual JohnDrop falhou: {str(exc)[:160]}")
+
     pending = await db.enrich_pending.find(
         {"status": "pending"}, {"_id": 0},
     ).sort("queued_at", 1).to_list(50)
@@ -113,10 +257,15 @@ async def _tick() -> None:
         await add_log("info", f"Produto {sku} pronto no Bling ({reason}) — iniciando enriquecimento")
 
         try:
+            # Manual JohnDrop registrations have no local raw record yet. The
+            # native sync normally carries the original description into Bling,
+            # so use it as the source for the same title/description/variation
+            # analysis used by the robot-created products.
+            raw_title, raw_description = _source_text_for_enrichment(item, product)
             result = await bling_enrichment.enrich_product_by_sku(
                 sku,
-                item.get("raw_title") or "",
-                item.get("raw_description") or "",
+                raw_title,
+                raw_description,
                 johndrop_id=item.get("johndrop_id"),
                 cost=item.get("cost"),
                 supplier_name=item.get("supplier_name"),
@@ -198,6 +347,8 @@ async def list_queue(status: Optional[str] = None, limit: int = 100) -> dict:
             "running": bool(_WORKER_STATE.get("running")),
             "last_tick": _WORKER_STATE.get("last_tick"),
             "poll_interval_s": POLL_INTERVAL_S,
+            "last_manual_discovery": _WORKER_STATE.get("last_manual_discovery"),
+            "last_manual_discovery_count": _WORKER_STATE.get("last_manual_discovery_count", 0),
         },
     }
 
