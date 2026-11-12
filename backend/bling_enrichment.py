@@ -501,28 +501,75 @@ def _parse_variations(raw_description: str) -> List[str]:
     if re.search(r"\bmodelo\s+(?:[úu]nico|fixo|padr[ãa]o)\b", text, re.IGNORECASE):
         blocked_kinds.add("modelos")
 
-    # GATE 2: aceita PLURAL ("cores"/"tamanhos"/"modelos") sempre; aceita
-    # SINGULAR ("cor"/"tamanho"/"modelo") APENAS quando o body tem múltiplos
-    # itens listados abaixo — nesse caso é uma variação real, não descrição.
-    patterns = [
-        # Plural com "Disponível" prefixo — regra original
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*(cores|tamanhos|modelos)[:\s]+([^.\n]+(?:\n[^.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", True),
-        # Plural sem "Disponível" — "Cores disponíveis:"
-        (r"(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", True),
-        # Singular com "Disponível" — só será aceito se body tiver 2+ itens
-        (r"dispon[ií]ve[il]s?\s+(?:nas?|nos?|em)\s*(cor|tamanho|modelo)[:\s]+([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bcaracter)", False),
-        # Alguns fornecedores usam só uma seção explícita, como "Cor:" ou
-        # "Tamanho:", sem a palavra "Disponível". Só criaremos variações se
-        # houver duas ou mais opções após o título.
-        (r"(?:^|\n)\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*([^\.\n]+(?:\n[^\.\n]+)*?)(?=\n\s*\n|$|\.|\bmedidas?\b|\bdimens|\bideal\b|\bpara\b\s+(?:setup|jogos|trabalho)|\bcaracter)", False),
+    # GATE 2: extracts ONLY the options written on the same heading line or
+    # in a visibly bulleted list immediately below it. The old multiline regex
+    # kept reading every later short line until it found "Medidas"; on TrimPro
+    # this turned feature lines such as "Argola metálica" and "Leve e prático"
+    # into fake variations after a valid "Cores disponíveis" line.
+    header_patterns = [
+        # "Disponível nas cores: Azul, Verde" / "Disponível na cor: ..."
+        re.compile(
+            r"^\s*dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*"
+            r"(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:?\s*(.*)$",
+            re.IGNORECASE,
+        ),
+        # "Cores disponíveis: Azul, Verde"
+        re.compile(
+            r"^\s*(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?\s*:?\s*(.*)$",
+            re.IGNORECASE,
+        ),
+        # Explicit supplier section: "Cor:" / "Tamanho:" / "Modelo:"
+        re.compile(
+            r"^\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*(.*)$",
+            re.IGNORECASE,
+        ),
     ]
     body = ""
     kind = ""
-    for pat, _is_plural in patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            kind = (m.group(1) or "").lower()
-            body = m.group(2)
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        for pattern in header_patterns:
+            match = pattern.match(line)
+            if not match:
+                continue
+            candidate_kind = (match.group(1) or "").lower()
+            inline_options = (match.group(2) or "").strip()
+            if inline_options:
+                # An inline list ends at this line. A one-value row such as
+                # "Modelo: Capacete de Segurança EPI" is a characteristic,
+                # not a variations section, so keep looking for a later real
+                # Cores/Tamanhos/Modelos list.
+                if not re.search(r"[,;]|\s+(?:e|ou)\s+", inline_options, re.IGNORECASE):
+                    continue
+                candidate_body = inline_options
+            else:
+                # A list below a heading must use bullets. One non-bulleted
+                # comma/semicolon list is also accepted, but only on its first
+                # line. This preserves the JohnDrop list formats while making
+                # characteristics impossible to mistake for buyer choices.
+                option_lines: List[str] = []
+                for next_line in lines[index + 1:]:
+                    stripped = next_line.strip()
+                    if not stripped:
+                        if option_lines:
+                            break
+                        continue  # blank spacing right after a heading is fine
+                    bullet = re.match(r"^[\-•*]+\s*(.+)$", stripped)
+                    if bullet:
+                        option_lines.append(bullet.group(1).strip())
+                        continue
+                    if not option_lines and ("," in stripped or ";" in stripped):
+                        option_lines.append(stripped)
+                    break
+                if len(option_lines) < 2 and not (
+                    option_lines and re.search(r"[,;]", option_lines[0])
+                ):
+                    continue
+                candidate_body = "\n".join(option_lines)
+            kind = candidate_kind
+            body = candidate_body
+            break
+        if body:
             break
     if not body:
         return []
