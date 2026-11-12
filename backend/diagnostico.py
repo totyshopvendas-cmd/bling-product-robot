@@ -138,7 +138,7 @@ def main() -> int:
     os.chdir(BACKEND_DIR)
     modulos = [
         "db", "models", "title_cleaner", "pricing_service", "bling_service",
-        "robot_service", "johndrop_bot", "dropper_bot", "shopee_bot",
+        "robot_service", "johndrop_bot", "shopee_bot",
         "llm_cleaner", "bling_enrichment", "bulk_enrichment",
         "social_service", "social_ad_service", "social_scheduler",
         "pinterest_service", "social_onboarding", "youtube_service",

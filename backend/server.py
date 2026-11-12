@@ -457,6 +457,7 @@ async def get_johndrop_creds_status() -> dict:
     return {"configured": True, "username": creds.get("username")}
 
 
+
 # ---------- Brand settings (item 4) ----------
 class BrandSettings(BaseModel):
     mode: str  # "fabricante" | "loja"
@@ -486,6 +487,51 @@ async def save_brand_settings(req: BrandSettings) -> dict:
         upsert=True,
     )
     return await get_brand_settings()
+
+
+
+# ---------- Shopee Robot ----------
+@api.post("/robot/start", response_model=RobotStatusResponse)
+async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
+    if robot_service.robot.state == "running":
+        raise HTTPException(400, "Robô já está em execução")
+    creds = await johndrop_bot.get_johndrop_credentials()
+    if not creds or not creds.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    if not cfg.dry_run:
+        cr = johndrop_bot.chromium_status()
+        if not cr.get("installed"):
+            raise HTTPException(400, "Chromium não está pronto. Clique em Instalar Chromium nesta tela.")
+        n = await db.pricing.count_documents({})
+        if n == 0:
+            raise HTTPException(400, "Importe a tabela de preços (Excel na pasta data ou pelo botão na Tabela de Preços)")
+    await johndrop_bot.start_bot(max_products=cfg.max_products, dry_run=cfg.dry_run)
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.post("/robot/stop")
+async def robot_stop() -> dict:
+    await johndrop_bot.stop_bot()
+    return {"ok": True}
+
+
+@api.get("/robot/status", response_model=RobotStatusResponse)
+async def robot_status() -> RobotStatusResponse:
+    return RobotStatusResponse(**robot_service.robot.to_dict())
+
+
+@api.get("/robot/logs")
+async def robot_logs(limit: int = 100, bot: Optional[str] = None) -> list:
+    logs = await robot_service.get_logs(limit)
+    if bot:
+        logs = [log for log in logs if (log.get("bot") or "johndrop") == bot]
+    return logs
+
+
+@api.post("/robot/logs/clear")
+async def robot_logs_clear() -> dict:
+    await robot_service.clear_logs()
+    return {"ok": True}
 
 
 # ---------- Shopee Robot ----------
@@ -644,6 +690,448 @@ async def bling_fix_existing_variations(payload: FixVariationsRequest) -> dict:
 
 
 # ---------- Bling Bulk Enrichment ----------
+@api.get("/bling/products-with-status")
+async def bling_products_with_status(
+    pagina: int = 1, limite: int = 50, filtro: str = "all", busca: str = ""
+) -> dict:
+    """Paginated Bling product list tagged as enriched / not enriched.
+    filtro = 'all' | 'enriched' | 'not_enriched'."""
+    return await bulk_enrichment.list_products_with_status(pagina, limite, filtro, busca)
+
+
+@api.get("/bling/recent-skus")
+async def bling_recent_skus(limit: int = 50) -> dict:
+    """Return the last N SKUs registered locally by the JohnDrop bot, joined
+    with their current Bling state. Used by the bulk-enrich UI to show a
+    quick "últimos N" tab so the user can re-enrich recent products without
+    paginating through the whole Bling catalog."""
+    return await bulk_enrichment.list_recent_skus(limit=limit)
+
+
+@api.get("/bling/needs-llm-retry")
+async def bling_needs_llm_retry() -> dict:
+    """Lista SKUs que foram enriquecidos parcialmente (falha no LLM). Usado
+    para reprocessar em lote quando o saldo da Universal Key voltar."""
+    from db import db as _db
+    skus = []
+    async for doc in _db.enrich_pending.find(
+        {"needs_llm_retry": True},
+        {"_id": 0, "sku": 1, "llm_last_error": 1, "product_id": 1},
+    ):
+        skus.append(doc)
+    return {"total": len(skus), "items": skus}
+
+
+@api.post("/bling/retry-llm-failed")
+async def bling_retry_llm_failed() -> dict:
+    """Re-enriquece TODOS os SKUs marcados como needs_llm_retry. Usar quando
+    o saldo da Universal Key voltar."""
+    from db import db as _db
+    ids = []
+    async for doc in _db.enrich_pending.find(
+        {"needs_llm_retry": True}, {"product_id": 1, "_id": 0}
+    ):
+        if doc.get("product_id"):
+            ids.append(doc["product_id"])
+    if not ids:
+        return {"ok": True, "message": "Nenhum SKU pendente de retry LLM", "count": 0}
+    job = await bulk_enrichment.start(ids)
+    # Limpa a flag depois (o job fica em background — flag será revalidada
+    # naturalmente ao próximo enrichment se falhar de novo)
+    await _db.enrich_pending.update_many(
+        {"needs_llm_retry": True},
+        {"$unset": {"needs_llm_retry": "", "llm_last_error": ""}},
+    )
+    return {"ok": True, "count": len(ids), "job_id": job.get("job_id")}
+
+
+# ----- Stock Sync (JohnDrop → Bling) ---------------------------------------
+_STOCK_SYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+async def _stock_sync_task() -> None:
+    try:
+        scrape = await stock_sync_bot.collect_supplier_items()
+        items = scrape.get("items") or []
+        summary = await stock_sync.run_sync(items)
+        summary["catalog_count"] = scrape.get("catalog_count")
+        summary["alerts_count"] = scrape.get("alerts_count")
+        _STOCK_SYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("stock_sync task failed: %s", e)
+        _STOCK_SYNC_STATE["last_summary"] = {"error": str(e)[:200]}
+    finally:
+        _STOCK_SYNC_STATE["running"] = False
+
+
+@api.post("/stock-sync/run")
+async def stock_sync_run() -> dict:
+    """Trigger a manual stock-sync run (JohnDrop catalog + alerts → Bling).
+    Returns immediately; consult /stock-sync/status for progress."""
+    if _STOCK_SYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Sync já em execução"}
+    jd = await johndrop_bot.get_johndrop_credentials()
+    if not jd or not jd.get("username"):
+        raise HTTPException(400, "Salve o e-mail e a senha da JohnDrop em Configurações")
+    st = await bling_service.status()
+    if not st.get("connected"):
+        raise HTTPException(400, "Conecte o Bling em Configurações antes de sincronizar estoque")
+    import asyncio as _aio
+    _STOCK_SYNC_STATE["running"] = True
+    _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_stock_sync_task())
+    return {"ok": True, "running": True, "started_at": _STOCK_SYNC_STATE["started_at"]}
+
+
+@api.get("/stock-sync/status")
+async def stock_sync_status() -> dict:
+    last = await stock_sync.get_last_run()
+    return {
+        "running": _STOCK_SYNC_STATE["running"],
+        "started_at": _STOCK_SYNC_STATE["started_at"],
+        "in_memory_summary": _STOCK_SYNC_STATE["last_summary"],
+        "last_run": last,
+        "schedule": await _get_stock_schedule(),
+    }
+
+
+# Agendamento diário do Sync de Estoque (substitui o cron da Emergent).
+# Roda dentro do próprio backend — basta o TotyShop estar ligado no horário.
+_STOCK_SCHEDULE_KEY = "stock_sync_schedule"
+
+
+async def _get_stock_schedule() -> dict:
+    doc = await db.settings.find_one({"key": _STOCK_SCHEDULE_KEY}, {"_id": 0})
+    val = (doc or {}).get("value") or {}
+    return {"enabled": bool(val.get("enabled")), "time": val.get("time") or "07:00",
+            "last_auto_run": val.get("last_auto_run")}
+
+
+class StockScheduleRequest(BaseModel):
+    enabled: bool
+    time: str = "07:00"  # HH:MM, horário de Brasília
+
+
+@api.post("/stock-sync/schedule")
+async def stock_sync_schedule(req: StockScheduleRequest) -> dict:
+    import re as _re
+    if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", req.time or ""):
+        raise HTTPException(400, "Horário inválido (use HH:MM)")
+    cur = await _get_stock_schedule()
+    await db.settings.update_one(
+        {"key": _STOCK_SCHEDULE_KEY},
+        {"$set": {"key": _STOCK_SCHEDULE_KEY, "value": {
+            "enabled": req.enabled, "time": req.time, "last_auto_run": cur.get("last_auto_run")}}},
+        upsert=True,
+    )
+    return await _get_stock_schedule()
+
+
+def due_today(now_local: datetime, hhmm: str, last_run_date: Optional[str]) -> bool:
+    """True se já passou do horário hoje e ainda não rodou hoje (puro/testável)."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    today = now_local.date().isoformat()
+    return last_run_date != today and (now_local.hour, now_local.minute) >= (h, m)
+
+
+async def _stock_schedule_loop() -> None:
+    import asyncio as _aio
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(os.environ.get("TZ_LOCAL") or "America/Sao_Paulo")
+    await _aio.sleep(30)
+    while True:
+        try:
+            sch = await _get_stock_schedule()
+            now = datetime.now(tz)
+            if sch["enabled"] and not _STOCK_SYNC_STATE["running"] and due_today(now, sch["time"], sch.get("last_auto_run")):
+                await db.settings.update_one(
+                    {"key": _STOCK_SCHEDULE_KEY},
+                    {"$set": {"value.last_auto_run": now.date().isoformat()}},
+                )
+                jd = await johndrop_bot.get_johndrop_credentials()
+                st = await bling_service.status()
+                if jd and jd.get("username") and st.get("connected"):
+                    await robot_service.add_log("info", f"Sync de estoque automático ({sch['time']}) iniciado")
+                    _STOCK_SYNC_STATE["running"] = True
+                    _STOCK_SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+                    _aio.create_task(_stock_sync_task())
+                else:
+                    await robot_service.add_log("warning", "Sync automático pulado: JohnDrop ou Bling não conectados")
+        except Exception as e:
+            logger.warning("stock schedule loop: %s", e)
+        await _aio.sleep(60)
+
+
+# ----- Exportar planilha (JonhDrop "Meus Produtos" → .xlsx) -----------------
+class JohnDropExportRequest(BaseModel):
+    detailed: bool = True
+    max_products: Optional[int] = None
+
+
+@api.post("/johndrop-export/run")
+async def johndrop_export_run(req: Optional[JohnDropExportRequest] = None) -> dict:
+    """Inicia a exportação em background. Somente leitura na JonhDrop."""
+    req = req or JohnDropExportRequest()
+    if johndrop_export.STATE["running"]:
+        return {"ok": False, "running": True, "message": "Exportação já em andamento"}
+    import asyncio as _aio
+    johndrop_export.reset_state(req.detailed)
+    _aio.create_task(johndrop_export.run_export(req.detailed, req.max_products))
+    return {"ok": True, "running": True, "started_at": johndrop_export.STATE["started_at"]}
+
+
+@api.post("/johndrop-export/stop")
+async def johndrop_export_stop() -> dict:
+    """Interrompe e gera a planilha parcial com o que já foi coletado."""
+    if not johndrop_export.STATE["running"]:
+        return {"ok": False, "message": "Nenhuma exportação em andamento"}
+    johndrop_export.STATE["stop_requested"] = True
+    return {"ok": True}
+
+
+@api.get("/johndrop-export/status")
+async def johndrop_export_status() -> dict:
+    return johndrop_export.get_status()
+
+
+@api.get("/johndrop-export/download")
+async def johndrop_export_download(name: Optional[str] = Query(default=None)):
+    path = johndrop_export.resolve_export(name)
+    if not path:
+        raise HTTPException(status_code=404, detail="Nenhuma planilha encontrada")
+    media = (
+        "text/csv" if path.suffix.lower() == ".csv"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return FileResponse(path, media_type=media, filename=path.name)
+
+
+# ----- Category Mapping (Bling → Marketplaces multiloja) -------------------
+_CATMAP_STATE = {"running": False, "started_at": None}
+
+
+class CatMapRunRequest(BaseModel):
+    bling_user: str
+    bling_pass: str
+
+
+async def _catmap_task(bling_user: str, bling_pass: str) -> None:
+    try:
+        trees = await category_mapping_bot.scan_marketplace_trees(bling_user, bling_pass)
+        bling_cats = await category_mapping._get_bling_categories_from_api()
+        await category_mapping.generate_suggestions(trees, bling_cats)
+    except Exception as e:
+        logger.exception("catmap task failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "main"}, {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _CATMAP_STATE["running"] = False
+
+
+@api.post("/category-mapping/scan")
+async def category_mapping_scan(req: CatMapRunRequest) -> dict:
+    """Dispara scan das árvores de marketplace + geração de sugestões IA."""
+    if _CATMAP_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Scan já em execução"}
+    import asyncio as _aio
+    _CATMAP_STATE["running"] = True
+    _CATMAP_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_catmap_task(req.bling_user, req.bling_pass))
+    return {"ok": True, "running": True, "started_at": _CATMAP_STATE["started_at"]}
+
+
+@api.get("/category-mapping/status")
+async def category_mapping_status() -> dict:
+    run = await category_mapping.get_run_status()
+    return {
+        "running": _CATMAP_STATE["running"],
+        "started_at": _CATMAP_STATE["started_at"],
+        "run": run,
+    }
+
+
+@api.get("/category-mapping/marketplaces")
+async def category_mapping_marketplaces() -> dict:
+    """Lista marketplaces já escaneados (fonte para o filtro na UI)."""
+    items = await category_mapping.list_marketplaces()
+    return {"total": len(items), "items": items}
+
+
+@api.get("/category-mapping/lojas")
+async def category_mapping_lojas() -> dict:
+    """Lista marketplaces conectados via API Bling (não usa Playwright)."""
+    try:
+        items = await category_mapping.list_bling_lojas()
+        return {"total": len(items), "items": items}
+    except Exception as e:
+        logger.exception("list_bling_lojas failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Bling API: {e}")
+
+
+@api.get("/category-mapping/gaps")
+async def category_mapping_gaps() -> dict:
+    """Categorias Bling sem vínculo em cada loja conectada (via API)."""
+    try:
+        return await category_mapping.list_gaps()
+    except Exception as e:
+        logger.exception("list_gaps failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Bling API: {e}")
+
+
+@api.get("/category-mapping/previews")
+async def category_mapping_previews(
+    marketplace: Optional[str] = None, limit: int = 500,
+) -> dict:
+    items = await category_mapping.list_previews(marketplace, limit)
+    return {"total": len(items), "items": items}
+
+
+class ApprovePreviewRequest(BaseModel):
+    bling_category_id: int
+    marketplace: str
+    new_suggestion_id: Optional[str] = None
+    approved: bool = True
+
+
+@api.post("/category-mapping/approve")
+async def category_mapping_approve(req: ApprovePreviewRequest) -> dict:
+    return await category_mapping.approve_preview(
+        req.bling_category_id, req.marketplace,
+        req.new_suggestion_id, req.approved,
+    )
+
+
+# ----- Auto-sync novas categorias (P0) --------------------------------------
+_AUTOSYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+class CatMapAutoSyncRequest(BaseModel):
+    bling_user: str
+    bling_pass: str
+    apply: bool = True
+
+
+async def _autosync_task(bling_user: str, bling_pass: str, apply: bool) -> None:
+    try:
+        summary = await category_mapping.sync_new_categories(
+            bling_user, bling_pass, apply=apply,
+        )
+        _AUTOSYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("autosync failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "auto_sync"},
+            {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _AUTOSYNC_STATE["running"] = False
+
+
+@api.get("/category-mapping/new-count")
+async def category_mapping_new_count() -> dict:
+    """Retorna a contagem de categorias Bling sem mapeamento (pendentes)."""
+    try:
+        n = await category_mapping.count_pending_new()
+        return {"pending": n}
+    except Exception as e:
+        logger.exception("new-count failed: %s", e)
+        return {"pending": 0, "error": str(e)[:200]}
+
+
+@api.post("/category-mapping/sync-new")
+async def category_mapping_sync_new(req: CatMapAutoSyncRequest) -> dict:
+    """Detecta categorias Bling novas e mapeia+aplica automaticamente."""
+    if _AUTOSYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "Auto-sync já em execução"}
+    import asyncio as _aio
+    _AUTOSYNC_STATE["running"] = True
+    _AUTOSYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_autosync_task(req.bling_user, req.bling_pass, req.apply))
+    return {"ok": True, "running": True, "started_at": _AUTOSYNC_STATE["started_at"]}
+
+
+@api.get("/category-mapping/sync-new/status")
+async def category_mapping_sync_new_status() -> dict:
+    run = await category_mapping.get_auto_sync_status()
+    return {
+        "running": _AUTOSYNC_STATE["running"],
+        "started_at": _AUTOSYNC_STATE["started_at"],
+        "last_summary": _AUTOSYNC_STATE["last_summary"],
+        "run": run,
+    }
+
+
+# ----- API-based sync (não usa Playwright) ----------------------------------
+_APISYNC_STATE = {"running": False, "started_at": None, "last_summary": None}
+
+
+class ApiSyncRequest(BaseModel):
+    include_subcategorias: bool = True
+    dry_run: bool = False
+
+
+async def _apisync_task(include_subcategorias: bool, dry_run: bool) -> None:
+    try:
+        summary = await category_mapping.sync_via_api(
+            include_subcategorias=include_subcategorias, dry_run=dry_run,
+        )
+        _APISYNC_STATE["last_summary"] = summary
+    except Exception as e:
+        logger.exception("api-sync failed: %s", e)
+        await db.category_mapping_runs.update_one(
+            {"name": "api_sync"},
+            {"$set": {"status": "error", "error": str(e)[:300]}},
+        )
+    finally:
+        _APISYNC_STATE["running"] = False
+
+
+@api.post("/category-mapping/sync-api")
+async def category_mapping_sync_api(req: ApiSyncRequest) -> dict:
+    """Sincroniza via API oficial Bling (sem Playwright, sem credenciais web)."""
+    if _APISYNC_STATE["running"]:
+        return {"ok": False, "running": True, "message": "API-sync já em execução"}
+    import asyncio as _aio
+    _APISYNC_STATE["running"] = True
+    _APISYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+    _aio.create_task(_apisync_task(req.include_subcategorias, req.dry_run))
+    return {"ok": True, "running": True, "started_at": _APISYNC_STATE["started_at"]}
+
+
+@api.get("/category-mapping/sync-api/status")
+async def category_mapping_sync_api_status() -> dict:
+    run = await category_mapping.get_api_sync_status()
+    return {
+        "running": _APISYNC_STATE["running"],
+        "started_at": _APISYNC_STATE["started_at"],
+        "last_summary": _APISYNC_STATE["last_summary"],
+        "run": run,
+    }
+
+
+class LojaAliasRequest(BaseModel):
+    loja_id: int
+    alias: str
+
+
+@api.put("/category-mapping/lojas/alias")
+async def category_mapping_loja_alias(req: LojaAliasRequest) -> dict:
+    return await category_mapping.set_loja_alias(req.loja_id, req.alias)
+
+
+class KnownLojaRequest(BaseModel):
+    loja_id: int
+    name: str
+    sample_code: str = ""
+
+
+@api.post("/category-mapping/lojas/known")
+async def category_mapping_add_known_loja(req: KnownLojaRequest) -> dict:
+    """Registra manualmente uma loja Bling (útil para lojas sem vínculos ainda)."""
+    return await category_mapping.add_known_loja(req.loja_id, req.name, req.sample_code)
+
+
 class BulkEnrichRequest(BaseModel):
     product_ids: Optional[list[int]] = None
     enrich_all_not_enriched: bool = False

@@ -37,14 +37,6 @@ ou um servidor com domínio HTTPS, e coloque esse endereço no Bling e em `APP_B
 
 Para gerar **imagens** de anúncio use Gemini ou OpenAI. Para **narração** de vídeo, OpenAI.
 
-### Configurar o Dropper
-
-1. Abra **Configurações** no painel.
-2. No cartão **Dropper**, informe o e-mail e a senha usados em `dropper.dropping.com.br` e salve.
-3. Abra **Robô Dropper** e mantenha o **Modo Teste** na primeira execução para validar os seletores e a leitura dos produtos.
-4. Confirme que a tabela de preços está carregada. No modo real, o robô limpa título e SKU, calcula o preço de venda, cadastra somente no Dropper e registra o SKU para aguardar a integração nativa com o Bling.
-
-O robô Dropper não envia imagens, estoque ou cadastros diretamente para a API do Bling. Depois que a integração nativa entregar o produto, o worker de enriquecimento usa o contato fornecedor definido em `DROPPER_SUPPLIER_NAME` (padrão `DROPPER`).
 
 ### Sync de estoque automático
 

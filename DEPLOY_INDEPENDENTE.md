@@ -77,7 +77,7 @@ docker compose up -d --build
 2. Configure o Client ID e Client Secret do Bling.
 3. Autorize o Bling usando o callback do seu domínio.
 4. Carregue a tabela de preços.
-5. Configure as credenciais do JohnDrop e/ou Dropper.
+5. Configure as credenciais do JohnDrop.
 6. Execute primeiro os robôs em **Modo Teste**.
 7. Só depois habilite o modo real.
 
@@ -99,4 +99,4 @@ O `.env`, os volumes Docker e os tokens OAuth não devem ser enviados ao GitHub.
 
 ## Limites importantes
 
-Esta distribuição é independente do Emergent, mas ainda depende das contas externas que você escolher usar: Bling, JohnDrop, Dropper e provedores de IA. Para deixá-la pública e sempre ligada, é necessário um computador ou VPS ligado continuamente; o sandbox desta sessão não é um servidor permanente.
+Esta distribuição é independente do Emergent, mas ainda depende das contas externas que você escolher usar: Bling, JohnDrop e provedores de IA. Para deixá-la pública e sempre ligada, é necessário um computador ou VPS ligado continuamente; o sandbox desta sessão não é um servidor permanente.
