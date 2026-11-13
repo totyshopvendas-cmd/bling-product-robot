@@ -24,11 +24,11 @@ from typing import Any, Iterable
 
 from db import db
 from models import PriceLookupResponse
+from storage_paths import PROJECT_ROOT as _PROJECT_ROOT, pricing_data_dir
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DATA_DIR = _PROJECT_ROOT / "data"
+_DATA_DIR = pricing_data_dir()
 DEFAULT_SHEET_ID = "1ABXgFvtAy7kKmpUl73yYs_69qQneLZr1"
 
 _TABLE_NAMES = [

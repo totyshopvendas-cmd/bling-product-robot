@@ -4,8 +4,10 @@ Painel próprio para automatizar a loja **JohnDrop → Bling ERP (API v3)**: cad
 enriquecimento com IA (título, descrição, marca, categoria, cores), sincronização de estoque,
 mapeamento de categorias por marketplace, anúncios para redes sociais e exportação de planilhas.
 
-Para rodar sem Emergent, use o guia **[DEPLOY_INDEPENDENTE.md](DEPLOY_INDEPENDENTE.md)**. O
-projeto já inclui Docker Compose com MongoDB persistente e serve React e FastAPI no mesmo endereço.
+Para publicar online em hospedagem gerenciada, sem configurar VPS ou domínio, use o guia
+**[DEPLOY_GERENCIADO.md](DEPLOY_GERENCIADO.md)**. Para Docker próprio/VPS, use
+**[DEPLOY_INDEPENDENTE.md](DEPLOY_INDEPENDENTE.md)**. O projeto serve React e FastAPI no
+mesmo endereço.
 
 **100% independente da Emergent.** Roda no seu PC (Windows), num servidor/VPS ou em Docker.
 

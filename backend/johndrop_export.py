@@ -28,6 +28,7 @@ from urllib.parse import urljoin
 
 from db import db
 from robot_service import add_log
+from storage_paths import exports_dir
 import johndrop_export_sheet as sheet
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://app.jonhdrop.com.br"
 LOGIN_URL = f"{BASE_URL}/login"
 PRODUCTS_URL = f"{BASE_URL}/dashboard/product"
-EXPORT_DIR = Path(__file__).parent / "exports"
+EXPORT_DIR = exports_dir()
 MAX_LIST_PAGES = 200
 DETAIL_DELAY_S = 1.0  # pausa entre páginas de detalhe (evita rate-limit)
 

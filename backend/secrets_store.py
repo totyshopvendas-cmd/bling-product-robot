@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Optional
 
-_DIR = Path(__file__).resolve().parent / ".secrets"
+from storage_paths import secrets_dir
+
+_DIR = secrets_dir()
 
 
 def read(name: str) -> Optional[dict[str, Any]]:
