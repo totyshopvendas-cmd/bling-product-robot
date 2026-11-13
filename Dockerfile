@@ -22,4 +22,5 @@ COPY backend /app/backend
 COPY --from=frontend /frontend/build /app/frontend/build
 WORKDIR /app/backend
 EXPOSE 8000
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Plataformas gerenciadas injetam a porta em $PORT; no Docker local mantém 8000.
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]

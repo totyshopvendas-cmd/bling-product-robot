@@ -2,10 +2,9 @@
 import os
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from dotenv import load_dotenv
-from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).parent
-_PROJECT_ROOT = _BACKEND_DIR.parent
+from storage_paths import BACKEND_DIR as _BACKEND_DIR, PROJECT_ROOT as _PROJECT_ROOT, local_db_file
+
 load_dotenv(_PROJECT_ROOT / ".env")
 load_dotenv(_BACKEND_DIR / ".env", override=False)
 
@@ -44,7 +43,7 @@ import hashlib as _hashlib
 import logging as _logging
 
 _log = _logging.getLogger("db.local")
-_LOCAL_FILE = Path(os.environ.get("LOCAL_DB_FILE") or (_BACKEND_DIR / "data" / "local_db.json"))
+_LOCAL_FILE = local_db_file()
 _PERSIST = LOCAL_MODE and (os.environ.get("LOCAL_DB_PERSIST", "1").strip().lower() not in ("0", "false", "no", "nao", "não"))
 _last_hash: str | None = None
 _task = None
