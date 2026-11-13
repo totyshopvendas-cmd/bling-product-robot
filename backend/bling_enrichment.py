@@ -585,15 +585,23 @@ def _parse_variations(raw_description: str) -> List[str]:
                 # line. This preserves the JohnDrop list formats while making
                 # characteristics impossible to mistake for buyer choices.
                 option_lines: List[str] = []
+                blank_lines_after_option = 0
                 for next_line in lines[index + 1:]:
                     stripped = next_line.strip()
                     if not stripped:
                         if option_lines:
-                            break
+                            # Suppliers often visually separate available and
+                            # unavailable choices with one blank Markdown row.
+                            # Keep that explicit list together, but do not
+                            # wander into a distant characteristics section.
+                            blank_lines_after_option += 1
+                            if blank_lines_after_option > 1:
+                                break
                         continue  # blank spacing right after a heading is fine
                     bullet = re.match(r"^[\-•*]+\s*(.+)$", stripped)
                     if bullet:
                         option_lines.append(bullet.group(1).strip())
+                        blank_lines_after_option = 0
                         continue
                     if not option_lines and ("," in stripped or ";" in stripped):
                         option_lines.append(stripped)

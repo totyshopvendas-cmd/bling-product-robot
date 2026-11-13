@@ -13,7 +13,7 @@ async def _feedback(page) -> dict:
     """Read the provider's visible toast/banner feedback without assuming UI markup."""
     try:
         data: Any = await page.evaluate(
-            """() => {
+            r"""() => {
                 const selectors = ['.toast', '.alert', '.swal2-popup', '.notyf__message',
                     '[role="alert"]', '.error-message', '.invalid-feedback', '[role="status"]'];
                 const messages = [];

@@ -3,6 +3,7 @@ import asyncio
 
 import integration_selection
 import johndrop_bot
+import marketplace_category
 import submission_confirmation
 import trimpro_bot
 
@@ -89,6 +90,48 @@ def test_submission_rejects_visible_provider_validation_error():
 def test_both_supplier_robots_use_the_same_submission_confirmation_guard():
     assert johndrop_bot.confirm_supplier_submission is submission_confirmation.confirm_supplier_submission
     assert trimpro_bot.confirm_supplier_submission is submission_confirmation.confirm_supplier_submission
+
+
+class CategoryPage:
+    def __init__(self, first, second=None):
+        self.responses = [first] + ([second] if second is not None else [])
+        self.waits = 0
+
+    async def evaluate(self, _script):
+        return self.responses.pop(0)
+
+    async def wait_for_timeout(self, _ms):
+        self.waits += 1
+
+
+def test_required_native_supplier_category_is_confirmed():
+    page = CategoryPage({
+        "present": True,
+        "selected": True,
+        "detail": "categoria selecionada: Acessórios",
+    })
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["present"] is True
+    assert result["selected"] is True
+    assert "Acessórios" in result["detail"]
+
+
+def test_missing_category_option_stops_before_provider_submit():
+    page = CategoryPage({
+        "present": True,
+        "selected": False,
+        "detail": "campo de categoria localizado, mas não há opção válida carregada",
+    })
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["present"] is True
+    assert result["selected"] is False
+
+
+def test_both_supplier_robots_use_the_same_category_guard():
+    assert johndrop_bot.ensure_required_marketplace_category is marketplace_category.ensure_required_marketplace_category
+    assert trimpro_bot.ensure_required_marketplace_category is marketplace_category.ensure_required_marketplace_category
 
 
 def test_johndrop_does_not_report_mock_success_when_browser_is_unavailable(monkeypatch):
