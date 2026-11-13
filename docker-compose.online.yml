@@ -1,0 +1,21 @@
+# Complemento para publicação online 24h. Use sempre junto ao docker-compose.yml.
+# Não publique a porta 8000 diretamente: o Caddy recebe HTTPS nas portas 80/443.
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    environment:
+      TOTYSHOP_DOMAIN: ${TOTYSHOP_DOMAIN:?Defina o domínio em .env (ex.: automacao.seudominio.com)}
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - app
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - totyshop_caddy_data:/data
+      - totyshop_caddy_config:/config
+
+volumes:
+  totyshop_caddy_data:
+  totyshop_caddy_config:

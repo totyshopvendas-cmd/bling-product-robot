@@ -10,12 +10,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Escuta apenas no próprio servidor. Na publicação online o Caddy recebe
+    # HTTPS nas portas 80/443 e encaminha para a rede interna do Compose.
+    # Para mudar este bind em um uso local, defina TOTYSHOP_APP_BIND.
     environment:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-bling_robot}
       TZ: America/Sao_Paulo
     ports:
-      - "8000:8000"
+      - "${TOTYSHOP_APP_BIND:-127.0.0.1}:8000:8000"
     depends_on:
       - mongo
     volumes:
