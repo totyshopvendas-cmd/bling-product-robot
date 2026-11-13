@@ -25,6 +25,8 @@ from typing import Optional, Tuple
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
+from integration_selection import select_required_integration
+from submission_confirmation import confirm_supplier_submission
 from robot_service import robot, add_log
 from db import db
 
@@ -225,7 +227,7 @@ async def _playwright_available() -> bool:
     # Ensure chromium is installed (will install if missing — blocks until ready)
     if not await _ensure_chromium_installed():
         return False
-    # Probe: try a quick launch+close. If it fails, fall back to mock.
+    # Probe: try a quick launch+close. Never claim a simulated cadastro when it fails.
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
@@ -235,7 +237,7 @@ async def _playwright_available() -> bool:
             await browser.close()
         return True
     except Exception as e:
-        await add_log("warning", f"Playwright indisponível — modo MOCKED ativo. ({str(e)[:120]})")
+        await add_log("warning", f"Playwright indisponível. ({str(e)[:120]})")
         return False
 
 
@@ -278,63 +280,24 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
 
     if not await _playwright_available():
         robot.state = "error"
-        robot.message = "Playwright/Chromium não instalado no servidor"
+        robot.message = "Playwright/Chromium não está pronto; nenhum produto foi cadastrado"
         robot.finished_at = datetime.now(timezone.utc)
         await add_log(
             "error",
-            "Playwright não está instalado. Modo MOCKED ativo — gerando títulos sem cadastrar."
+            "Playwright/Chromium não está pronto. Execução encerrada sem simular cadastro."
         )
-        await _run_mock(max_products)
         return
 
     try:
         await _run_playwright(creds["username"], creds["password"], max_products, dry_run)
     except Exception as e:
-        await add_log("error", f"Playwright falhou ({str(e)[:160]}) — caindo para modo MOCKED")
-        try:
-            await _run_mock(max_products)
-        except Exception as e2:
-            robot.state = "error"
-            robot.message = str(e2)
-            await add_log("error", f"Erro no fallback MOCKED: {e2}")
+        robot.state = "error"
+        robot.message = "Falha no navegador; nenhum cadastro adicional foi confirmado"
+        await add_log("error", f"Playwright falhou: {str(e)[:160]}")
     finally:
         robot.finished_at = datetime.now(timezone.utc)
         if robot.state == "running":
             robot.state = "idle"
-
-
-async def _run_mock(max_products: int):
-    """MOCKED execution path when Playwright is unavailable.
-    Picks sample raw titles from a static list to demonstrate cleaning + pricing."""
-    samples = [
-        ("Caneta Touch Screen Stylus Universal Para Tablet e Celular XLS B125 / A-P18", 21.99),
-        ("(KA-1369 (4X AAA)) Carregador de Pilhas com LED + 04 Pilhas AAA Recarregáveis Kapbom KA-1369", 29.49),
-        ("(KA-S079) Câmera Segurança Babá Eletrônica Wi-fi 360° Kapbom KA-S079", 64.99),
-        ("(KA-1100) Adaptador USB Receptor Wireless para Rede WiFi Sem Fio PC Notebook Kapbom KA-1100", 7.49),
-        ("(EL-1931) Caneta Peeling Ultrassônico E Ionização Portátil Anti Cravos E Acne Eletromex EL-1931", 21.99),
-    ]
-    for i, (raw, cost) in enumerate(samples[:max_products]):
-        if robot.stop_flag:
-            await add_log("warning", "Robô interrompido pelo usuário")
-            break
-        robot.current_product = raw[:60]
-        robot.processed += 1
-        result = clean_title(raw)
-        price = await lookup_price(cost)
-        if not price.found:
-            robot.failed += 1
-            await add_log("error", f"Preço não encontrado para custo {cost}", raw_title=raw)
-            continue
-        await add_log(
-            "success",
-            f"[MOCKED] Pronto para cadastrar: {result['cleaned']} | Preço: {price.sale_price_int}",
-            raw_title=raw,
-            cleaned_title=result["cleaned"],
-            sale_price=price.sale_price_int,
-        )
-        robot.success += 1
-        await asyncio.sleep(0.5)
-    robot.state = "idle"
 
 
 CARD_SELECTOR = (
@@ -432,42 +395,15 @@ async def _open_catalog(page) -> None:
 
 
 async def _select_integration(page) -> bool:
-    """Click the TotyShop-Bling integration card on the product create page."""
-    try:
-        # Strategy 1: click by visible text 'TotyShop-Bling'
-        loc = page.locator(f'text="{INTEGRATION_NAME}"').first
-        if await loc.count() > 0:
-            # Click the parent card (avoid clicking just the label text)
-            await loc.click()
-            await page.wait_for_timeout(500)
-            return True
-    except Exception:
-        pass
-
-    try:
-        # Strategy 2: click any element whose innerText contains the integration name
-        clicked = await page.evaluate(
-            f"""
-            () => {{
-                const els = Array.from(document.querySelectorAll('div, label, button, span'));
-                const target = els.find(e =>
-                    (e.innerText || '').trim() === '{INTEGRATION_NAME}'
-                );
-                if (target) {{
-                    (target.closest('label') || target).click();
-                    return true;
-                }}
-                return false;
-            }}
-            """
-        )
-        if clicked:
-            await page.wait_for_timeout(500)
-            return True
-    except Exception:
-        pass
-
-    await add_log("warning", f"Não encontrei o botão da integração '{INTEGRATION_NAME}'")
+    """Select TotyShop-Bling and require a verified selected state before submit."""
+    result = await select_required_integration(page, INTEGRATION_NAME)
+    if result["selected"]:
+        await add_log("info", f"Integração '{INTEGRATION_NAME}' confirmada")
+        return True
+    await add_log(
+        "error",
+        f"Integração '{INTEGRATION_NAME}' não confirmada: {result['detail']}",
+    )
     return False
 
 
@@ -846,56 +782,18 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
             await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
             return False
 
-        # Quick check (3s) for JohnDrop's duplicate-SKU / validation error toast/banner
-        # so we can short-circuit instead of waiting 45s for a redirect that won't happen.
+        # A click is not enough: reject a form that remains on /createv2
+        # without either a redirect or an explicit supplier success message.
         await page.wait_for_timeout(2500)
-        try:
-            dup_text = await page.evaluate(
-                """() => {
-                    const sels = ['.toast', '.alert-danger', '.swal2-popup', '.notyf__message',
-                                  '[role="alert"]', '.error-message', '.invalid-feedback'];
-                    for (const s of sels) {
-                        const els = document.querySelectorAll(s);
-                        for (const el of els) {
-                            const t = (el.innerText || '').trim();
-                            if (!t) continue;
-                            if (/sku|c[óo]digo|j[áa]\\s+(cadastrad|exist|registrad)|duplicad|conflito/i.test(t)) {
-                                return t.slice(0, 240);
-                            }
-                        }
-                    }
-                    return null;
-                }"""
-            )
-        except Exception:
-            dup_text = None
-        if dup_text:
+        confirmation = await confirm_supplier_submission(page)
+        if not confirmation["confirmed"]:
             await add_log(
-                "warning",
-                f"SKU já cadastrado/duplicado no JohnDrop — pulando: {dup_text}",
+                "error",
+                f"Cadastro JohnDrop não confirmado: {confirmation['detail']}",
                 raw_title=raw_title,
                 cleaned_title=cleaned_title,
             )
-            # Try to navigate back to the listing so the bot can continue with next item
-            try:
-                await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(1500)
-            except Exception:
-                pass
             return False
-
-        # Wait for the redirect away from /createv2 to settle (avoids ERR_ABORTED on next goto)
-        try:
-            await page.wait_for_function(
-                "() => !window.location.pathname.includes('createv2')",
-                timeout=45000,
-            )
-        except Exception:
-            pass
-        try:
-            await page.wait_for_load_state("domcontentloaded", timeout=20000)
-        except Exception:
-            pass
         await page.wait_for_timeout(1500)
 
         await add_log(
@@ -946,8 +844,14 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         robot.processed += 1
         return True
 
-    # 1. Select the TotyShop-Bling integration
-    await _select_integration(page)
+    # 1. Select the TotyShop-Bling integration. Do not submit a product unless
+    # the selected state is visible; otherwise it cannot reach Bling.
+    if not await _select_integration(page):
+        robot.failed += 1
+        robot.processed += 1
+        robot.message = f"Integração {INTEGRATION_NAME} não foi confirmada"
+        await _open_catalog(page)
+        return True
 
     # 2. Read raw title + cost
     raw_title, cost = await _read_product_fields(page)
@@ -984,6 +888,16 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await _open_catalog(page)
         return True
 
+    # Keep the supplier ID before submit: the provider redirects away from
+    # /createv2/<id> after a successful save.
+    johndrop_id = None
+    try:
+        match = re.search(r"/createv2/(\d+)", page.url or "")
+        if match:
+            johndrop_id = match.group(1)
+    except Exception:
+        pass
+
     # 7. Submit (or just log if dry-run)
     submitted_ok = False
     if dry_run:
@@ -999,14 +913,6 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
         robot.success += 1
         submitted_ok = True
-        # Extract JohnDrop product ID from the URL (.../createv2/<id>) BEFORE leaving the page
-        johndrop_id = None
-        try:
-            m = re.search(r"/createv2/(\d+)", page.url or "")
-            if m:
-                johndrop_id = m.group(1)
-        except Exception:
-            johndrop_id = None
         # ARQUITETURA: o robô JohnDrop SÓ cadastra. NÃO dispara enriquecimento
         # imediatamente — JohnDrop sincroniza com Bling de forma assíncrona
         # (5-15 min) e durante esse período o produto fica sem imagens/estoque.

@@ -5,10 +5,16 @@ import { toast } from "sonner";
 import { Loader2, RefreshCw, RotateCw, Trash2, Zap, Clock, CheckCircle2, AlertTriangle } from "lucide-react";
 
 const STATUS_META = {
-  pending:    { label: "Aguardando JohnDrop", color: "bg-amber-100 text-amber-800", Icon: Clock },
-  processing: { label: "Enriquecendo",        color: "bg-blue-100 text-blue-800",   Icon: Loader2 },
+  pending:    { label: "Aguardando Bling",     color: "bg-amber-100 text-amber-800", Icon: Clock },
+  processing: { label: "Enriquecendo",         color: "bg-blue-100 text-blue-800",   Icon: Loader2 },
   done:       { label: "Concluído",            color: "bg-emerald-100 text-emerald-800", Icon: CheckCircle2 },
-  giveup:     { label: "Desistiu",            color: "bg-rose-100 text-rose-700",   Icon: AlertTriangle },
+  giveup:     { label: "Desistiu",             color: "bg-rose-100 text-rose-700",   Icon: AlertTriangle },
+};
+
+const SOURCE_LABEL = {
+  trimpro_bot: "TrimPro",
+  johndrop_bot: "JohnDrop",
+  manual_johndrop: "JohnDrop manual",
 };
 
 export default function EnrichQueuePage() {
@@ -71,7 +77,7 @@ export default function EnrichQueuePage() {
             <Clock className="h-6 w-6" /> Fila de Enriquecimento
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Produtos cadastrados na JohnDrop aguardando sync para o Bling. O worker verifica a cada {data.worker?.poll_interval_s || 90}s e enriquece automaticamente quando o produto chega completo (com imagens).
+            Produtos cadastrados pelos robôs JohnDrop e TrimPro aguardando sincronização para o Bling. O worker verifica a cada {data.worker?.poll_interval_s || 90}s e enriquece automaticamente quando o produto chega completo (com imagens).
           </p>
         </div>
         <div className="flex gap-2">
@@ -93,7 +99,7 @@ export default function EnrichQueuePage() {
 
       {data.items.length === 0 ? (
         <div className="rounded-sm border border-border bg-white p-10 text-center text-muted-foreground" data-testid="empty-queue">
-          Nenhum produto na fila. Cadastre produtos via robô JohnDrop e eles aparecem aqui.
+          Nenhum produto na fila. Cadastre produtos pelos robôs JohnDrop ou TrimPro e eles aparecerão aqui.
         </div>
       ) : (
         <div className="rounded-sm border border-border bg-white overflow-hidden">
@@ -102,6 +108,7 @@ export default function EnrichQueuePage() {
               <tr>
                 <th className="text-left px-4 py-2.5 w-32">SKU</th>
                 <th className="text-left px-4 py-2.5">Título</th>
+                <th className="text-left px-4 py-2.5 w-28">Origem</th>
                 <th className="text-left px-4 py-2.5 w-40">Status</th>
                 <th className="text-left px-4 py-2.5 w-20">Tent.</th>
                 <th className="text-left px-4 py-2.5 w-36">Última verif.</th>
@@ -115,6 +122,7 @@ export default function EnrichQueuePage() {
                   <tr key={it.sku} data-testid={`queue-row-${it.sku}`} className="border-b border-border last:border-0 hover:bg-zinc-50">
                     <td className="px-4 py-2 font-mono text-xs">{it.sku}</td>
                     <td className="px-4 py-2 text-xs text-zinc-700 line-clamp-1">{it.raw_title}</td>
+                    <td className="px-4 py-2 text-xs text-zinc-600">{SOURCE_LABEL[it.source] || it.source || "Painel"}</td>
                     <td className="px-4 py-2">
                       <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-sm ${meta.color}`}>
                         <meta.Icon className={`h-3.5 w-3.5 ${meta.Icon === Loader2 ? "animate-spin" : ""}`} />
