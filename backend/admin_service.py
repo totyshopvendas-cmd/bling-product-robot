@@ -39,7 +39,6 @@ PUBLIC_PREFIXES = (
     "/api/social/youtube/oauth/callback",
     "/api/social/ad/asset/",
     "/api/img/",
-    "/api/system/ready",
 )
 
 

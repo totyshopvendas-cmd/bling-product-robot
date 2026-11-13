@@ -1,0 +1,21 @@
+# TotyShop: proxy HTTPS automático para uma instalação com domínio público.
+# Troque automacao.seudominio.com pelo domínio/subdomínio real e execute
+# `TOTYSHOP_DOMAIN=automacao.seudominio.com docker compose -f docker-compose.yml -f docker-compose.online.yml up -d --build`.
+{$TOTYSHOP_DOMAIN} {
+	encode zstd gzip
+
+	# Headers defensivos adequados para um painel privado no mesmo domínio.
+	header {
+		-Server
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		X-Permitted-Cross-Domain-Policies "none"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	reverse_proxy app:8000 {
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+	}
+}

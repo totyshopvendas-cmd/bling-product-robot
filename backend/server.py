@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Body, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import FileResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -142,6 +142,21 @@ async def _startup() -> None:
 @api.get("/")
 async def root() -> dict:
     return {"app": "TotyShop Automation", "version": "0.1"}
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz() -> JSONResponse:
+    """Liveness probe for the reverse proxy and container platform.
+
+    It intentionally does not query MongoDB or Chromium: a platform should
+    only restart this process when FastAPI itself is not responding. The
+    authenticated ``/api/system/ready`` endpoint remains the detailed
+    operational readiness check for the panel.
+    """
+    return JSONResponse(
+        {"status": "ok", "service": "totyshop", "time": datetime.now(timezone.utc).isoformat()},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @api.get("/system/chromium-status")
@@ -1351,23 +1366,33 @@ api.include_router(diag_router)
 admin_service.setup(app, api)
 app.include_router(api)
 
-class _AllowIframe(BaseHTTPMiddleware):
+def _csv_env(name: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
+_ALLOW_IFRAME_EMBED = os.environ.get("ALLOW_IFRAME_EMBED", "").strip().lower() in {"1", "true", "yes"}
+_CORS_ORIGINS = _csv_env("CORS_ORIGINS")
+
+
+class _SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
-        # Do not send X-Frame-Options: ALLOWALL — it is invalid and some
-        # browsers treat it as DENY. CSP frame-ancestors is the allowlist.
-        response.headers["Content-Security-Policy"] = "frame-ancestors *"
+        # CSP is the supported way to control embedding. Local/Arena preview
+        # can opt in explicitly; the internet-facing default prevents
+        # clickjacking of the robot-control panel.
+        response.headers["Content-Security-Policy"] = (
+            "frame-ancestors *" if _ALLOW_IFRAME_EMBED else "frame-ancestors 'self'"
+        )
         if "x-frame-options" in response.headers:
             del response.headers["x-frame-options"]
-        response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
 
-app.add_middleware(_AllowIframe)
+app.add_middleware(_SecurityHeaders)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=False,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

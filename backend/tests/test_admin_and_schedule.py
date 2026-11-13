@@ -65,3 +65,35 @@ async def _local_db_roundtrip(tmp_path, monkeypatch):
     assert dbmod.load_local_db() == 0
     assert (tmp_path / "local.corrompido.json").exists()
     await dbmod.db.settings.delete_many({})
+
+
+# --------------------------------------------------- proteção do painel ---
+def test_panel_password_protects_operational_status(monkeypatch):
+    """O endpoint de leitura operacional não pode vazar dados sem sessão."""
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("APP_PASSWORD", "senha-de-teste")
+    monkeypatch.setenv("APP_SECRET", "segredo-de-teste")
+    # conftest seleciona memory:// antes de qualquer import do servidor.
+    from server import app
+
+    async def exercise():
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://painel.example.test",
+        ) as client:
+            health = await client.get("/healthz")
+            assert health.status_code == 200
+            assert health.json()["status"] == "ok"
+
+            status = await client.get("/api/auth/status")
+            assert status.status_code == 200
+            assert status.json() == {"required": True, "authenticated": False}
+
+            assert (await client.get("/api/system/ready")).status_code == 401
+            login = await client.post("/api/auth/login", json={"password": "senha-de-teste"})
+            assert login.status_code == 200
+            assert "totyshop_session" in client.cookies
+            assert (await client.get("/api/system/ready")).status_code == 200
+
+    asyncio.run(exercise())
