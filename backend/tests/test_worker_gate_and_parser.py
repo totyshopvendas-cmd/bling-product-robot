@@ -224,6 +224,23 @@ def test_explicit_list_status_keeps_unavailable_option_at_zero(
     }
 
 
+def test_html_explicit_list_keeps_esgotado_for_individual_and_bulk_enrichment():
+    """Bling menu descriptions can be HTML instead of the robots' Markdown."""
+    raw = (
+        "<p><strong>Kit Teclado Mouse EL-2206 Disponível nas cores:</strong></p>"
+        "<ul><li>Branco</li><li>Cinza Escuro <em>(fora de estoque)</em></li></ul>"
+    )
+    variations = _parse_variations(raw)
+    quantities = _parse_variation_quantities(raw, variations)
+
+    assert variations == ["Branco", "Cinza Escuro"]
+    assert quantities == {"Cinza Escuro": 0}
+    assert _build_stock_plan(18, variations, quantities) == {
+        "Branco": 18,
+        "Cinza Escuro": 0,
+    }
+
+
 def test_stock_plan_subtracts_explicit_amount_before_split():
     """Explicit quantities and sold-out children cannot inflate total stock."""
     plan = _build_stock_plan(

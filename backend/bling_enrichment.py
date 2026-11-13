@@ -15,6 +15,7 @@ import os
 import re
 import uuid
 import json
+import html
 import asyncio
 from typing import Optional, List
 from datetime import datetime, timezone
@@ -412,6 +413,33 @@ def _abbreviate_variation(name: str) -> str:
     return letters or "VA"
 
 
+# Status words that make an explicitly listed option real but unavailable. They
+# are deliberately shared by name cleanup and stock planning so every caller
+# (JohnDrop, TrimPro, individual and bulk enrichment) reaches the same result.
+_OUT_OF_STOCK_STATUS_RE = (
+    r"(?:esgotad[oa]?|sem\s+estoque|fora\s+de\s+estoque|"
+    r"sem\s+disponibilidade|indispon[ií]ve[il])"
+)
+
+
+def _normalize_variation_source(raw_description: str) -> str:
+    """Turn supplier Markdown/HTML into predictable option-list text.
+
+    Products can arrive from a textarea as Markdown or through the Bling menu
+    as HTML.  Keeping ``<li>`` as a bullet is important: it remains an explicit
+    supplier list instead of being mistaken for product characteristics.
+    """
+    text = html.unescape(raw_description or "")
+    text = re.sub(r"(?is)<\s*li\b[^>]*>", "\n- ", text)
+    # The next <li> already inserts the newline. Keeping this closing tag empty
+    # avoids a blank line that would otherwise terminate a strict bullet list.
+    text = re.sub(r"(?is)</\s*li\s*>", "", text)
+    text = re.sub(r"(?is)<\s*/?\s*(?:p|div|br|h[1-6]|ul|ol)\b[^>]*>", "\n", text)
+    text = re.sub(r"(?is)<[^>]+>", "", text)
+    # Markdown markers never belong to an option name.
+    return re.sub(r"\*\*|__|`", "", text)
+
+
 def _parse_variation_quantities(raw_description: str, variations: List[str]) -> dict:
     """Detect explicit per-variation quantities AND out-of-stock markers in the description.
 
@@ -429,16 +457,16 @@ def _parse_variation_quantities(raw_description: str, variations: List[str]) -> 
     out: dict = {}
     if not raw_description or not variations:
         return out
-    # Mantém a leitura igual à do parser de variações quando a descrição vem
-    # formatada em Markdown (por exemplo, título entre **).
-    text = re.sub(r"\*\*|__|`", "", raw_description)
+    # Use the same normalization as the variation parser.  The individual and
+    # bulk menu can receive HTML from Bling while the two robots receive
+    # Markdown/plain text from supplier forms.
+    text = _normalize_variation_source(raw_description)
     for v in variations:
         v_re = re.escape(v)
-        # Out-of-stock markers FIRST (force 0)
+        # Out-of-stock markers FIRST (force 0). The separator is optional for
+        # supplier formats such as "Azul indisponível" and "Premium ESGOTADO".
         oos_patterns = [
-            rf"{v_re}\s*[\(\-:]?\s*esgotad[oa]?",
-            rf"{v_re}\s*[\(\-:]?\s*sem\s+estoque",
-            rf"{v_re}\s*[\(\-:]?\s*indispon[ií]ve[il]",
+            rf"{v_re}\s*(?:[\(\-:]\s*|\s+)?{_OUT_OF_STOCK_STATUS_RE}\b",
             rf"{v_re}\s*[\(\-:]?\s*0\s*(?:un|unidad|peças?)?\s*\)?",
         ]
         is_oos = any(re.search(p, text, re.IGNORECASE) for p in oos_patterns)
@@ -478,11 +506,9 @@ def _parse_variations(raw_description: str) -> List[str]:
     if not raw_description:
         return []
 
-    # Descrições do JohnDrop usam Markdown com frequência, por exemplo:
-    # "**Disponível nas cores:**\n- Branco\n- Cinza Escuro (ESGOTADO)".
-    # Os marcadores de destaque não fazem parte do nome da cor e, se mantidos,
-    # poderiam virar uma falsa variação chamada "**".
-    text = re.sub(r"\*\*|__|`", "", raw_description)
+    # Supplier descriptions can be Markdown (both robots) or HTML (Bling's
+    # individual/bulk menu). Normalize both forms before reading a strict list.
+    text = _normalize_variation_source(raw_description)
 
     # GATE 1: fornecedor escolhe por disponibilidade/aleatoriamente → não há
     # variação selecionável. Usa a mesma regra do fluxo de enriquecimento para
@@ -518,10 +544,10 @@ def _parse_variations(raw_description: str) -> List[str]:
             ),
             True,
         ),
-        # "Cores disponíveis: Azul, Verde"
+        # "Cores disponíveis: Azul, Verde" / "Cor disponível: ..."
         (
             re.compile(
-                r"^\s*(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?\s*:?\s*(.*)$",
+                r"^\s*(cores?|tamanhos?|modelos?)\s+dispon[ií]ve[il]s?\s*:?\s*(.*)$",
                 re.IGNORECASE,
             ),
             False,
@@ -605,16 +631,15 @@ def _parse_variations(raw_description: str) -> List[str]:
         # "Azul - Esgotado"). Keep only the option name before applying the
         # attribute gate below.
         p_clean = re.sub(
-            r"\s*[:\-–]\s*(?:\d{1,4}\s*(?:un|unidade?s?|pcs|peças?)?|"
-            r"esgotad[oa]?|sem\s+estoque|indispon[ií]ve[il])\s*$",
+            rf"\s*[:\-–]\s*(?:\d{{1,4}}\s*(?:un|unidade?s?|pcs|peças?)?|"
+            rf"{_OUT_OF_STOCK_STATUS_RE})\s*$",
             "", p_clean, flags=re.IGNORECASE,
         ).strip()
         # Some suppliers omit the dash/parentheses and write e.g.
         # "Azul indisponível". It is still a real option with status, not a
         # variation literally named "Azul Indisponível".
         p_clean = re.sub(
-            r"(?:\s*[:\-–]\s*|\s+)(?:esgotad[oa]?|sem\s+estoque|"
-            r"indispon[ií]ve[il])\s*$",
+            rf"(?:\s*[:\-–]\s*|\s+){_OUT_OF_STOCK_STATUS_RE}\s*$",
             "", p_clean, flags=re.IGNORECASE,
         ).strip()
         if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
