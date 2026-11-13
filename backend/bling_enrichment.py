@@ -507,29 +507,40 @@ def _parse_variations(raw_description: str) -> List[str]:
     # this turned feature lines such as "Argola metálica" and "Leve e prático"
     # into fake variations after a valid "Cores disponíveis" line.
     header_patterns = [
-        # "Disponível nas cores: Azul, Verde" / "Disponível na cor: ..."
-        re.compile(
-            r"^\s*dispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*"
-            r"(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:?\s*(.*)$",
-            re.IGNORECASE,
+        # The supplier sometimes appends this heading to the title in the SAME
+        # Markdown line: "Kit ... EL-2206 Disponível nas cores:".  It is still
+        # an explicit selectable-options heading, so allow it after title text.
+        (
+            re.compile(
+                r"\bdispon[ií]ve[il]s?\s+(?:nas?|nos?|em|nas?\s+seguintes)?\s*"
+                r"(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:?\s*(.*)$",
+                re.IGNORECASE,
+            ),
+            True,
         ),
         # "Cores disponíveis: Azul, Verde"
-        re.compile(
-            r"^\s*(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?\s*:?\s*(.*)$",
-            re.IGNORECASE,
+        (
+            re.compile(
+                r"^\s*(cores|tamanhos|modelos)\s+dispon[ií]ve[il]s?\s*:?\s*(.*)$",
+                re.IGNORECASE,
+            ),
+            False,
         ),
         # Explicit supplier section: "Cor:" / "Tamanho:" / "Modelo:"
-        re.compile(
-            r"^\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*(.*)$",
-            re.IGNORECASE,
+        (
+            re.compile(
+                r"^\s*(cores|tamanhos|modelos|cor|tamanho|modelo)\s*:\s*(.*)$",
+                re.IGNORECASE,
+            ),
+            False,
         ),
     ]
     body = ""
     kind = ""
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        for pattern in header_patterns:
-            match = pattern.match(line)
+        for pattern, allow_after_title in header_patterns:
+            match = pattern.search(line) if allow_after_title else pattern.match(line)
             if not match:
                 continue
             candidate_kind = (match.group(1) or "").lower()
@@ -596,6 +607,14 @@ def _parse_variations(raw_description: str) -> List[str]:
         p_clean = re.sub(
             r"\s*[:\-–]\s*(?:\d{1,4}\s*(?:un|unidade?s?|pcs|peças?)?|"
             r"esgotad[oa]?|sem\s+estoque|indispon[ií]ve[il])\s*$",
+            "", p_clean, flags=re.IGNORECASE,
+        ).strip()
+        # Some suppliers omit the dash/parentheses and write e.g.
+        # "Azul indisponível". It is still a real option with status, not a
+        # variation literally named "Azul Indisponível".
+        p_clean = re.sub(
+            r"(?:\s*[:\-–]\s*|\s+)(?:esgotad[oa]?|sem\s+estoque|"
+            r"indispon[ií]ve[il])\s*$",
             "", p_clean, flags=re.IGNORECASE,
         ).strip()
         if not p_clean or p_clean.lower() in {"e", "ou", "etc", "..."}:
@@ -1328,24 +1347,25 @@ async def enrich_product_by_sku(
                 }
                 color_candidates = [v for v in variations if _is_color_name(v)]
                 non_color = [v for v in variations if not _is_color_name(v)]
-                confirmed_colors: List[str] = []
                 if color_candidates:
+                    # The supplier's explicit selectable list is authoritative.
+                    # Vision remains an audit signal, but never removes a real
+                    # listed option — otherwise no AI key/photo confirmation
+                    # caused valid choices (including Branco) not to be created.
                     colors_to_confirm = [c for c in color_candidates if c.casefold() not in sold_out_keys]
                     confirmed = await _confirm_colors_by_vision(images, colors_to_confirm)
                     confirmed_set = set(confirmed)
-                    confirmed_colors = [
-                        c for c in color_candidates
-                        if c.casefold() in sold_out_keys
-                        or _normalize_color_for_vision(c) in confirmed_set
+                    rejected = [
+                        c for c in colors_to_confirm
+                        if _normalize_color_for_vision(c) not in confirmed_set
                     ]
-                    rejected = [c for c in color_candidates if c not in confirmed_colors]
-                    if rejected:
+                    if rejected and confirmed_set:
                         await add_log(
                             "warning",
                             f"Cor não confirmada nas fotos (revisão) para {sku}: {', '.join(rejected)}",
                         )
                         await _save_review(sku, "cor_nao_confirmada", rejected, raw_title, raw_description, images)
-                variations = non_color + confirmed_colors
+                variations = non_color + color_candidates
                 if variations:
                     await add_log(
                         "info",
