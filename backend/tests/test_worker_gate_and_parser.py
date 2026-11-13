@@ -181,6 +181,49 @@ def test_markdown_esgotado_creates_variation_with_zero_stock():
     }
 
 
+def test_esgotado_list_after_trimpro_title_creates_zero_stock_child():
+    """TrimPro often appends the heading to the product title in one Markdown line."""
+    raw = (
+        "**Kit Teclado Mouse Sem Fio Bluetooth Suporte Celular EL-2206 "
+        "Disponível nas cores:**  \n"
+        "- Branco  \n"
+        "- Cinza Escuro (ESGOTADO)"
+    )
+    variations = _parse_variations(raw)
+    quantities = _parse_variation_quantities(raw, variations)
+
+    assert variations == ["Branco", "Cinza Escuro"]
+    assert quantities == {"Cinza Escuro": 0}
+    assert _build_stock_plan(18, variations, quantities) == {
+        "Branco": 18,
+        "Cinza Escuro": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("heading", "available", "unavailable", "unavailable_name"),
+    [
+        ("Cores disponíveis", "Branco", "Azul indisponível", "Azul"),
+        ("Tamanhos disponíveis", "P", "M - sem estoque", "M"),
+        ("Modelos disponíveis", "Tradicional", "Premium ESGOTADO", "Premium"),
+    ],
+)
+def test_explicit_list_status_keeps_unavailable_option_at_zero(
+    heading, available, unavailable, unavailable_name,
+):
+    """Colors, sizes and models keep unavailable listed choices as zero-stock children."""
+    raw = f"{heading}:\n- {available}\n- {unavailable}"
+    variations = _parse_variations(raw)
+    quantities = _parse_variation_quantities(raw, variations)
+
+    assert variations == [available, unavailable_name]
+    assert quantities == {unavailable_name: 0}
+    assert _build_stock_plan(9, variations, quantities) == {
+        available: 9,
+        unavailable_name: 0,
+    }
+
+
 def test_stock_plan_subtracts_explicit_amount_before_split():
     """Explicit quantities and sold-out children cannot inflate total stock."""
     plan = _build_stock_plan(
