@@ -224,6 +224,29 @@ def test_explicit_list_status_keeps_unavailable_option_at_zero(
     }
 
 
+def test_blank_line_inside_explicit_list_keeps_esgotado_options_at_zero():
+    """Supplier Markdown may separate available and sold-out bullets by one blank row."""
+    raw = (
+        "Disponível nas cores:\n"
+        "- Preto\n"
+        "- Rosa\n"
+        "\n"
+        "- Branco (ESGOTADO)\n"
+        "- Azul (ESGOTADO)"
+    )
+    variations = _parse_variations(raw)
+    quantities = _parse_variation_quantities(raw, variations)
+
+    assert variations == ["Preto", "Rosa", "Branco", "Azul"]
+    assert quantities == {"Branco": 0, "Azul": 0}
+    assert _build_stock_plan(10, variations, quantities) == {
+        "Preto": 5,
+        "Rosa": 5,
+        "Branco": 0,
+        "Azul": 0,
+    }
+
+
 def test_html_explicit_list_keeps_esgotado_for_individual_and_bulk_enrichment():
     """Bling menu descriptions can be HTML instead of the robots' Markdown."""
     raw = (

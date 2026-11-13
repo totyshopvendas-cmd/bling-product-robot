@@ -26,6 +26,7 @@ from typing import Optional, Tuple
 from title_cleaner import clean_title
 from pricing_service import lookup_price
 from integration_selection import select_required_integration
+from marketplace_category import ensure_required_marketplace_category
 from submission_confirmation import confirm_supplier_submission
 from robot_service import robot, add_log
 from db import db
@@ -898,7 +899,26 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
     except Exception:
         pass
 
-    # 7. Submit (or just log if dry-run)
+    # 7. Supplier forms may require a marketplace category. The shared guard is
+    # a no-op for JohnDrop pages without one, and prevents a rejected submit on
+    # any provider page that does require it.
+    category = await ensure_required_marketplace_category(page)
+    if not category["selected"]:
+        await add_log(
+            "error",
+            f"Categoria obrigatória não confirmada: {category['detail']}",
+            raw_title=raw_title,
+            cleaned_title=cleaned["cleaned"],
+        )
+        robot.failed += 1
+        robot.processed += 1
+        robot.message = "Categoria obrigatória do fornecedor não foi preenchida"
+        await _open_catalog(page)
+        return True
+    if category["present"]:
+        await add_log("info", f"Categoria do fornecedor confirmada: {category['detail']}")
+
+    # 8. Submit (or just log if dry-run)
     submitted_ok = False
     if dry_run:
         await add_log(
