@@ -10,6 +10,7 @@ const STAGE_META = {
   queued:        { Icon: Clock,         label: "Na fila",        color: "text-zinc-600",    bg: "bg-zinc-100" },
   waiting_sync:  { Icon: Clock,         label: "Aguardando sync", color: "text-amber-700",   bg: "bg-amber-100" },
   enriching:     { Icon: Sparkles,      label: "Enriquecendo",   color: "text-blue-700",    bg: "bg-blue-100" },
+  waiting_ai:    { Icon: Clock,         label: "Aguardando IA",  color: "text-violet-700",  bg: "bg-violet-100" },
   done:          { Icon: CheckCircle2,  label: "Concluído",      color: "text-emerald-700", bg: "bg-emerald-100" },
   failed:        { Icon: XCircle,       label: "Falhou",         color: "text-rose-700",    bg: "bg-rose-100" },
 };
@@ -99,9 +100,10 @@ export default function EnrichmentProgressPage() {
       </header>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <Card label="Total" value={s.total || 0} color="zinc" Icon={Activity} />
         <Card label="Ativos" value={s.active || 0} color="blue" Icon={Loader2} spinning={(s.active || 0) > 0} />
+        <Card label="Aguardando IA" value={s.waiting_ai || 0} color="violet" Icon={Clock} />
         <Card label="Concluídos" value={s.done || 0} color="emerald" Icon={CheckCircle2} />
         <Card label="Falhas" value={s.failed || 0} color="rose" Icon={XCircle} />
       </div>
@@ -178,12 +180,14 @@ function Card({ label, value, color, Icon, spinning = false }) {
   const colors = {
     zinc: "border-border bg-white",
     blue: "border-blue-200 bg-blue-50",
+    violet: "border-violet-200 bg-violet-50",
     emerald: "border-emerald-200 bg-emerald-50",
     rose: "border-rose-200 bg-rose-50",
   };
   const iconColors = {
     zinc: "text-zinc-500",
     blue: "text-blue-600",
+    violet: "text-violet-600",
     emerald: "text-emerald-600",
     rose: "text-rose-600",
   };

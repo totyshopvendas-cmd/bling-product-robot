@@ -1,14 +1,14 @@
-"""Worker que detecta quando produtos da JohnDrop chegaram completos no Bling
-e dispara o enriquecimento.
+"""Worker que espera o sync JohnDrop/TrimPro→Bling e dispara enriquecimento.
 
 Fluxo:
-  1. Robô JohnDrop cadastra produto → salva SKU em `enrich_pending` (status=pending)
-  2. Produtos criados manualmente na integração TotyShop-Bling também são
-     descobertos periodicamente na lista da JohnDrop e entram na mesma fila
-  3. Worker busca pendentes. Quando o produto chega ao Bling com imagens,
-     dispara enriquecimento e marca status=done
-  4. Se não encontrou ou está sem imagens, marca attempts+=1 e tenta na próxima rodada
-  5. Após 80 tentativas (~2h), marca como giveup
+  1. Cada robô confirmado salva SKU + descrição original em ``enrich_pending``.
+  2. Produtos JohnDrop criados manualmente em TotyShop-Bling também podem entrar
+     na mesma fila pelo monitor periódico.
+  3. O worker espera produto, imagens e descrição no Bling e então aplica o
+     enriquecimento compartilhado: descrição curta + 6/8 bullets + metadados.
+  4. Se a IA não estiver disponível, o item fica ``waiting_ai`` (visível e
+     retentável), nunca ``done`` com a descrição crua do fornecedor.
+  5. Após 80 esperas de sincronização (~2h), itens ainda pendentes viram giveup.
 """
 import asyncio
 import os
@@ -246,8 +246,23 @@ async def _tick() -> None:
             )
             continue
 
-        # Imagens chegaram (a "bagagem" pousou)! Mark as processing
-        # and trigger full enrichment.
+        # Manual JohnDrop registrations have no local raw record yet. The
+        # native sync normally carries the original description into Bling; the
+        # same fallback also protects TrimPro if its supplier page loaded text
+        # after the robot first read the form.
+        raw_title, raw_description = _source_text_for_enrichment(item, product)
+        if not raw_description.strip():
+            await db.enrich_pending.update_one(
+                {"sku": sku},
+                {"$set": {"last_check": datetime.now(timezone.utc).isoformat(),
+                          "last_status": "waiting_description",
+                          "product_id": product.get("id")},
+                 "$inc": {"attempts": 1}},
+            )
+            continue
+
+        # Imagens e fonte textual chegaram: only now start the shared full
+        # JohnDrop/TrimPro enrichment contract.
         await db.enrich_pending.update_one(
             {"sku": sku},
             {"$set": {"status": "processing",
@@ -257,11 +272,6 @@ async def _tick() -> None:
         await add_log("info", f"Produto {sku} pronto no Bling ({reason}) — iniciando enriquecimento")
 
         try:
-            # Manual JohnDrop registrations have no local raw record yet. The
-            # native sync normally carries the original description into Bling,
-            # so use it as the source for the same title/description/variation
-            # analysis used by the robot-created products.
-            raw_title, raw_description = _source_text_for_enrichment(item, product)
             result = await bling_enrichment.enrich_product_by_sku(
                 sku,
                 raw_title,
@@ -278,10 +288,27 @@ async def _tick() -> None:
                     {"$set": {
                         "status": "done",
                         "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "description_status": "complete",
+                        "description_bullets": result.get("description_bullets", 0),
                         "result": {
                             "product_id": result.get("product_id"),
                             "variations": result.get("variations_created", 0),
                         },
+                    }},
+                )
+            elif result.get("needs_ai_retry"):
+                # Do not retry a missing/blocked AI key every 90 seconds. The
+                # UI makes this explicit and gives the user one safe Retry
+                # action after fixing their IA configuration or balance.
+                await db.enrich_pending.update_one(
+                    {"sku": sku},
+                    {"$set": {
+                        "status": "waiting_ai",
+                        "product_id": result.get("product_id") or product.get("id"),
+                        "last_status": "waiting_ai",
+                        "last_error": str(result.get("reason", "descrição aguardando IA")),
+                        "last_check": datetime.now(timezone.utc).isoformat(),
+                        "needs_llm_retry": True,
                     }},
                 )
             else:
@@ -339,6 +366,7 @@ async def list_queue(status: Optional[str] = None, limit: int = 100) -> dict:
     summary = {
         "pending": await db.enrich_pending.count_documents({"status": "pending"}),
         "processing": await db.enrich_pending.count_documents({"status": "processing"}),
+        "waiting_ai": await db.enrich_pending.count_documents({"status": "waiting_ai"}),
         "done": await db.enrich_pending.count_documents({"status": "done"}),
         "giveup": await db.enrich_pending.count_documents({"status": "giveup"}),
     }

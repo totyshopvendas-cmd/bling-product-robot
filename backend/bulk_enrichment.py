@@ -1,7 +1,7 @@
 """Bulk Bling enrichment service.
 
 Lets the user select Bling products (or all not-yet-enriched) and re-runs
-the LLM enrichment pipeline (short description + 8 bullets + category) on each.
+the LLM enrichment pipeline (short description + 6 or 8 factual bullets + category) on each.
 
 Job state is kept in-memory: only one bulk job runs at a time.
 """
