@@ -47,7 +47,7 @@ Você só precisa de:
 3. Autorize somente o repositório `totyshopvendas-cmd/bling-product-robot`.
 4. Selecione a branch `main`.
 
-**Resultado esperado:** aparece um serviço novo do TotyShop e a Railway inicia a construção pelo `Dockerfile` do projeto. A primeira construção pode demorar porque inclui o navegador Chromium usado pelos robôs.
+**Resultado esperado:** aparece um serviço novo do TotyShop e a Railway inicia a construção pelo `Dockerfile` do projeto. A imagem é criada primeiro; depois que o painel estiver ativo, ele prepara o navegador Chromium dos robôs automaticamente em segundo plano. Isso pode levar alguns minutos na primeira vez.
 
 ### 2. Criar a URL HTTPS pronta
 
@@ -143,7 +143,7 @@ No painel online, abra **Configurações**, salve Client ID/Client Secret do Bli
 | Painel abre, mas não aceita senha | valor de `APP_PASSWORD` e se houve novo deploy após salvar a variável |
 | Dados desapareceram após reiniciar | Volume anexado em `/app/persist` e `TOTYSHOP_PERSIST_DIR=/app/persist` |
 | Bling rejeita o retorno | `APP_BASE_URL` e callback devem ser idênticos, incluindo `https://` |
-| Robô não inicia | Configurações, credenciais, tabela de preços e primeiro teste no painel |
+| Robô não inicia logo após o primeiro deploy | espere alguns minutos para o Chromium terminar de ser preparado; depois confira Configurações, credenciais, tabela de preços e primeiro teste no painel |
 
 ## Limite desta opção
 

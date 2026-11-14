@@ -91,22 +91,20 @@ async def _startup() -> None:
     except Exception as e:
         logger.warning(f"index init: {e}")
     # Auto-install Chromium if missing (container may be reset between deploys).
-    # Uses dynamic version detection — works with any playwright version.
-    try:
-        import subprocess
-        import sys
-        if not johndrop_bot._find_chromium_binary():
-            logger.warning("Chromium ausente — instalando em background...")
-            subprocess.Popen(
-                [sys.executable, "-m", "playwright", "install", "chromium"],
-                env=johndrop_bot.pw_env(),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            logger.info(f"Chromium pronto: {johndrop_bot._find_chromium_binary()}")
-    except Exception as e:
-        logger.warning(f"chromium auto-install skipped: {e}")
+    # The browser download is deliberately asynchronous: managed builders can
+    # finish the panel image quickly, while the already-running app prepares
+    # Chromium without blocking its health check.
+    async def _prepare_chromium_bg() -> None:
+        try:
+            if not johndrop_bot._find_chromium_binary():
+                logger.warning("Chromium ausente — preparando em segundo plano...")
+                ready = await johndrop_bot._ensure_chromium_installed()
+                logger.info("Chromium %s", "pronto" if ready else "não pôde ser preparado")
+            else:
+                logger.info("Chromium pronto: %s", johndrop_bot._find_chromium_binary())
+        except Exception as e:
+            logger.warning("chromium auto-install skipped: %s", e)
+
     # Boot the social ad scheduler (peak-hour publisher)
     try:
         start_scheduler()
@@ -135,6 +133,7 @@ async def _startup() -> None:
             logger.warning("tabela de preços no startup: %s", e)
 
     import asyncio as _aio
+    _aio.create_task(_prepare_chromium_bg())
     _aio.create_task(_load_prices_bg())
     _aio.create_task(_stock_schedule_loop())
 
