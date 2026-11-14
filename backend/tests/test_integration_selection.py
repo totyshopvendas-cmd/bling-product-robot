@@ -46,6 +46,15 @@ def test_shared_selector_fails_closed_when_card_has_no_selected_state():
     assert result["selected"] is False
 
 
+def test_target_probe_never_accepts_a_checked_sibling_in_generic_card():
+    """A checked Shopee radio inside a shared wrapper is not TotyShop-Bling."""
+    script = integration_selection._SELECT_INTEGRATION_PROBE
+
+    assert "controls.some((input) => input.checked)" not in script
+    assert "const control = targetControl(root);" in script
+    assert "TotyShop-Bling foi localizada, mas sua seleção não foi confirmada" in script
+
+
 def test_both_supplier_robots_use_the_same_verified_integration_guard():
     """A fix for the integration card must never diverge across suppliers."""
     assert johndrop_bot.select_required_integration is integration_selection.select_required_integration
@@ -85,6 +94,17 @@ def test_submission_rejects_visible_provider_validation_error():
 
     assert result == {"confirmed": False, "detail": "SKU já cadastrado"}
     assert page.wait_calls == []
+
+
+def test_submission_probe_reports_supplier_invalid_fields_instead_of_hiding_them():
+    source = submission_confirmation._feedback.__code__.co_consts
+    # The page-side probe must inspect native and framework validation state,
+    # because several supplier forms do not display a toast after rejection.
+    script = next(value for value in source if isinstance(value, str) and ":invalid" in value)
+
+    assert '[aria-invalid="true"]' in script
+    assert ".is-invalid" in script
+    assert "validationMessage" in script
 
 
 def test_both_supplier_robots_use_the_same_submission_confirmation_guard():
