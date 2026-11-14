@@ -10,6 +10,9 @@ def test_docker_defers_large_browser_download_until_runtime():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000" in dockerfile
+    # The first browser download belongs on the Railway Volume, so it survives
+    # later deploys instead of being fetched for every new container.
+    assert "PLAYWRIGHT_BROWSERS_PATH=/app/persist/ms-playwright" in dockerfile
     # playwright/driver/node requires these dynamic libraries on python:slim.
     assert "libatomic1" in dockerfile
     assert "libstdc++6" in dockerfile
