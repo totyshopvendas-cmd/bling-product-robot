@@ -12,12 +12,16 @@ FROM python:3.11-slim-bookworm
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FRONTEND_BUILD=/app/frontend/build
+    FRONTEND_BUILD=/app/frontend/build \
+    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+# Instala as bibliotecas do navegador separadamente. O Chromium é baixado
+# depois que o painel já iniciou (em segundo plano); isso evita que builders
+# gerenciados encerrem uma imagem saudável durante o download grande.
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
- && python -m playwright install --with-deps chromium
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN python -m playwright install-deps chromium
 COPY backend /app/backend
 COPY --from=frontend /frontend/build /app/frontend/build
 WORKDIR /app/backend
