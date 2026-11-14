@@ -1,10 +1,11 @@
-"""Tracker do enriquecimento em tempo real.
+"""Tracker do enriquecimento JohnDrop/TrimPro em tempo real.
 
-Mantém em memória o estado de cada SKU sendo processado:
-  - waiting_sync: aguardando JohnDrop sincronizar estoque+imagens
-  - enriching: rodando LLM (descrição/bullets/categoria) + PATCH
-  - done: enriquecido com sucesso
-  - failed: erro
+Mantém em memória o estado de cada SKU:
+  - waiting_sync: aguardando o fornecedor sincronizar dados/imagens
+  - enriching: gerando descrição curta, bullets e metadados
+  - waiting_ai: descrição incompleta; usuário deve corrigir IA/saldo e retentar
+  - done: descrição curta e 6 ou 8 bullets concluídos
+  - failed: erro técnico
 
 A função `track(sku, stage, **info)` é chamada de dentro de `bling_enrichment.py`
 em cada transição. O endpoint /api/enrich/progress lista o estado atual."""
@@ -28,8 +29,11 @@ def _now() -> str:
 
 
 def track(sku: str, stage: str, **info) -> None:
-    """Update or insert an entry for `sku`. Stages: queued, waiting_sync,
-    enriching, done, failed. Extra info kwargs go into the entry as-is."""
+    """Update or insert an entry for ``sku``.
+
+    Stages are queued, waiting_sync, enriching, waiting_ai, done and failed.
+    Extra info kwargs go into the entry as-is.
+    """
     if not sku:
         return
     entry = _TRACK.pop(sku, None) or {"sku": sku, "created_at": _now()}
@@ -52,6 +56,7 @@ async def progress(limit: int = 30) -> dict:
             "total": len(_TRACK),
             "active": len(active),
             "done": sum(1 for it in _TRACK.values() if it.get("stage") == "done"),
+            "waiting_ai": sum(1 for it in _TRACK.values() if it.get("stage") == "waiting_ai"),
             "failed": sum(1 for it in _TRACK.values() if it.get("stage") == "failed"),
         },
     }

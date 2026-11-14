@@ -811,12 +811,10 @@ async def bling_retry_llm_failed() -> dict:
     if not ids:
         return {"ok": True, "message": "Nenhum SKU pendente de retry LLM", "count": 0}
     job = await bulk_enrichment.start(ids)
-    # Limpa a flag depois (o job fica em background — flag será revalidada
-    # naturalmente ao próximo enrichment se falhar de novo)
-    await _db.enrich_pending.update_many(
-        {"needs_llm_retry": True},
-        {"$unset": {"needs_llm_retry": "", "llm_last_error": ""}},
-    )
+    # Do not clear the marker before the asynchronous job really succeeds.
+    # ``enrich_product_by_sku`` clears it only after both description fields
+    # meet the JohnDrop/TrimPro completion contract; a failed retry remains
+    # visible in the queue instead of silently looking finished.
     return {"ok": True, "count": len(ids), "job_id": job.get("job_id")}
 
 

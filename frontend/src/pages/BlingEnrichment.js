@@ -7,9 +7,10 @@ import { toast } from "sonner";
 const REFRESH_INTERVAL_MS = 5000;
 
 const STATUS_META = {
-  success: { color: "bg-emerald-100 text-emerald-800 border-emerald-300", icon: CheckCircle2, label: "Sucesso" },
+  success: { color: "bg-emerald-100 text-emerald-800 border-emerald-300", icon: CheckCircle2, label: "Concluído" },
+  waiting_ai: { color: "bg-violet-100 text-violet-800 border-violet-300", icon: Clock, label: "Aguardando IA" },
   error: { color: "bg-rose-100 text-rose-800 border-rose-300", icon: AlertTriangle, label: "Erro" },
-  not_found: { color: "bg-amber-100 text-amber-800 border-amber-300", icon: Clock, label: "Aguardando" },
+  not_found: { color: "bg-amber-100 text-amber-800 border-amber-300", icon: Clock, label: "Aguardando sync" },
 };
 
 export default function BlingEnrichmentPage() {
@@ -86,25 +87,29 @@ export default function BlingEnrichmentPage() {
         <div className="label-overline mb-1">Bling ERP</div>
         <h1 className="font-display text-3xl font-bold tracking-tighter">Enriquecimento de Produtos</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-          Após cada cadastro no JohnDrop, o produto aparece automaticamente no Bling. O sistema então
-          gera <strong>descrição curta</strong>, <strong>8 bullets técnicos</strong> e seleciona a{" "}
-          <strong>categoria</strong> ideal usando IA — sempre removendo marcas e EANs, e respeitando as regras de formatação.
+          Após cada cadastro confirmado no JohnDrop ou TrimPro, o produto aparece automaticamente no Bling. O sistema então
+          gera <strong>descrição curta</strong>, <strong>6 ou 8 bullets técnicos</strong> e seleciona a{" "}
+          <strong>categoria</strong> ideal usando IA. Só é concluído quando as duas descrições estiverem completas.
         </p>
       </div>
 
       {stats && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-0 border border-border bg-white">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-0 border border-border bg-white">
           <div className="p-5 border-r border-border">
             <div className="label-overline">Total</div>
             <div className="font-display text-3xl font-bold tracking-tighter">{stats.total}</div>
           </div>
           <div className="p-5 border-r border-border">
-            <div className="label-overline">Sucessos</div>
+            <div className="label-overline">Concluídos</div>
             <div className="font-display text-3xl font-bold tracking-tighter text-emerald-600">{stats.success}</div>
           </div>
           <div className="p-5 border-r border-border">
             <div className="label-overline">Aguardando sync</div>
             <div className="font-display text-3xl font-bold tracking-tighter text-amber-600">{stats.not_found}</div>
+          </div>
+          <div className="p-5 border-r border-border">
+            <div className="label-overline">Aguardando IA</div>
+            <div className="font-display text-3xl font-bold tracking-tighter text-violet-600">{stats.waiting_ai || 0}</div>
           </div>
           <div className="p-5">
             <div className="label-overline">Erros</div>
@@ -179,7 +184,7 @@ export default function BlingEnrichmentPage() {
         <div className="divide-y divide-border" data-testid="enrichment-logs">
           {logs.length === 0 ? (
             <div className="px-6 py-12 text-sm text-muted-foreground text-center">
-              Nenhum enriquecimento ainda. Rode o robô em modo REAL — após cada cadastro no JohnDrop, o produto será enriquecido aqui.
+              Nenhum enriquecimento ainda. Rode JohnDrop ou TrimPro em modo REAL — após cada cadastro confirmado, o produto será enriquecido aqui.
             </div>
           ) : (
             logs.map((l) => {
@@ -214,7 +219,7 @@ export default function BlingEnrichmentPage() {
                              dangerouslySetInnerHTML={{ __html: l.short_description || "" }} />
                       </div>
                       <div>
-                        <div className="label-overline mb-1">8 Bullets</div>
+                        <div className="label-overline mb-1">Bullets técnicos</div>
                         <div className="bg-zinc-50 border border-border p-3 rounded-sm space-y-1 font-mono">
                           {(l.bullets || []).map((b, i) => (
                             <div key={i} dangerouslySetInnerHTML={{ __html: b }} />

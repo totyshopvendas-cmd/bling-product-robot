@@ -406,7 +406,7 @@ export default function BlingBulkEnrichPage() {
             <p className="text-sm text-zinc-600">
               O sistema vai varrer seu catálogo Bling, encontrar os produtos pendentes e
               colocá-los na fila. Cada produto consome ~3 chamadas à IA (descrição curta,
-              8 bullets, categoria).
+              6 ou 8 bullets, categoria).
             </p>
             <div className="flex flex-col gap-1">
               <span className="label-overline">Limite máximo de produtos</span>

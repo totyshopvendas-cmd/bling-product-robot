@@ -7,6 +7,7 @@ import { Loader2, RefreshCw, RotateCw, Trash2, Zap, Clock, CheckCircle2, AlertTr
 const STATUS_META = {
   pending:    { label: "Aguardando Bling",     color: "bg-amber-100 text-amber-800", Icon: Clock },
   processing: { label: "Enriquecendo",         color: "bg-blue-100 text-blue-800",   Icon: Loader2 },
+  waiting_ai: { label: "Aguardando IA",        color: "bg-violet-100 text-violet-800", Icon: AlertTriangle },
   done:       { label: "Concluído",            color: "bg-emerald-100 text-emerald-800", Icon: CheckCircle2 },
   giveup:     { label: "Desistiu",             color: "bg-rose-100 text-rose-700",   Icon: AlertTriangle },
 };
@@ -77,7 +78,7 @@ export default function EnrichQueuePage() {
             <Clock className="h-6 w-6" /> Fila de Enriquecimento
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Produtos cadastrados pelos robôs JohnDrop e TrimPro aguardando sincronização para o Bling. O worker verifica a cada {data.worker?.poll_interval_s || 90}s e enriquece automaticamente quando o produto chega completo (com imagens).
+            Produtos cadastrados pelos robôs JohnDrop e TrimPro aguardando sincronização para o Bling. O worker verifica a cada {data.worker?.poll_interval_s || 90}s e só conclui quando houver imagens, descrição curta e 6 ou 8 bullets. “Aguardando IA” não é produto concluído: corrija a IA/saldo e use Retentar.
           </p>
         </div>
         <div className="flex gap-2">
@@ -90,9 +91,10 @@ export default function EnrichQueuePage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <Card label="Aguardando" value={s.pending || 0} color="amber" Icon={Clock} />
         <Card label="Enriquecendo" value={s.processing || 0} color="blue" Icon={Loader2} spin />
+        <Card label="Aguardando IA" value={s.waiting_ai || 0} color="violet" Icon={AlertTriangle} />
         <Card label="Concluídos" value={s.done || 0} color="emerald" Icon={CheckCircle2} />
         <Card label="Desistidos" value={s.giveup || 0} color="rose" Icon={AlertTriangle} />
       </div>
@@ -140,9 +142,10 @@ export default function EnrichQueuePage() {
                       {it.last_check ? new Date(it.last_check).toLocaleTimeString("pt-BR") : "—"}
                     </td>
                     <td className="px-4 py-2 text-right space-x-1">
-                      {(it.status === "giveup" || it.status === "pending") && (
-                        <button onClick={() => retry(it.sku)} data-testid={`retry-${it.sku}`} className="text-xs text-blue-600 hover:text-blue-800 inline-flex items-center gap-1">
+                      {(it.status === "giveup" || it.status === "pending" || it.status === "waiting_ai") && (
+                        <button onClick={() => retry(it.sku)} data-testid={`retry-${it.sku}`} title="Retentar enriquecimento" className="text-xs text-blue-600 hover:text-blue-800 inline-flex items-center gap-1">
                           <RotateCw className="h-3 w-3" />
+                          <span className="sr-only">Retentar</span>
                         </button>
                       )}
                       <button onClick={() => remove(it.sku)} data-testid={`remove-${it.sku}`} className="text-xs text-rose-600 hover:text-rose-800 inline-flex items-center gap-1">
@@ -161,7 +164,7 @@ export default function EnrichQueuePage() {
 }
 
 function Card({ label, value, color, Icon, spin }) {
-  const map = { amber: "border-amber-200 bg-amber-50 text-amber-800", blue: "border-blue-200 bg-blue-50 text-blue-800", emerald: "border-emerald-200 bg-emerald-50 text-emerald-800", rose: "border-rose-200 bg-rose-50 text-rose-800" };
+  const map = { amber: "border-amber-200 bg-amber-50 text-amber-800", blue: "border-blue-200 bg-blue-50 text-blue-800", violet: "border-violet-200 bg-violet-50 text-violet-800", emerald: "border-emerald-200 bg-emerald-50 text-emerald-800", rose: "border-rose-200 bg-rose-50 text-rose-800" };
   return (
     <div className={`rounded-sm border p-4 ${map[color]}`}>
       <div className="flex items-center justify-between">

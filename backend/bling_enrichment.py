@@ -1,13 +1,17 @@
-"""Bling enrichment service.
+"""Bling enrichment service shared by JohnDrop and TrimPro.
 
-After JohnDrop cadastros a product, JohnDrop automatically syncs it to Bling.
-This service then ENRICHES the Bling product with:
-  1. Short description (rewritten from JohnDrop raw description — SEO + readability)
-  2. Exactly 8 bullet points (max 150 chars each)
-  3. Best-matching Bling category (or creates one if none exists)
+After either supplier registers a product, its native integration syncs it to
+Bling. This service then enriches the product with:
+  1. a complete short description, reformatted from the supplier source;
+  2. 6 or 8 factual, distinct complementary bullets (maximum 150 characters);
+  3. the best-matching Bling category (or a new category when necessary).
+
+A product is *not* considered enriched until both description fields satisfy
+that contract. This prevents raw supplier text from being presented as a
+finished JohnDrop or TrimPro product when the AI service is unavailable.
 
 Rules for descriptions:
-- No brand names (XLS, Kapbom, etc) or EAN/GTIN
+- No supplier brand names (XLS, Kapbom, etc) or EAN/GTIN
 - Only <b>bold</b> and hyphens (-) allowed
 - Variations (cores/tamanhos/modelos) must be preserved & highlighted in short description
 """
@@ -319,8 +323,8 @@ def _sanitize(text: str, preserve_newlines: bool = False) -> str:
 
 
 SHORT_DESC_SYSTEM = (
-    "Você reformata descrições de produto do fornecedor JohnDrop para o Bling.\n"
-    "REGRA DE OURO: PRESERVE o texto original do JohnDrop. Você é um REFORMATADOR, "
+    "Você reformata descrições de produto do fornecedor para o Bling.\n"
+    "REGRA DE OURO: PRESERVE o texto original do fornecedor. Você é um REFORMATADOR, "
     "não um redator. Apenas:\n"
     "  (a) divide em parágrafos com \\n\\n\n"
     "  (b) aplica negrito <b>...</b> em rótulos de seção (ex: <b>Características:</b>)\n"
@@ -346,17 +350,18 @@ SHORT_DESC_SYSTEM = (
 
 BULLETS_SYSTEM = (
     "Você é um especialista em copywriting técnico para marketplaces. "
-    "Gere EXATAMENTE 8 bullet points técnicos sobre o produto. "
+    "Gere bullets técnicos usando SOMENTE fatos presentes no título e na descrição do fornecedor. "
     "REGRAS OBRIGATÓRIAS:\n"
-    "1. EXATAMENTE 8 bullets — nem mais, nem menos.\n"
-    "2. Cada bullet com MÁXIMO 150 caracteres.\n"
-    "3. Cada bullet começa com hífen + espaço: '- '\n"
-    "4. NUNCA inclua nomes de marca nem códigos EAN/GTIN.\n"
-    "5. Permitido APENAS: negrito via <b>...</b> e hífen.\n"
+    "1. Gere EXATAMENTE 6 ou EXATAMENTE 8 bullets — nunca outro total.\n"
+    "2. Use 8 somente quando existirem 8 fatos/benefícios diferentes na fonte; caso contrário, use 6.\n"
+    "3. Cada bullet com MÁXIMO 150 caracteres.\n"
+    "4. Cada bullet começa com hífen + espaço: '- '.\n"
+    "5. NUNCA inclua nomes de marca nem códigos EAN/GTIN.\n"
+    "6. Permitido APENAS: negrito via <b>...</b> e hífen.\n"
     "   PROIBIDO: emojis, asteriscos, símbolos como ° ™ ®.\n"
-    "6. Cada bullet deve destacar um benefício/característica DIFERENTE.\n"
-    "7. Linguagem clara, direta, vendedora.\n"
-    "Responda APENAS com os 8 bullets, um por linha. Sem cabeçalho, sem numeração, sem aspas."
+    "7. Cada bullet deve destacar uma característica ou benefício DIFERENTE.\n"
+    "8. Não invente especificações e não use frases genéricas como 'qualidade' ou 'entrega rápida'.\n"
+    "Responda APENAS com os 6 ou 8 bullets, um por linha. Sem cabeçalho, sem numeração, sem aspas."
 )
 
 
@@ -751,29 +756,67 @@ async def generate_short_description(raw_title: str, raw_description: str) -> st
     return text[:2000]
 
 
+def _plain_description_text(value: str) -> str:
+    """Text used to validate generated HTML without treating tags as content."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", value or "")).strip()
+
+
+def _normalise_generated_bullets(raw: str) -> List[str]:
+    """Validate the complementary-description contract.
+
+    We deliberately do not pad a weak AI reply with generic sales phrases. A
+    description with six or eight factual bullets is useful; a completed flag
+    next to invented filler is not. Callers keep the item waiting for AI in
+    that case, where the user can fix credentials and retry safely.
+    """
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        line = line.lstrip("•*·").strip()
+        if not line.startswith("-"):
+            line = "- " + line.lstrip("- ").strip()
+        line = _sanitize(line)
+        line = _strip_emojis_and_special(line)
+        text = _plain_description_text(line).strip("- ")
+        if not text:
+            continue
+        if len(line) > 150:
+            line = line[:150].rstrip()
+            text = _plain_description_text(line).strip("- ")
+        key = re.sub(r"[^a-z0-9à-ÿ]+", "", text.casefold())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(line)
+
+    if len(cleaned) not in (6, 8):
+        raise ValueError(
+            "A descrição complementar precisa de 6 ou 8 bullets distintos; "
+            f"a IA retornou {len(cleaned)}."
+        )
+    return cleaned
+
+
+def _description_contract_error(short_description: str, bullets: List[str]) -> Optional[str]:
+    """Return a user-facing reason when a product cannot be marked complete."""
+    if len(_plain_description_text(short_description)) < 20:
+        return "A IA não gerou uma descrição curta completa."
+    if len(bullets) not in (6, 8):
+        return "A descrição complementar não contém 6 ou 8 bullets válidos."
+    return None
+
+
 async def generate_bullet_points(raw_title: str, raw_description: str) -> List[str]:
     user = (
         f"Título: {raw_title}\n"
         f"Descrição original: {raw_description or '(sem descrição)'}\n\n"
-        "Gere EXATAMENTE 8 bullets."
+        "Gere 6 ou 8 bullets conforme as regras do sistema."
     )
     raw = await _llm_call(BULLETS_SYSTEM, user)
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    # Normalize: ensure each line starts with "- " and ≤150 chars
-    cleaned: List[str] = []
-    for ln in lines:
-        ln = ln.lstrip("•*·").strip()
-        if not ln.startswith("-"):
-            ln = "- " + ln
-        ln = _sanitize(ln)
-        ln = _strip_emojis_and_special(ln)
-        if len(ln) > 150:
-            ln = ln[:150].rstrip()
-        cleaned.append(ln)
-    # Pad or truncate to exactly 8
-    while len(cleaned) < 8:
-        cleaned.append("- Produto de qualidade pronto para entrega rápida")
-    return cleaned[:8]
+    return _normalise_generated_bullets(raw)
 
 
 async def _list_bling_categories() -> List[dict]:
@@ -957,7 +1000,7 @@ async def update_bling_product(
 
     Fields we touch:
       1. descricaoCurta (sanitized + bullets)
-      2. descricaoComplementar (8 bullets + Ficha Técnica com atributos IA)
+      2. descricaoComplementar (6 ou 8 bullets + Ficha Técnica com atributos IA)
       3. marca (marca real do fabricante OU nome da loja, conforme Configurações → Marca)
       4. condicao = 1 (Novo)
       5. tipoProducao = "T" (Terceiros)
@@ -1325,27 +1368,39 @@ async def enrich_product_by_sku(
            saldo=int(sync_saldo) if sync_saldo else 0,
            imagens=len(bling_urls))
 
-    llm_failed = False
-    llm_error = None
+    # Descriptions are the shared JohnDrop/TrimPro completion contract.  Keep
+    # category selection independent: a transient category API failure must not
+    # discard an otherwise valid short description and complementary bullets.
+    description_error: Optional[str] = None
+    short_desc: str = ""
+    bullets: List[str] = []
     try:
-        short_desc, bullets, category_id = await asyncio.gather(
+        short_desc, bullets = await asyncio.gather(
             generate_short_description(raw_title, raw_description),
             generate_bullet_points(raw_title, raw_description),
-            pick_or_create_category(raw_title, raw_description),
         )
+        description_error = _description_contract_error(short_desc, bullets)
     except Exception as e:
-        # LLM falhou (saldo esgotado, rate limit, etc). Em vez de abortar tudo,
-        # aplica APENAS os campos que não dependem de LLM (marca, condição,
-        # tipoProducao, fornecedor, variações) — assim o produto não fica com
-        # dados errados de origem (Kapbom / Própria / Não Especificado).
-        llm_failed = True
-        llm_error = str(e)[:200]
-        await add_log("error",
-                      f"Bling: LLM falhou para {sku} — aplicando só metadados "
-                      f"(marca/condição/produção/fornecedor). Erro: {llm_error}")
-        short_desc, bullets, category_id = "", [], None
+        description_error = str(e)[:200]
 
-    # Bling renders HTML in description fields — convert newlines to <br>
+    category_id = None
+    try:
+        category_id = await pick_or_create_category(raw_title, raw_description)
+    except Exception as e:
+        # Categoria is useful but must not make a good description disappear.
+        await add_log("warning", f"Bling: categoria não pôde ser definida para {sku}: {str(e)[:160]}")
+
+    if description_error:
+        # Do not overwrite the supplier's raw description with a partial or
+        # generic answer. Metadata still gets updated below, but the queue will
+        # show Aguardando IA instead of incorrectly calling this a success.
+        await add_log(
+            "warning",
+            f"Bling: descrição ainda incompleta para {sku}; aguardando IA. {description_error}",
+        )
+        short_desc, bullets = "", []
+
+    # Bling renders HTML in description fields — convert newlines to <br>.
     short_desc_html = short_desc.replace("\n\n", "<br><br>").replace("\n", "<br>") if short_desc else ""
     complementar_html = "<br>".join(bullets) if bullets else ""
     payload: dict = {}
@@ -1412,6 +1467,9 @@ async def enrich_product_by_sku(
             if short_desc:
                 sortido_note = "Produto sortido: cor/modelo enviado conforme estoque (vendedor não escolhe)."
                 short_desc_html = (short_desc_html + "<br><br>" + sortido_note) if short_desc_html else sortido_note
+                # ``payload`` was assembled before variation analysis; update
+                # it so the product receives the explicit sortido notice too.
+                payload["descricaoCurta"] = short_desc_html
 
         ok = await update_bling_product(
             product_id, full, payload,
@@ -1427,21 +1485,39 @@ async def enrich_product_by_sku(
         return {"ok": False, "reason": str(e)}
 
     if ok:
-        status_msg = "enriquecido (parcial: LLM falhou)" if llm_failed else "enriquecido"
-        await add_log(
-            "warning" if llm_failed else "success",
-            f"Bling {status_msg}: {sku} (cat={category_id})",
-        )
-        # Marca no enrich_pending que este produto precisa retry LLM depois
-        if llm_failed:
+        if description_error:
+            reason = f"Descrição aguardando IA: {description_error}"
+            # A real supplier product can already exist in Bling while the AI
+            # service is unavailable. Keep it visible and retryable, but never
+            # present raw/partial text as a completed enrichment.
             try:
-                from db import db as _db
-                await _db.enrich_pending.update_one(
+                await db.enrich_pending.update_one(
                     {"sku": sku},
-                    {"$set": {"needs_llm_retry": True, "llm_last_error": llm_error}},
+                    {"$set": {
+                        "status": "waiting_ai",
+                        "product_id": product_id,
+                        "needs_llm_retry": True,
+                        "llm_last_error": description_error,
+                        "last_error": reason,
+                        "description_status": "waiting_ai",
+                        "last_check": datetime.now(timezone.utc).isoformat(),
+                    }},
                 )
             except Exception:
                 pass
+            await _save_log(sku, "waiting_ai", reason, product_id=product_id)
+            _track(sku, "waiting_ai", product_id=product_id, error=reason)
+            return {
+                "ok": False,
+                "reason": reason,
+                "needs_ai_retry": True,
+                "product_id": product_id,
+            }
+
+        await add_log(
+            "success",
+            f"Bling enriquecido: {sku} (descrição curta + {len(bullets)} bullets; cat={category_id})",
+        )
         await _save_log(
             sku, "success", "enriquecido",
             product_id=product_id,
@@ -1476,6 +1552,25 @@ async def enrich_product_by_sku(
                 variations_created = result.get("created", 0)
             except Exception as e:
                 await add_log("warning", f"Variações pós-enrich falharam para {sku}: {e}")
+        # Keep direct/bulk enrichment in the same finished state as the worker.
+        # It also clears a former "waiting_ai" marker after a successful retry.
+        try:
+            await db.enrich_pending.update_one(
+                {"sku": sku},
+                {"$set": {
+                    "status": "done",
+                    "product_id": product_id,
+                    "description_status": "complete",
+                    "description_bullets": len(bullets),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }, "$unset": {
+                    "needs_llm_retry": "",
+                    "llm_last_error": "",
+                    "last_error": "",
+                }},
+            )
+        except Exception:
+            pass
         _track(sku, "done", product_id=product_id,
                variations_detected=len(variations) if variations else 0,
                variations_created=variations_created)
@@ -1483,6 +1578,7 @@ async def enrich_product_by_sku(
             "ok": True,
             "product_id": product_id,
             "category_id": category_id,
+            "description_bullets": len(bullets),
             "variations_detected": len(variations) if variations else 0,
             "variations_created": variations_created,
         }
@@ -1503,4 +1599,11 @@ async def get_enrichment_stats() -> dict:
     success = await db.bling_enrichment_logs.count_documents({"status": "success"})
     errors = await db.bling_enrichment_logs.count_documents({"status": "error"})
     not_found = await db.bling_enrichment_logs.count_documents({"status": "not_found"})
-    return {"total": total, "success": success, "errors": errors, "not_found": not_found}
+    waiting_ai = await db.bling_enrichment_logs.count_documents({"status": "waiting_ai"})
+    return {
+        "total": total,
+        "success": success,
+        "errors": errors,
+        "not_found": not_found,
+        "waiting_ai": waiting_ai,
+    }
