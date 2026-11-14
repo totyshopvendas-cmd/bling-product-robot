@@ -130,7 +130,8 @@ export default function TrimProRobotPage() {
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
           O robô faz login no TrimPro, abre o catálogo de produtos sem cadastro, seleciona a integração
           <strong>TotyShop-Bling</strong>, limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>.
-          Após a sincronização, o enriquecimento usa as mesmas regras do JohnDrop e vincula o fornecedor <strong>TRIMPRO</strong> no Bling.
+          Após confirmar, guarda o produto no histórico para nunca cadastrá-lo novamente. Depois da sincronização, o
+          enriquecimento usa as mesmas regras do JohnDrop e vincula o fornecedor <strong>TRIMPRO</strong> no Bling.
         </p>
         <p className="text-xs text-amber-700 mt-2 max-w-3xl">
           ⚠️ Por padrão começa em <strong>MODO TESTE (Dry-Run)</strong> — só simula sem cadastrar.

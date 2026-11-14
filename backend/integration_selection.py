@@ -11,6 +11,115 @@ from __future__ import annotations
 from typing import Any
 
 
+# The probe deliberately scopes a checked marker to the *TotyShop-Bling* card.
+# Some supplier forms render all integration choices inside one generic .card;
+# accepting any checked radio inside that ancestor can incorrectly treat Shopee
+# as the selected TotyShop-Bling integration.
+_SELECT_INTEGRATION_PROBE = r"""
+(target) => {
+    const normalize = (value) => (value || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const wanted = normalize(target);
+    const controlSelector = 'input[type="radio"], input[type="checkbox"]';
+    const visible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const controlsIn = (root) => {
+        if (!root) return [];
+        const controls = [];
+        if (root.matches && root.matches(controlSelector)) controls.push(root);
+        controls.push(...root.querySelectorAll(controlSelector));
+        return controls;
+    };
+    const controlMatches = (input) => {
+        const labels = input.labels && input.labels.length
+            ? Array.from(input.labels).map((label) => label.innerText || label.textContent).join(' ')
+            : '';
+        const context = `${input.value || ''} ${input.name || ''} ${input.id || ''} ${input.getAttribute('aria-label') || ''} ${labels}`;
+        return normalize(context).includes(wanted);
+    };
+    const rootFor = (candidate) => {
+        let root = candidate;
+        while (root && root !== document.body) {
+            const text = normalize(root.innerText || root.textContent);
+            const controls = controlsIn(root);
+            // A target card is safe when its own text is exactly the target,
+            // it owns a control whose label/value names the target, or it has
+            // exactly one control and no other integration labels.
+            if (
+                text === wanted
+                || controls.some(controlMatches)
+                || (controls.length === 1 && text.includes(wanted) && !text.includes('shopee'))
+            ) return root;
+            root = root.parentElement;
+        }
+        return candidate;
+    };
+    const targetControl = (root) => {
+        const controls = controlsIn(root);
+        const named = controls.find(controlMatches);
+        if (named) return named;
+        if (root.matches && root.matches('label') && root.htmlFor) {
+            const linked = document.getElementById(root.htmlFor);
+            if (linked && linked.matches(controlSelector)) return linked;
+        }
+        const text = normalize(root.innerText || root.textContent);
+        return controls.length === 1 && text === wanted ? controls[0] : null;
+    };
+    const selected = (root) => {
+        const control = targetControl(root);
+        if (control) return Boolean(control.checked);
+        // Custom radio cards may not expose a native input.  Check only the
+        // target root itself, never a selected marker inherited from a sibling.
+        const state = `${root.getAttribute('aria-checked') || ''} ${root.getAttribute('data-state') || ''} ${root.className || ''}`.toLowerCase();
+        return root.getAttribute('aria-checked') === 'true'
+            || root.getAttribute('data-state') === 'checked'
+            || /(?:^|[\s_-])(selected|active|checked)(?:$|[\s_-])/.test(state);
+    };
+
+    const textCandidates = Array.from(document.querySelectorAll(
+        'label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], div, span'
+    )).filter((el) => visible(el) && normalize(el.innerText || el.textContent) === wanted);
+    const inputCandidates = Array.from(document.querySelectorAll(controlSelector)).filter(controlMatches);
+    const candidates = [...textCandidates, ...inputCandidates];
+    if (!candidates.length) {
+        return { found: false, selected: false, detail: 'opção não encontrada no formulário' };
+    }
+
+    const roots = [];
+    for (const candidate of candidates) {
+        const root = rootFor(candidate);
+        if (!roots.includes(root)) roots.push(root);
+    }
+    for (const root of roots) {
+        if (selected(root)) {
+            return { found: true, selected: true, detail: 'TotyShop-Bling já estava selecionada' };
+        }
+        try {
+            root.scrollIntoView({ block: 'center', inline: 'nearest' });
+            root.click();
+        } catch (_) {}
+        const control = targetControl(root);
+        if (control && !control.checked) {
+            try { control.click(); } catch (_) {}
+        }
+        if (selected(root)) {
+            return { found: true, selected: true, detail: 'TotyShop-Bling selecionada e confirmada' };
+        }
+    }
+    return {
+        found: true,
+        selected: false,
+        detail: 'TotyShop-Bling foi localizada, mas sua seleção não foi confirmada',
+    };
+}
+"""
+
+
 def _result(data: Any) -> dict:
     """Normalize the browser probe result into a stable public shape."""
     data = data if isinstance(data, dict) else {}
@@ -21,77 +130,9 @@ def _result(data: Any) -> dict:
     }
 
 
-async def select_required_integration(page, integration_name: str) -> dict:
-    """Select and verify a supplier integration in a dynamic Playwright form.
-
-    The supplier UIs have changed markup over time (labels, radio cards,
-    buttons and React-controlled inputs).  The DOM probe intentionally handles
-    those common shapes and only reports success after a checked/selected state
-    is visible.  A product must not be submitted when that state is unknown.
-    """
-    target = (integration_name or "").strip()
-    if not target:
-        return {"found": False, "selected": False, "detail": "integração vazia"}
-
+async def _probe_selection(page, target: str) -> dict:
     try:
-        browser_result = await page.evaluate(
-            """
-            (target) => {
-                const normalize = (value) => (value || '')
-                    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
-                    .toLowerCase().replace(/[^a-z0-9]+/g, '');
-                const wanted = normalize(target);
-                const visible = (el) => {
-                    if (!el) return false;
-                    const style = window.getComputedStyle(el);
-                    const rect = el.getBoundingClientRect();
-                    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-                };
-                const selected = (root) => {
-                    if (!root) return false;
-                    const inputs = [];
-                    if (root.matches && root.matches('input[type="radio"], input[type="checkbox"]')) inputs.push(root);
-                    inputs.push(...root.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
-                    if (inputs.some((input) => input.checked)) return true;
-                    const marked = [root, ...root.querySelectorAll('*')];
-                    return marked.some((el) => {
-                        const state = `${el.getAttribute('aria-checked') || ''} ${el.getAttribute('data-state') || ''} ${el.className || ''}`.toLowerCase();
-                        return el.getAttribute('aria-checked') === 'true'
-                            || el.getAttribute('data-state') === 'checked'
-                            || /(?:^|[\\s_-])(selected|active|checked)(?:$|[\\s_-])/.test(state);
-                    });
-                };
-                const textCandidates = Array.from(document.querySelectorAll('label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], div, span'))
-                    .filter((el) => visible(el) && normalize(el.innerText || el.textContent) === wanted);
-                const inputCandidates = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
-                    .filter((input) => {
-                        const label = input.labels && input.labels.length ? Array.from(input.labels).map((x) => x.innerText || x.textContent).join(' ') : '';
-                        const context = `${input.value || ''} ${input.name || ''} ${input.getAttribute('aria-label') || ''} ${label}`;
-                        return normalize(context).includes(wanted);
-                    });
-                const candidates = [...textCandidates, ...inputCandidates];
-                if (!candidates.length) return { found: false, selected: false, detail: 'opção não encontrada no formulário' };
-
-                for (const candidate of candidates) {
-                    const container = candidate.closest('label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], .card, .integration') || candidate;
-                    if (selected(container)) return { found: true, selected: true, detail: 'já estava selecionada' };
-                    try {
-                        container.scrollIntoView({ block: 'center', inline: 'nearest' });
-                        container.click();
-                    } catch (_) {}
-                    const input = candidate.matches && candidate.matches('input[type="radio"], input[type="checkbox"]')
-                        ? candidate
-                        : container.querySelector('input[type="radio"], input[type="checkbox"]');
-                    if (input && !input.checked) {
-                        try { input.click(); } catch (_) {}
-                    }
-                    if (selected(container)) return { found: true, selected: true, detail: 'selecionada e confirmada' };
-                }
-                return { found: true, selected: false, detail: 'opção encontrada, mas a seleção não foi confirmada' };
-            }
-            """,
-            target,
-        )
+        return _result(await page.evaluate(_SELECT_INTEGRATION_PROBE, target))
     except Exception as exc:
         return {
             "found": False,
@@ -99,43 +140,26 @@ async def select_required_integration(page, integration_name: str) -> dict:
             "detail": f"falha ao verificar a integração: {str(exc)[:160]}",
         }
 
-    result = _result(browser_result)
+
+async def select_required_integration(page, integration_name: str) -> dict:
+    """Select and verify exactly the requested supplier integration.
+
+    A target-specific checked state is mandatory.  If a generic supplier card
+    reports another integration (for example Shopee) as selected, this helper
+    returns ``selected=False`` and callers stop before submitting the product.
+    """
+    target = (integration_name or "").strip()
+    if not target:
+        return {"found": False, "selected": False, "detail": "integração vazia"}
+
+    result = await _probe_selection(page, target)
     if not result["found"] or result["selected"]:
         return result
 
-    # React/Vue forms can update the checked marker on the next render. Wait a
-    # short moment and probe once more before declaring a true selection error.
+    # React/Vue forms can update the checked marker on the next render. Probe
+    # the exact same TotyShop-Bling target once more, never a generic ancestor.
     try:
         await page.wait_for_timeout(350)
     except Exception:
         pass
-    try:
-        verified = _result(await page.evaluate(
-            """
-            (target) => {
-                const normalize = (value) => (value || '')
-                    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
-                    .toLowerCase().replace(/[^a-z0-9]+/g, '');
-                const wanted = normalize(target);
-                const roots = Array.from(document.querySelectorAll('label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], .card, .integration'))
-                    .filter((el) => normalize(el.innerText || el.textContent).includes(wanted));
-                for (const root of roots) {
-                    const inputs = Array.from(root.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
-                    if (inputs.some((input) => input.checked)) {
-                        return { found: true, selected: true, detail: 'selecionada e confirmada após atualização da tela' };
-                    }
-                    const marked = [root, ...root.querySelectorAll('*')];
-                    if (marked.some((el) => el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-state') === 'checked')) {
-                        return { found: true, selected: true, detail: 'selecionada e confirmada após atualização da tela' };
-                    }
-                }
-                return { found: roots.length > 0, selected: false, detail: 'opção encontrada, mas a seleção não foi confirmada' };
-            }
-            """,
-            target,
-        ))
-        if verified["selected"]:
-            return verified
-    except Exception:
-        pass
-    return result
+    return await _probe_selection(page, target)

@@ -41,6 +41,58 @@ async def _trimpro_log(level: str, message: str, **extra) -> None:
     await _base_add_log(level, message, **extra)
 
 
+# ---------------------------------------------------------------------------
+# Persistent memory — a confirmed TrimPro cadastro must never be retried.
+# The supplier's own catalog filter is helpful, but it can take time to update
+# after a submit.  These keys survive later runs and deployment restarts.
+# ---------------------------------------------------------------------------
+def _source_key(value: str) -> str:
+    match = re.search(r"/createv2/(\d+)", value or "")
+    return match.group(1) if match else ""
+
+
+async def _load_processed_keys() -> set:
+    keys: set = set()
+    try:
+        cur = db.trimpro_processed.find({}, {"_id": 0, "key": 1})
+        async for doc in cur:
+            key = str(doc.get("key") or "").strip()
+            if key:
+                keys.add(key)
+
+        # Keep compatibility with cadastros confirmed before this persistent
+        # registry existed: those already have their TrimPro source ID queued
+        # for the Bling enrichment worker.
+        queued = db.enrich_pending.find(
+            {"supplier_name": "TRIMPRO"},
+            {"_id": 0, "supplier_code": 1, "sku": 1},
+        )
+        async for doc in queued:
+            for key in (doc.get("supplier_code"), doc.get("sku")):
+                key = str(key or "").strip()
+                if key:
+                    keys.add(key)
+    except Exception as exc:
+        await _trimpro_log("warning", f"Não consegui carregar histórico TrimPro: {exc}")
+    return keys
+
+
+async def _remember_processed(keys: list[str]) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    for key in keys:
+        key = str(key or "").strip()
+        if not key:
+            continue
+        try:
+            await db.trimpro_processed.update_one(
+                {"key": key},
+                {"$set": {"key": key, "status": "confirmed", "updated_at": now}},
+                upsert=True,
+            )
+        except Exception as exc:
+            await _trimpro_log("warning", f"Não consegui guardar histórico TrimPro: {exc}")
+
+
 TRIMPRO_LOGIN_URL = "https://app.trimpro.com.br/login"
 TRIMPRO_CATALOG_BASE_URL = "https://app.trimpro.com.br/dashboard/catalog"
 TRIMPRO_CATALOG_URL = f"{TRIMPRO_CATALOG_BASE_URL}?integration_filter=without_integration"
@@ -989,18 +1041,24 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await _trimpro_log("info", "Nenhum produto pendente encontrado nesta página")
         return False
 
-    # Pick the first card whose target URL (createv2/<id>) hasn't been processed yet
+    # Pick the first card whose target URL (createv2/<id>) has never had a
+    # confirmed cadastro.  Match both the raw href and its supplier ID because
+    # portals sometimes change the URL shape after a catalog refresh.
     chosen = None
+    chosen_href = ""
     for btn in buttons:
         try:
             href = await btn.get_attribute("href") or ""
         except Exception:
             href = ""
-        if href and href in seen_skus:
+        source_id = _source_key(href)
+        if (href and href in seen_skus) or (source_id and source_id in seen_skus):
             continue
         chosen = btn
-        if href:
-            seen_skus.add(href)
+        chosen_href = href
+        for key in (href, source_id):
+            if key:
+                seen_skus.add(key)
         break
 
     if chosen is None:
@@ -1174,6 +1232,16 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     trimpro_robot.processed += 1
 
+    # Only a confirmed real submit enters the durable no-repeat registry.
+    # Failed and dry-run products stay available for a future corrected run.
+    if submitted_ok and not dry_run:
+        confirmed_keys = [chosen_href, trimpro_id, sku]
+        await _remember_processed(confirmed_keys)
+        for key in confirmed_keys:
+            if key:
+                seen_skus.add(key)
+        await _trimpro_log("info", "Cadastro TrimPro confirmado e marcado para não repetir")
+
     # Pause after a real successful cadastro to give TrimPro time to settle
     if submitted_ok and not dry_run:
         trimpro_robot.current_product = f"⏸ Aguardando {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo..."
@@ -1204,7 +1272,12 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
             await _open_catalog(page)
 
-            seen_skus: set = set()
+            seen_skus: set = await _load_processed_keys()
+            if seen_skus:
+                await _trimpro_log(
+                    "info",
+                    f"{len(seen_skus)} chaves de cadastros TrimPro já confirmados serão puladas",
+                )
             processed_count = 0
             while processed_count < max_products:
                 if trimpro_robot.stop_flag:
@@ -1231,8 +1304,11 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
 
 async def start_bot(max_products: int = 10, dry_run: bool = True):
-    if trimpro_robot.state == "running":
-        raise ValueError("Robô já está em execução")
+    if trimpro_robot.state == "running" or (trimpro_robot.task and not trimpro_robot.task.done()):
+        raise ValueError("Robô TrimPro já está em execução")
+    # Mark synchronously before scheduling the task.  Without this, two quick
+    # HTTP requests can both observe ``idle`` and start duplicate cadastros.
+    trimpro_robot.state = "running"
     trimpro_robot.task = asyncio.create_task(run_bot(max_products=max_products, dry_run=dry_run))
 
 

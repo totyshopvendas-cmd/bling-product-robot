@@ -32,6 +32,57 @@ from robot_service import robot, add_log
 from db import db
 
 
+# ---------------------------------------------------------------------------
+# Persistent memory — a confirmed JohnDrop cadastro must never be retried.
+# The supplier catalog filter can update after a delay, so keep durable source
+# keys as the final protection against duplicate registrations.
+# ---------------------------------------------------------------------------
+def _source_key(value: str) -> str:
+    match = re.search(r"/createv2/(\d+)", value or "")
+    return match.group(1) if match else ""
+
+
+async def _load_processed_keys() -> set:
+    keys: set = set()
+    try:
+        cur = db.johndrop_processed.find({}, {"_id": 0, "key": 1})
+        async for doc in cur:
+            key = str(doc.get("key") or "").strip()
+            if key:
+                keys.add(key)
+
+        # Products confirmed before this registry existed are already queued
+        # for enrichment with their JohnDrop source ID.
+        queued = db.enrich_pending.find(
+            {"johndrop_id": {"$exists": True}},
+            {"_id": 0, "johndrop_id": 1, "sku": 1},
+        )
+        async for doc in queued:
+            for key in (doc.get("johndrop_id"), doc.get("sku")):
+                key = str(key or "").strip()
+                if key:
+                    keys.add(key)
+    except Exception as exc:
+        await add_log("warning", f"Não consegui carregar histórico JohnDrop: {exc}")
+    return keys
+
+
+async def _remember_processed(keys: list[str]) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    for key in keys:
+        key = str(key or "").strip()
+        if not key:
+            continue
+        try:
+            await db.johndrop_processed.update_one(
+                {"key": key},
+                {"$set": {"key": key, "status": "confirmed", "updated_at": now}},
+                upsert=True,
+            )
+        except Exception as exc:
+            await add_log("warning", f"Não consegui guardar histórico JohnDrop: {exc}")
+
+
 JOHNDROP_LOGIN_URL = "https://app.jonhdrop.com.br/login"
 JOHNDROP_CATALOG_BASE_URL = "https://app.jonhdrop.com.br/dashboard/catalog"
 JOHNDROP_CATALOG_URL = f"{JOHNDROP_CATALOG_BASE_URL}?integration_filter=without_integration"
@@ -823,18 +874,24 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         await add_log("info", "Nenhum produto pendente encontrado nesta página")
         return False
 
-    # Pick the first card whose target URL (createv2/<id>) hasn't been processed yet
+    # Pick the first card whose target URL (createv2/<id>) has never had a
+    # confirmed cadastro.  Match both the raw href and its supplier ID because
+    # portals sometimes change the URL shape after a catalog refresh.
     chosen = None
+    chosen_href = ""
     for btn in buttons:
         try:
             href = await btn.get_attribute("href") or ""
         except Exception:
             href = ""
-        if href and href in seen_skus:
+        source_id = _source_key(href)
+        if (href and href in seen_skus) or (source_id and source_id in seen_skus):
             continue
         chosen = btn
-        if href:
-            seen_skus.add(href)
+        chosen_href = href
+        for key in (href, source_id):
+            if key:
+                seen_skus.add(key)
         break
 
     if chosen is None:
@@ -974,6 +1031,16 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     robot.processed += 1
 
+    # Only a confirmed real submit enters the durable no-repeat registry.
+    # Failed and dry-run products stay available for a future corrected run.
+    if submitted_ok and not dry_run:
+        confirmed_keys = [chosen_href, johndrop_id, sku]
+        await _remember_processed(confirmed_keys)
+        for key in confirmed_keys:
+            if key:
+                seen_skus.add(key)
+        await add_log("info", "Cadastro JohnDrop confirmado e marcado para não repetir")
+
     # Pause after a real successful cadastro to give JohnDrop time to settle
     if submitted_ok and not dry_run:
         robot.current_product = f"⏸ Aguardando {DELAY_BETWEEN_PRODUCTS_S}s antes do próximo..."
@@ -1004,7 +1071,12 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
             await _open_catalog(page)
 
-            seen_skus: set = set()
+            seen_skus: set = await _load_processed_keys()
+            if seen_skus:
+                await add_log(
+                    "info",
+                    f"{len(seen_skus)} chaves de cadastros JohnDrop já confirmados serão puladas",
+                )
             processed_count = 0
             while processed_count < max_products:
                 if robot.stop_flag:
@@ -1031,8 +1103,11 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
 
 async def start_bot(max_products: int = 10, dry_run: bool = True):
-    if robot.state == "running":
+    if robot.state == "running" or (robot.task and not robot.task.done()):
         raise ValueError("Robô já está em execução")
+    # Mark synchronously before scheduling the task.  Without this, two quick
+    # HTTP requests can both observe ``idle`` and start duplicate cadastros.
+    robot.state = "running"
     robot.task = asyncio.create_task(run_bot(max_products=max_products, dry_run=dry_run))
 
 
