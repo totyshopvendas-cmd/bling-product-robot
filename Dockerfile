@@ -13,7 +13,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_BUILD=/app/frontend/build \
-    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 \
+    PLAYWRIGHT_BROWSERS_PATH=/app/persist/ms-playwright
 # Instala as bibliotecas do navegador separadamente. O Chromium é baixado
 # depois que o painel já iniciou (em segundo plano); isso evita que builders
 # gerenciados encerrem uma imagem saudável durante o download grande.

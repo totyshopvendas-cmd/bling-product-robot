@@ -112,7 +112,12 @@ def _chromium_relative_paths() -> list:
             os.path.join("chrome-mac", "headless_shell"),
             os.path.join("chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
         ]
+    # Playwright 1.58+ ships Chrome for Testing on Linux x64 in the
+    # ``*-linux64`` directories.  Keep the older layout too: older
+    # Playwright versions and Linux ARM images still use ``chrome-linux``.
     return [
+        os.path.join("chrome-headless-shell-linux64", "chrome-headless-shell"),
+        os.path.join("chrome-linux64", "chrome"),
         os.path.join("chrome-linux", "headless_shell"),
         os.path.join("chrome-linux", "chrome"),
     ]

@@ -21,7 +21,8 @@ Um único Volume persistente guarda:
 - dados do painel, filas, logs e tabela de preços;
 - tokens e credenciais salvos pelo painel;
 - arquivos de exportação JohnDrop;
-- cópia local da tabela de preços.
+- cópia local da tabela de preços;
+- o Chromium dos robôs após o primeiro download, evitando baixá-lo a cada novo deploy.
 
 Os robôs JohnDrop e TrimPro ficam no serviço online, portanto o PC de casa não precisa ficar ligado. Mantenha **apenas uma réplica** do serviço: duas cópias executariam robôs e agendamentos duplicados.
 
