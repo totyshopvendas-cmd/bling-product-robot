@@ -722,8 +722,11 @@ async def _run_playwright(username: str, password: str, max_products: int, dry_r
 
 
 async def start_bot(max_products: int = 10, dry_run: bool = True):
-    if shopee_robot.state == "running":
+    if shopee_robot.state == "running" or (shopee_robot.task and not shopee_robot.task.done()):
         raise ValueError("Robô Shopee já está em execução")
+    # Mark synchronously before scheduling the task.  Without this, two quick
+    # HTTP requests can both observe ``idle`` and start duplicate cadastros.
+    shopee_robot.state = "running"
     shopee_robot.task = asyncio.create_task(run_bot(max_products=max_products, dry_run=dry_run))
 
 

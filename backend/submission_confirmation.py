@@ -23,9 +23,27 @@ async def _feedback(page) -> dict:
                         if (text) messages.push(text.slice(0, 300));
                     }
                 }
+                // Supplier pages sometimes leave the form in place and only
+                // mark its invalid fields. Capture those labels so the robot
+                // log explains why a cadastro was rejected instead of only
+                // saying that no redirect happened.
+                const invalid = Array.from(document.querySelectorAll(
+                    ':invalid, [aria-invalid="true"], .is-invalid, .invalid-feedback, .field-error'
+                )).map((el) => {
+                    const labels = el.labels && el.labels.length
+                        ? Array.from(el.labels).map((label) => label.innerText || label.textContent).join(' ')
+                        : '';
+                    const nearby = el.closest('label, .form-group, .field, .form-field')?.innerText || '';
+                    const own = el.validationMessage || el.getAttribute('aria-label') || el.getAttribute('name') || el.id || '';
+                    return `${labels || nearby || own}`.trim().replace(/\s+/g, ' ').slice(0, 160);
+                }).filter(Boolean);
+                for (const detail of invalid) {
+                    if (!messages.includes(detail)) messages.push(detail);
+                }
                 const all = messages.join(' | ');
                 const low = all.toLowerCase();
-                const failed = /erro|inv[aá]lid|obrigat[oó]ri|duplicad|j[aá]\s+(?:cadastrad|exist|registrad)|conflito|falh/.test(low);
+                const failed = invalid.length > 0
+                    || /erro|inv[aá]lid|obrigat[oó]ri|duplicad|j[aá]\s+(?:cadastrad|exist|registrad)|conflito|falh/.test(low);
                 const success = /produto\s+(?:criad|cadastrad|salv)|cadastro\s+(?:realizado|conclu[ií]d)|sucesso/.test(low);
                 return { failed, success, message: all.slice(0, 300) };
             }"""

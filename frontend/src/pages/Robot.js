@@ -129,7 +129,8 @@ export default function RobotPage() {
         <h1 className="font-display text-3xl font-bold tracking-tighter">Robô de Cadastro</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
           O robô faz login no JohnDrop, abre o catálogo "Publicar Catálogo / Todos que eu não cadastrei",
-          limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>.
+          limpa o título, busca o preço na tabela e cadastra o produto em <strong>Meus Produtos</strong>. Após confirmar,
+          guarda o produto no histórico para nunca cadastrá-lo novamente.
         </p>
         <p className="text-xs text-amber-700 mt-2 max-w-3xl">
           ⚠️ Por padrão começa em <strong>MODO TESTE (Dry-Run)</strong> — só simula sem cadastrar.
