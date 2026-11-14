@@ -17,7 +17,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Instala as bibliotecas do navegador separadamente. O Chromium é baixado
 # depois que o painel já iniciou (em segundo plano); isso evita que builders
 # gerenciados encerrem uma imagem saudável durante o download grande.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# O driver interno do Playwright é um programa Node e precisa destas duas
+# bibliotecas no Python slim; sem elas a Railway não consegue chamar
+# `playwright install-deps`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libatomic1 \
+    libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
