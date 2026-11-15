@@ -186,3 +186,37 @@ def test_trimpro_does_not_report_mock_success_when_browser_is_unavailable(monkey
     assert not hasattr(trimpro_bot, "_run_mock")
     assert trimpro_bot.trimpro_robot.state == "error"
     assert trimpro_bot.trimpro_robot.success == 0
+
+
+def test_native_category_guard_targets_johndrop_meli_field_even_without_html_required():
+    """JohnDrop validates sel_category_meli server-side, not always in HTML."""
+    script = marketplace_category._CATEGORY_FIELD_PROBE
+
+    assert "meliCategory" in script
+    assert "meliSubcategory" in script
+    assert "meliRequired" in script
+    assert "requiredSelects.concat(meliRequired)" in script
+    assert "identity(el) === 'selcategorymeli'" in script
+
+
+def test_native_category_guard_rechecks_fields_revealed_by_category_selection():
+    page = CategoryPage(
+        {
+            "present": True,
+            "selected": True,
+            "changed": True,
+            "detail": "sel_category_meli: Moda",
+        },
+        {
+            "present": True,
+            "selected": True,
+            "changed": False,
+            "detail": "sel_meli_subCategory_meli: Bolsas",
+        },
+    )
+
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["selected"] is True
+    assert "subCategory" in result["detail"]
+    assert page.waits == 1

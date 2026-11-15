@@ -138,3 +138,34 @@ def test_exchange_code_posts_jwt_header():
     assert captured["data"]["code"] == "auth-code"
     assert captured["data"]["redirect_uri"] == "https://app.example/api/bling/callback"
     assert "/Api/v3/oauth/token" in captured["url"] or captured["url"].endswith("/oauth/token")
+
+
+def test_expired_token_ping_keeps_safe_provider_diagnosis(monkeypatch):
+    """The local safe test must distinguish stale token from invalid app keys."""
+    from fastapi import HTTPException
+
+    async def expired_token():
+        return {
+            "access_token": "old-access-token",
+            "refresh_token": "old-refresh-token",
+            "token_type": "Bearer",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+
+    async def rejected_refresh(_refresh):
+        raise HTTPException(
+            status_code=400,
+            detail="Client ID ou Client Secret inválidos. Copie as duas chaves.",
+        )
+
+    monkeypatch.setattr(bling_service, "get_token_doc", expired_token)
+    monkeypatch.setattr(bling_service, "refresh_tokens", rejected_refresh)
+
+    try:
+        _run(bling_service.get_valid_access_token())
+        assert False, "should have raised"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "Diagnóstico:" in str(exc.detail)
+        assert "Client ID" in str(exc.detail)
+        assert "old-refresh-token" not in str(exc.detail)

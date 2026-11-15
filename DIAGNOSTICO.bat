@@ -12,12 +12,16 @@ echo Vai levar de 1 a 2 minutos. Nao feche a janela.
 echo.
 
 set "PY="
+set "PY_ARGS="
 if exist "backend\.venv\Scripts\python.exe" (
   set "PY=%~dp0backend\.venv\Scripts\python.exe"
   echo Usando o Python do projeto (.venv)
 ) else (
   py -3 --version >nul 2>&1
-  if not errorlevel 1 set "PY=py -3"
+  if not errorlevel 1 (
+    set "PY=py"
+    set "PY_ARGS=-3"
+  )
 )
 if not defined PY (
   python --version >nul 2>&1
@@ -30,10 +34,10 @@ if not defined PY (
   exit /b 1
 )
 
-echo Python: !PY!
+echo Python: !PY! !PY_ARGS!
 echo.
 
-"!PY!" -u "%~dp0backend\diagnostico.py"
+"!PY!" !PY_ARGS! -u "%~dp0backend\diagnostico.py"
 
 echo.
 echo ============================================

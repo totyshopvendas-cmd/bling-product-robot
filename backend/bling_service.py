@@ -307,6 +307,16 @@ async def _post_token(data: dict, client_id: str, client_secret: str) -> dict:
             if resp.status_code in (404, 405, 301, 302, 308):
                 logger.warning("Bling token URL %s → %s, tentando fallback", url, resp.status_code)
                 continue
+            # Never log tokens or credentials. The response text is normalized
+            # before logging so the local operator can distinguish a stale
+            # refresh token from invalid app credentials without reconnecting
+            # blindly.
+            logger.warning(
+                "Bling token POST rejeitado em %s (%s): %s",
+                url,
+                resp.status_code,
+                friendly_oauth_error(last_error),
+            )
             raise HTTPException(
                 status_code=400,
                 detail=friendly_oauth_error(last_error),
@@ -407,10 +417,20 @@ async def get_valid_access_token() -> Tuple[str, str]:
             data["refresh_token"] = refresh
         await save_tokens(data)
         return data["access_token"], data.get("token_type", "Bearer")
-    except HTTPException:
+    except HTTPException as exc:
+        # Keep the actionable OAuth diagnosis returned by Bling. The previous
+        # generic message made an invalid refresh token and invalid Client
+        # Secret indistinguishable, leading users to replace credentials before
+        # knowing what actually failed. `_post_token` only exposes a normalized
+        # provider message and never includes token values.
+        reason = friendly_oauth_error(str(exc.detail or ""))
+        logger.warning("Renovação do token Bling recusada: %s", reason)
         raise HTTPException(
             status_code=400,
-            detail="Token Bling expirado e não foi possível renovar — vá em Configurações → Bling e reconecte",
+            detail=(
+                "Token Bling expirado e não foi possível renovar. "
+                f"Diagnóstico: {reason}"
+            ),
         )
     except Exception as exc:
         raise HTTPException(
