@@ -99,6 +99,7 @@ _CATEGORY_FIELD_PROBE = r"""
             }
         };
         const details = [];
+        const waitingOptions = [];
         let selected = true;
         let changed = false;
         for (const select of targets) {
@@ -107,6 +108,7 @@ _CATEGORY_FIELD_PROBE = r"""
                 chosen = Array.from(select.options).find(usableOption);
                 if (!chosen) {
                     selected = false;
+                    waitingOptions.push(fieldName(select));
                     details.push(`${fieldName(select)}: sem opção válida carregada`);
                     continue;
                 }
@@ -133,6 +135,7 @@ _CATEGORY_FIELD_PROBE = r"""
             present: true,
             selected,
             changed,
+            waiting_options: waitingOptions.length > 0,
             detail: selected
                 ? `categoria confirmada: ${details.join(' | ')}`
                 : `categoria pendente: ${details.join(' | ')}`,
@@ -189,7 +192,15 @@ def _result(data: Any) -> dict:
         "detail": str(data.get("detail") or "estado da categoria não confirmado")[:240],
         "custom_opened": bool(data.get("custom_opened")),
         "changed": bool(data.get("changed")),
+        "waiting_options": bool(data.get("waiting_options")),
     }
+
+
+# JohnDrop fills its Meli category options asynchronously on some products.
+# Poll briefly before declaring the form impossible, but never submit a blank
+# category merely because the supplier was still loading its list.
+_CATEGORY_OPTION_WAIT_ATTEMPTS = 8
+_CATEGORY_OPTION_WAIT_MS = 750
 
 
 async def ensure_required_marketplace_category(page) -> dict:
@@ -200,10 +211,12 @@ async def ensure_required_marketplace_category(page) -> dict:
     before creating a product the supplier would reject.
     """
     # A category selection can asynchronously reveal the Meli subcategory
-    # field. Re-scan twice after a real native change so that field is also
-    # filled/verified before the product form is submitted.
+    # field. JohnDrop also loads category options asynchronously for some
+    # products. Re-scan after a real native change and briefly wait for an
+    # otherwise empty native select before allowing the caller to give up.
     first: dict = {}
-    for _attempt in range(3):
+    waited_for_options = False
+    for _attempt in range(_CATEGORY_OPTION_WAIT_ATTEMPTS):
         try:
             first = _result(await page.evaluate(_CATEGORY_FIELD_PROBE))
         except Exception as exc:
@@ -213,13 +226,32 @@ async def ensure_required_marketplace_category(page) -> dict:
                 "detail": f"falha ao localizar categoria: {str(exc)[:160]}",
                 "custom_opened": False,
                 "changed": False,
+                "waiting_options": False,
             }
-        if not first["selected"] or not first["present"] or not first["changed"]:
-            break
-        try:
-            await page.wait_for_timeout(300)
-        except Exception:
-            pass
+
+        if first["selected"] or not first["present"]:
+            if not first["changed"]:
+                break
+            try:
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
+            continue
+
+        if first["waiting_options"] and _attempt < _CATEGORY_OPTION_WAIT_ATTEMPTS - 1:
+            waited_for_options = True
+            try:
+                await page.wait_for_timeout(_CATEGORY_OPTION_WAIT_MS)
+            except Exception:
+                pass
+            continue
+        break
+
+    if waited_for_options and first["waiting_options"]:
+        first["detail"] = (
+            f"{first['detail']} (opções aguardadas por "
+            f"{(_CATEGORY_OPTION_WAIT_ATTEMPTS - 1) * _CATEGORY_OPTION_WAIT_MS // 1000}s)"
+        )[:240]
     if first["selected"] or not first["present"] or not first["custom_opened"]:
         return first
 
