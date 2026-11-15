@@ -118,10 +118,15 @@ _CATEGORY_FIELD_PROBE = r"""
                 && usableOption(select.options[select.selectedIndex]);
             const posted = confirmed && isPosted(select, chosen.value);
             if (!posted) selected = false;
+            const optionText = (chosen.textContent || '').trim().slice(0, 70);
+            const value = String(chosen.value || '').trim().slice(0, 70);
+            // The detail is intentionally emitted into the robot log. A dry
+            // run can therefore prove the exact Meli root field and its POST
+            // state before the operator allows a real supplier submission.
             details.push(
                 posted
-                    ? `${fieldName(select)}: ${(chosen.textContent || '').trim().slice(0, 80)}`
-                    : `${fieldName(select)}: valor não confirmado no envio`,
+                    ? `${fieldName(select)}=${value} [POST=sim; disabled=${select.disabled ? 'sim' : 'não'}] ${optionText}`
+                    : `${fieldName(select)}=${value || '(vazio)'} [POST=não; disabled=${select.disabled ? 'sim' : 'não'}]`,
             );
         }
         return {
