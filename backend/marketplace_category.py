@@ -62,19 +62,42 @@ _CATEGORY_FIELD_PROBE = r"""
 
     const selects = Array.from(document.querySelectorAll('select')).filter(matching);
     if (selects.length) {
-        // A supplier can render both Shopee and Mercado Livre category fields.
-        // The JohnDrop server requires `sel_category_meli` unless it has
-        // rendered `sel_meli_subCategory_meli`; include the applicable Meli
-        // field even when that portal forgot to mark it `required` in HTML.
+        // JohnDrop's backend requires `sel_category_meli` whenever the Meli
+        // subcategory is absent from the *submitted form*.  An earlier guard
+        // selected only the subcategory when its element existed in the DOM.
+        // Some provider pages render that element disabled/empty, so it is not
+        // posted and JohnDrop rejects the missing root category.  Always fill
+        // and verify the root Meli category as well; fill a subcategory only
+        // when it has a real option (or the page explicitly marks it required).
         const requiredSelects = selects.filter(required);
-        const meliSubcategories = selects.filter(meliSubcategory);
         const meliCategories = selects.filter(meliCategory);
-        const meliRequired = meliSubcategories.length ? meliSubcategories : meliCategories;
+        const meliSubcategories = selects.filter(meliSubcategory);
+        const subcategoriesToFill = meliSubcategories.filter((select) => {
+            const current = select.options[select.selectedIndex];
+            return required(select)
+                || (current && usableOption(current))
+                || Array.from(select.options).some(usableOption);
+        });
+        const meliRequired = meliCategories.concat(subcategoriesToFill);
         const visibleSelects = selects.filter(visible);
         const targets = unique(requiredSelects.concat(meliRequired));
         if (!targets.length) {
             targets.push(visibleSelects.length ? visibleSelects[0] : selects[0]);
         }
+        const isPosted = (select, value) => {
+            const form = select.form || select.closest('form');
+            // A page with no native form is handled by its framework events.
+            // When a form exists, FormData is the closest safe pre-submit
+            // proof that this exact named control will reach the supplier.
+            if (!form || !select.name) return true;
+            try {
+                return new FormData(form).getAll(select.name)
+                    .map((item) => String(item || '').trim())
+                    .includes(String(value || '').trim());
+            } catch (_) {
+                return !select.disabled;
+            }
+        };
         const details = [];
         let selected = true;
         let changed = false;
@@ -93,11 +116,12 @@ _CATEGORY_FIELD_PROBE = r"""
             }
             const confirmed = String(select.value || '').trim() === String(chosen.value || '').trim()
                 && usableOption(select.options[select.selectedIndex]);
-            if (!confirmed) selected = false;
+            const posted = confirmed && isPosted(select, chosen.value);
+            if (!posted) selected = false;
             details.push(
-                confirmed
+                posted
                     ? `${fieldName(select)}: ${(chosen.textContent || '').trim().slice(0, 80)}`
-                    : `${fieldName(select)}: valor não confirmado`,
+                    : `${fieldName(select)}: valor não confirmado no envio`,
             );
         }
         return {
