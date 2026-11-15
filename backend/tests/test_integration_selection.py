@@ -231,3 +231,44 @@ def test_native_category_guard_rechecks_fields_revealed_by_category_selection():
     assert result["selected"] is True
     assert "subCategory" in result["detail"]
     assert page.waits == 1
+
+
+def test_category_guard_waits_for_async_supplier_options_before_failing():
+    """JohnDrop must give sel_category_meli time to populate asynchronously."""
+    page = CategoryPage(
+        {
+            "present": True,
+            "selected": False,
+            "waiting_options": True,
+            "detail": "sel_category_meli: sem opção válida carregada",
+        },
+        {
+            "present": True,
+            "selected": True,
+            "changed": False,
+            "detail": "sel_category_meli=MLB1 [POST=sim; disabled=não] Casa",
+        },
+    )
+
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["selected"] is True
+    assert "POST=sim" in result["detail"]
+    assert page.waits == 1
+
+
+def test_category_guard_reports_waited_timeout_without_submitting_blank_category():
+    page = CategoryPage({
+        "present": True,
+        "selected": False,
+        "waiting_options": True,
+        "detail": "sel_category_meli: sem opção válida carregada",
+    })
+    # The same supplier state persists on every poll.
+    page.responses *= marketplace_category._CATEGORY_OPTION_WAIT_ATTEMPTS
+
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["selected"] is False
+    assert "opções aguardadas" in result["detail"]
+    assert page.waits == marketplace_category._CATEGORY_OPTION_WAIT_ATTEMPTS - 1
