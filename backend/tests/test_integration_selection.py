@@ -206,7 +206,8 @@ def test_johndrop_root_meli_category_is_filled_even_if_subcategory_element_exist
     assert "meliCategories.concat(subcategoriesToFill)" in script
     assert "meliSubcategories.length ? meliSubcategories" not in script
     assert "new FormData(form).getAll(select.name)" in script
-    assert "valor não confirmado no envio" in script
+    assert "POST=sim" in script
+    assert "POST=não" in script
 
 
 def test_native_category_guard_rechecks_fields_revealed_by_category_selection():
