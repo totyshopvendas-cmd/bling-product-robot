@@ -489,9 +489,9 @@ async def _select_integration(page) -> bool:
 async def diagnose_integration_controls() -> dict:
     """Read integration radios from one TrimPro form without changing products.
 
-    The diagnostic uses only login plus GET navigation to an existing create
-    form, then reads DOM metadata. It never fills, selects, submits, or records
-    a product as processed.
+    The diagnostic logs in, applies TrimPro's catalog list filter, follows an
+    existing create form by GET, then reads DOM metadata. It never fills a
+    product field, selects an integration, submits, or records a product.
     """
     if trimpro_robot.state == "running" or (trimpro_robot.task and not trimpro_robot.task.done()):
         return {"ok": False, "detail": "Robô TrimPro está em execução"}
@@ -518,8 +518,9 @@ async def diagnose_integration_controls() -> dict:
                 if not await _login_trimpro(page, creds["username"], creds["password"]):
                     return {"ok": False, "detail": "Login TrimPro falhou"}
 
-                await page.goto(TRIMPRO_CATALOG_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_selector(CARD_SELECTOR, timeout=20000)
+                # Like JohnDrop, this applies only TrimPro's catalog filter so
+                # pending create links are rendered; it never changes a product.
+                await _open_catalog(page)
                 cards = await page.query_selector_all(CARD_SELECTOR)
                 create_url = ""
                 for card in cards:

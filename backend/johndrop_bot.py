@@ -479,9 +479,10 @@ async def _select_integration(page) -> bool:
 async def diagnose_integration_controls() -> dict:
     """Read integration radios from one JohnDrop form without changing products.
 
-    This isolated diagnostic only logs in, follows an existing create-form link
-    via GET, and reads the DOM. It never fills a product field, clicks an
-    integration, records a processed key, or submits the provider form.
+    This isolated diagnostic logs in, applies JohnDrop's catalog list filter,
+    follows an existing create-form link via GET, and reads the DOM. It never
+    fills a product field, clicks an integration, records a processed key, or
+    submits the provider form.
     """
     if robot.state == "running" or (robot.task and not robot.task.done()):
         return {"ok": False, "detail": "Robô JohnDrop está em execução"}
@@ -508,10 +509,10 @@ async def diagnose_integration_controls() -> dict:
                 if not await _login_johndrop(page, creds["username"], creds["password"]):
                     return {"ok": False, "detail": "Login JohnDrop falhou"}
 
-                # Direct GET navigation avoids the robot's catalog filter and
-                # never invokes the product-processing or submit path.
-                await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_selector(CARD_SELECTOR, timeout=20000)
+                # JohnDrop only materializes the pending create links after its
+                # own catalog filter/search flow. _open_catalog changes that UI
+                # filter but never opens, fills, or submits a product form.
+                await _open_catalog(page)
                 cards = await page.query_selector_all(CARD_SELECTOR)
                 create_url = ""
                 for card in cards:

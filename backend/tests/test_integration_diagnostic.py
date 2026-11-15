@@ -82,6 +82,7 @@ def test_diagnostic_never_calls_product_processing_or_integration_selection(bot_
     source = inspect.getsource(bot_module.diagnose_integration_controls)
 
     assert "snapshot_integration_controls(page)" in source
+    assert "await _open_catalog(page)" in source
     assert "page.goto(create_url" in source
     assert "_process_one_product" not in source
     assert "_select_integration(page)" not in source
