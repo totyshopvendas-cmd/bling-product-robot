@@ -1,7 +1,7 @@
 """Shared browser helper for supplier-to-Bling integration selection.
 
 JohnDrop and TrimPro use different pages, but both must select the same
-``TotyShop-Bling`` integration before submitting a supplier product.  A click
+``TotyShop-Bling`` integration before submitting a supplier product. A click
 alone is not proof: dynamic forms can silently leave the card unselected.
 This helper clicks the matching option and then verifies the selected state,
 so callers can fail closed instead of reporting a false successful cadastro.
@@ -15,12 +15,21 @@ from typing import Any
 # Some supplier forms render all integration choices inside one generic .card;
 # accepting any checked radio inside that ancestor can incorrectly treat Shopee
 # as the selected TotyShop-Bling integration.
+#
+# The supplier pages in production also contain repeated Bling-looking cards.
+# The operator-established card position is therefore an additional invariant:
+# JohnDrop uses the fourth integration card and TrimPro uses the third one.
+# A card at that position must still have the TotyShop-Bling label, otherwise
+# the probe fails closed rather than falling back to a lookalike card.
 _SELECT_INTEGRATION_PROBE = r"""
-(target) => {
+(config) => {
     const normalize = (value) => (value || '')
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const supplied = typeof config === 'string' ? { target: config } : (config || {});
+    const target = String(supplied.target || '');
     const wanted = normalize(target);
+    const expectedPosition = Number.parseInt(supplied.position, 10) || 0;
     const controlSelector = 'input[type="radio"], input[type="checkbox"]';
     const visible = (el) => {
         if (!el) return false;
@@ -59,6 +68,18 @@ _SELECT_INTEGRATION_PROBE = r"""
         }
         return candidate;
     };
+    const integrationRootFor = (candidate) => {
+        let root = candidate;
+        while (root && root !== document.body) {
+            const text = normalize(root.innerText || root.textContent);
+            const controls = controlsIn(root);
+            // Each visible supplier integration card owns exactly one radio.
+            // Do not use an outer wrapper: it can contain every integration.
+            if (visible(root) && controls.length === 1 && text.includes('totyshop')) return root;
+            root = root.parentElement;
+        }
+        return null;
+    };
     const targetControl = (root) => {
         const controls = controlsIn(root);
         const named = controls.find(controlMatches);
@@ -68,18 +89,83 @@ _SELECT_INTEGRATION_PROBE = r"""
             if (linked && linked.matches(controlSelector)) return linked;
         }
         const text = normalize(root.innerText || root.textContent);
-        return controls.length === 1 && text === wanted ? controls[0] : null;
+        return controls.length === 1 && text.includes(wanted) ? controls[0] : null;
     };
     const selected = (root) => {
         const control = targetControl(root);
         if (control) return Boolean(control.checked);
-        // Custom radio cards may not expose a native input.  Check only the
+        // Custom radio cards may not expose a native input. Check only the
         // target root itself, never a selected marker inherited from a sibling.
         const state = `${root.getAttribute('aria-checked') || ''} ${root.getAttribute('data-state') || ''} ${root.className || ''}`.toLowerCase();
         return root.getAttribute('aria-checked') === 'true'
             || root.getAttribute('data-state') === 'checked'
             || /(?:^|[\s_-])(selected|active|checked)(?:$|[\s_-])/.test(state);
     };
+    const choose = (root, position) => {
+        const positionDetail = position ? ` no ${position}º ícone` : '';
+        if (selected(root)) {
+            return { found: true, selected: true, detail: `TotyShop-Bling já estava selecionada${positionDetail}` };
+        }
+        try {
+            root.scrollIntoView({ block: 'center', inline: 'nearest' });
+            root.click();
+        } catch (_) {}
+        const control = targetControl(root);
+        if (control && !control.checked) {
+            try { control.click(); } catch (_) {}
+        }
+        if (selected(root)) {
+            return { found: true, selected: true, detail: `TotyShop-Bling selecionada e confirmada${positionDetail}` };
+        }
+        return {
+            found: true,
+            selected: false,
+            detail: `TotyShop-Bling foi localizada${positionDetail}, mas sua seleção não foi confirmada`,
+        };
+    };
+
+    if (expectedPosition) {
+        // Cards are collected by their own radio/checkbox and sorted in the
+        // visual order shown to the operator. This avoids a duplicate label
+        // elsewhere in the form winning merely because it appears first in
+        // DOM order.
+        const cardRoots = [];
+        const addCard = (candidate) => {
+            const root = integrationRootFor(candidate);
+            if (root && !cardRoots.includes(root)) cardRoots.push(root);
+        };
+        Array.from(document.querySelectorAll(controlSelector)).forEach(addCard);
+        Array.from(document.querySelectorAll(
+            'label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], div, span'
+        )).filter((el) => {
+            const text = normalize(el.innerText || el.textContent);
+            return visible(el) && text.startsWith('totyshop');
+        }).forEach(addCard);
+        cardRoots.sort((left, right) => {
+            const a = left.getBoundingClientRect();
+            const b = right.getBoundingClientRect();
+            // A portal can wrap cards onto a second line; use row then column.
+            if (Math.abs(a.top - b.top) > 12) return a.top - b.top;
+            return a.left - b.left;
+        });
+        const root = cardRoots[expectedPosition - 1];
+        if (!root) {
+            return {
+                found: false,
+                selected: false,
+                detail: `${expectedPosition}º ícone TotyShop-Bling não encontrado; ${cardRoots.length} cartões TotyShop visíveis`,
+            };
+        }
+        const actual = normalize(root.innerText || root.textContent);
+        if (!actual.includes(wanted)) {
+            return {
+                found: false,
+                selected: false,
+                detail: `${expectedPosition}º ícone não é TotyShop-Bling; seleção bloqueada`,
+            };
+        }
+        return choose(root, expectedPosition);
+    }
 
     const textCandidates = Array.from(document.querySelectorAll(
         'label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], div, span'
@@ -96,20 +182,8 @@ _SELECT_INTEGRATION_PROBE = r"""
         if (!roots.includes(root)) roots.push(root);
     }
     for (const root of roots) {
-        if (selected(root)) {
-            return { found: true, selected: true, detail: 'TotyShop-Bling já estava selecionada' };
-        }
-        try {
-            root.scrollIntoView({ block: 'center', inline: 'nearest' });
-            root.click();
-        } catch (_) {}
-        const control = targetControl(root);
-        if (control && !control.checked) {
-            try { control.click(); } catch (_) {}
-        }
-        if (selected(root)) {
-            return { found: true, selected: true, detail: 'TotyShop-Bling selecionada e confirmada' };
-        }
+        const result = choose(root, 0);
+        if (result.selected) return result;
     }
     return {
         found: true,
@@ -130,9 +204,14 @@ def _result(data: Any) -> dict:
     }
 
 
-async def _probe_selection(page, target: str) -> dict:
+async def _probe_selection(page, target: str, expected_position: int | None = None) -> dict:
+    config: str | dict[str, Any]
+    if expected_position is None:
+        config = target
+    else:
+        config = {"target": target, "position": expected_position}
     try:
-        return _result(await page.evaluate(_SELECT_INTEGRATION_PROBE, target))
+        return _result(await page.evaluate(_SELECT_INTEGRATION_PROBE, config))
     except Exception as exc:
         return {
             "found": False,
@@ -141,18 +220,28 @@ async def _probe_selection(page, target: str) -> dict:
         }
 
 
-async def select_required_integration(page, integration_name: str) -> dict:
+async def select_required_integration(
+    page,
+    integration_name: str,
+    expected_position: int | None = None,
+) -> dict:
     """Select and verify exactly the requested supplier integration.
 
-    A target-specific checked state is mandatory.  If a generic supplier card
-    reports another integration (for example Shopee) as selected, this helper
-    returns ``selected=False`` and callers stop before submitting the product.
+    A target-specific checked state is mandatory. If ``expected_position`` is
+    supplied, that one-based visual card position must also be TotyShop-Bling.
+    If either condition is not met, callers stop before submitting the product.
     """
     target = (integration_name or "").strip()
     if not target:
         return {"found": False, "selected": False, "detail": "integração vazia"}
+    if expected_position is not None and expected_position < 1:
+        return {
+            "found": False,
+            "selected": False,
+            "detail": "posição da integração inválida",
+        }
 
-    result = await _probe_selection(page, target)
+    result = await _probe_selection(page, target, expected_position)
     if not result["found"] or result["selected"]:
         return result
 
@@ -162,4 +251,4 @@ async def select_required_integration(page, integration_name: str) -> dict:
         await page.wait_for_timeout(350)
     except Exception:
         pass
-    return await _probe_selection(page, target)
+    return await _probe_selection(page, target, expected_position)

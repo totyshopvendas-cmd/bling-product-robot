@@ -46,6 +46,37 @@ def test_shared_selector_fails_closed_when_card_has_no_selected_state():
     assert result["selected"] is False
 
 
+def test_shared_selector_passes_operator_confirmed_card_position_to_browser():
+    page = ProbePage({"found": True, "selected": True, "detail": "selecionada"})
+
+    result = asyncio.run(
+        integration_selection.select_required_integration(
+            page,
+            "TotyShop-Bling",
+            expected_position=4,
+        ),
+    )
+
+    assert result["selected"] is True
+    assert page.calls[0][1] == {"target": "TotyShop-Bling", "position": 4}
+
+
+def test_selector_rejects_invalid_card_position_without_touching_supplier_form():
+    page = ProbePage({"found": True, "selected": True, "detail": "não deve executar"})
+
+    result = asyncio.run(
+        integration_selection.select_required_integration(
+            page,
+            "TotyShop-Bling",
+            expected_position=0,
+        ),
+    )
+
+    assert result["selected"] is False
+    assert "posição" in result["detail"]
+    assert page.calls == []
+
+
 def test_target_probe_never_accepts_a_checked_sibling_in_generic_card():
     """A checked Shopee radio inside a shared wrapper is not TotyShop-Bling."""
     script = integration_selection._SELECT_INTEGRATION_PROBE
@@ -55,10 +86,59 @@ def test_target_probe_never_accepts_a_checked_sibling_in_generic_card():
     assert "TotyShop-Bling foi localizada, mas sua seleção não foi confirmada" in script
 
 
+def test_positioned_selector_uses_visual_card_order_and_blocks_a_wrong_card():
+    """A duplicate Bling label cannot override the user-confirmed card index."""
+    script = integration_selection._SELECT_INTEGRATION_PROBE
+
+    assert "const root = cardRoots[expectedPosition - 1];" in script
+    assert "a.top - b.top" in script
+    assert "a.left - b.left" in script
+    assert "ícone não é TotyShop-Bling; seleção bloqueada" in script
+    assert "Do not use an outer wrapper" in script
+
+
 def test_both_supplier_robots_use_the_same_verified_integration_guard():
     """A fix for the integration card must never diverge across suppliers."""
     assert johndrop_bot.select_required_integration is integration_selection.select_required_integration
     assert trimpro_bot.select_required_integration is integration_selection.select_required_integration
+    assert johndrop_bot.INTEGRATION_CARD_POSITION == 4
+    assert trimpro_bot.INTEGRATION_CARD_POSITION == 3
+
+
+def test_johndrop_pins_totyshop_bling_to_its_fourth_icon(monkeypatch):
+    calls = []
+
+    async def choose(page, target, expected_position=None):
+        calls.append((page, target, expected_position))
+        return {"found": True, "selected": True, "detail": "confirmada"}
+
+    async def log(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(johndrop_bot, "select_required_integration", choose)
+    monkeypatch.setattr(johndrop_bot, "add_log", log)
+
+    page = object()
+    assert asyncio.run(johndrop_bot._select_integration(page)) is True
+    assert calls == [(page, "TotyShop-Bling", 4)]
+
+
+def test_trimpro_pins_totyshop_bling_to_its_third_icon(monkeypatch):
+    calls = []
+
+    async def choose(page, target, expected_position=None):
+        calls.append((page, target, expected_position))
+        return {"found": True, "selected": True, "detail": "confirmada"}
+
+    async def log(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(trimpro_bot, "select_required_integration", choose)
+    monkeypatch.setattr(trimpro_bot, "_trimpro_log", log)
+
+    page = object()
+    assert asyncio.run(trimpro_bot._select_integration(page)) is True
+    assert calls == [(page, "TotyShop-Bling", 3)]
 
 
 class ConfirmationPage:
