@@ -22,10 +22,12 @@ if (
 
 from datetime import datetime, timezone
 from typing import Optional, Tuple
+from urllib.parse import urljoin
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
 from integration_selection import select_required_integration
+from integration_diagnostic import snapshot_integration_controls
 from marketplace_category import ensure_required_marketplace_category
 from submission_confirmation import confirm_supplier_submission
 from robot_service import robot, add_log
@@ -472,6 +474,68 @@ async def _select_integration(page) -> bool:
         f"Integração '{INTEGRATION_NAME}' no {INTEGRATION_CARD_POSITION}º ícone não confirmada: {result['detail']}",
     )
     return False
+
+
+async def diagnose_integration_controls() -> dict:
+    """Read integration radios from one JohnDrop form without changing products.
+
+    This isolated diagnostic only logs in, follows an existing create-form link
+    via GET, and reads the DOM. It never fills a product field, clicks an
+    integration, records a processed key, or submits the provider form.
+    """
+    if robot.state == "running" or (robot.task and not robot.task.done()):
+        return {"ok": False, "detail": "Robô JohnDrop está em execução"}
+    creds = await _get_credentials()
+    if not creds or not creds.get("username") or not creds.get("password"):
+        return {"ok": False, "detail": "Credenciais JohnDrop não configuradas"}
+    if not chromium_status().get("installed"):
+        return {"ok": False, "detail": "Chromium não está pronto"}
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return {"ok": False, "detail": "Playwright não está disponível"}
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                context = await browser.new_context(viewport={"width": 1366, "height": 900})
+                page = await context.new_page()
+                if not await _login_johndrop(page, creds["username"], creds["password"]):
+                    return {"ok": False, "detail": "Login JohnDrop falhou"}
+
+                # Direct GET navigation avoids the robot's catalog filter and
+                # never invokes the product-processing or submit path.
+                await page.goto(JOHNDROP_CATALOG_URL, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_selector(CARD_SELECTOR, timeout=20000)
+                cards = await page.query_selector_all(CARD_SELECTOR)
+                create_url = ""
+                for card in cards:
+                    href = (await card.get_attribute("href") or "").strip()
+                    if "/createv2/" in href:
+                        create_url = urljoin(JOHNDROP_CATALOG_BASE_URL, href)
+                        break
+                if not create_url:
+                    return {"ok": False, "detail": "Nenhum link de formulário JohnDrop foi encontrado"}
+
+                await page.goto(create_url, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(750)
+                snapshot = await snapshot_integration_controls(page)
+                return {
+                    "ok": True,
+                    "supplier": "johndrop",
+                    "integration": INTEGRATION_NAME,
+                    "expected_position": INTEGRATION_CARD_POSITION,
+                    "snapshot": snapshot,
+                }
+            finally:
+                await browser.close()
+    except Exception as exc:
+        return {"ok": False, "detail": f"Diagnóstico JohnDrop falhou: {str(exc)[:220]}"}
 
 
 async def _clean_sku_field(page) -> Optional[str]:

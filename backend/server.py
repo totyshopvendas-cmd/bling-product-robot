@@ -568,6 +568,12 @@ async def robot_logs_clear() -> dict:
     return {"ok": True}
 
 
+@api.post("/robot/integration-diagnostic")
+async def johndrop_integration_diagnostic() -> dict:
+    """Read one JohnDrop form's integration controls without a cadastro."""
+    return await johndrop_bot.diagnose_integration_controls()
+
+
 # ---------- TrimPro Robot ----------
 @api.post("/trimpro/start", response_model=RobotStatusResponse)
 async def trimpro_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
@@ -607,6 +613,12 @@ async def trimpro_logs(limit: int = 100) -> list:
 async def trimpro_logs_clear() -> dict:
     await robot_service.clear_logs(bot="trimpro")
     return {"ok": True}
+
+
+@api.post("/trimpro/integration-diagnostic")
+async def trimpro_integration_diagnostic() -> dict:
+    """Read one TrimPro form's integration controls without a cadastro."""
+    return await trimpro_bot.diagnose_integration_controls()
 
 
 # ---------- Shopee Robot ----------
