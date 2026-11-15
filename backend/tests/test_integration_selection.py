@@ -97,6 +97,21 @@ def test_positioned_selector_uses_native_visible_radio_order_and_blocks_a_wrong_
     assert "a.left - b.left" in script
     assert "ícone não é TotyShop-Bling; seleção bloqueada" in script
     assert "count nested divs, duplicate labels, or generic card wrappers" in script
+    assert "const allVisibleControls" in script
+    assert "inventário dos rádios visíveis" in script
+    assert "describeControls(allVisibleControls)" in script
+
+
+def test_integration_probe_keeps_radio_inventory_in_the_error_detail():
+    detail = "radio=" + ("x" * 700)
+
+    result = integration_selection._result({
+        "found": False,
+        "selected": False,
+        "detail": detail,
+    })
+
+    assert result["detail"] == detail
 
 
 def test_positioned_selector_clicks_the_exact_native_control_not_a_matching_sibling():

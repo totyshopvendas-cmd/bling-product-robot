@@ -18,6 +18,9 @@ from typing import Any
 # The operator confirmed the visible native-radio order for each portal:
 # JohnDrop uses radio 4 and TrimPro uses radio 3. We deliberately order radios,
 # not containers whose repeated/nested HTML can differ from the visual cards.
+# When that invariant fails, the probe emits a compact, non-secret inventory of
+# the actual radio IDs/labels so the next selector can be tied to the supplier's
+# real control rather than another inferred position.
 _SELECT_INTEGRATION_PROBE = r"""
 (config) => {
     const normalize = (value) => (value || '')
@@ -74,6 +77,19 @@ _SELECT_INTEGRATION_PROBE = r"""
         );
     };
     const controlMatches = (input) => controlContext(input).includes(wanted);
+    const clip = (value, limit = 32) => String(value || '')
+        .replace(/\s+/g, ' ').trim().slice(0, limit);
+    const describeControl = (input, index) => {
+        const root = rootForControl(input);
+        const label = labelsFor(input).map((item) => item.innerText || item.textContent).join(' ');
+        const attrs = Array.from(input.attributes || [])
+            .filter((attr) => /^(?:data-|aria-)/i.test(attr.name))
+            .map((attr) => `${attr.name}=${clip(attr.value, 18)}`)
+            .join(',');
+        return `${index + 1}[id=${clip(input.id, 20)};name=${clip(input.name, 20)};value=${clip(input.value, 20)};label=${clip(label)};card=${clip(root?.innerText || root?.textContent)}${attrs ? `;${attrs}` : ''}]`;
+    };
+    const describeControls = (controls) => controls.slice(0, 10)
+        .map((input, index) => describeControl(input, index)).join(' | ');
     const rootFor = (candidate) => {
         let root = candidate;
         while (root && root !== document.body) {
@@ -143,29 +159,31 @@ _SELECT_INTEGRATION_PROBE = r"""
         // The visible radios are the controls the operator sees as the circles
         // beside each integration. Sort them by screen row then column; do not
         // count nested divs, duplicate labels, or generic card wrappers.
-        const integrationControls = Array.from(document.querySelectorAll(controlSelector))
+        const allVisibleControls = Array.from(document.querySelectorAll(controlSelector))
             .filter(visibleControl)
-            .map((input) => ({ input, root: rootForControl(input) }))
-            .filter(({ input, root }) => controlContext(input, root).includes('totyshop'))
             .sort((left, right) => {
-                const a = rectFor(left.input);
-                const b = rectFor(right.input);
+                const a = rectFor(left);
+                const b = rectFor(right);
                 if (Math.abs(a.top - b.top) > 12) return a.top - b.top;
                 return a.left - b.left;
             });
+        const integrationControls = allVisibleControls
+            .map((input) => ({ input, root: rootForControl(input) }))
+            .filter(({ input, root }) => controlContext(input, root).includes('totyshop'));
         const entry = integrationControls[expectedPosition - 1];
+        const inventory = describeControls(allVisibleControls);
         if (!entry) {
             return {
                 found: false,
                 selected: false,
-                detail: `${expectedPosition}º ícone TotyShop-Bling não encontrado; ${integrationControls.length} rádios de integração visíveis`,
+                detail: `${expectedPosition}º ícone TotyShop-Bling não encontrado; inventário dos rádios visíveis: ${inventory || 'nenhum'}`,
             };
         }
         if (!controlContext(entry.input, entry.root).includes(wanted)) {
             return {
                 found: false,
                 selected: false,
-                detail: `${expectedPosition}º ícone não é TotyShop-Bling; seleção bloqueada`,
+                detail: `${expectedPosition}º ícone não é TotyShop-Bling; seleção bloqueada; inventário dos rádios visíveis: ${inventory || 'nenhum'}`,
             };
         }
         return choose(entry.root, expectedPosition, entry.input);
@@ -204,7 +222,10 @@ def _result(data: Any) -> dict:
     return {
         "found": bool(data.get("found")),
         "selected": bool(data.get("selected")),
-        "detail": str(data.get("detail") or "estado não confirmado")[:240],
+        # The failure detail may carry the compact identifiers of the visible
+        # supplier radios. It contains no credentials and is kept long enough
+        # for the operator to report the exact control without another guess.
+        "detail": str(data.get("detail") or "estado não confirmado")[:900],
     }
 
 
