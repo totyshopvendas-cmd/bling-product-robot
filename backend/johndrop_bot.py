@@ -22,7 +22,6 @@ if (
 
 from datetime import datetime, timezone
 from typing import Optional, Tuple
-from urllib.parse import urljoin
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
@@ -480,9 +479,9 @@ async def diagnose_integration_controls() -> dict:
     """Read integration radios from one JohnDrop form without changing products.
 
     This isolated diagnostic logs in, applies JohnDrop's catalog list filter,
-    follows an existing create-form link via GET, and reads the DOM. It never
-    fills a product field, clicks an integration, records a processed key, or
-    submits the provider form.
+    opens an existing create form through its own catalog control, and reads
+    the DOM. It never fills a product field, clicks an integration, records a
+    processed key, or submits the provider form.
     """
     if robot.state == "running" or (robot.task and not robot.task.done()):
         return {"ok": False, "detail": "Robô JohnDrop está em execução"}
@@ -514,16 +513,18 @@ async def diagnose_integration_controls() -> dict:
                 # filter but never opens, fills, or submits a product form.
                 await _open_catalog(page)
                 cards = await page.query_selector_all(CARD_SELECTOR)
-                create_url = ""
-                for card in cards:
-                    href = (await card.get_attribute("href") or "").strip()
-                    if "/createv2/" in href:
-                        create_url = urljoin(JOHNDROP_CATALOG_BASE_URL, href)
-                        break
-                if not create_url:
-                    return {"ok": False, "detail": "Nenhum link de formulário JohnDrop foi encontrado"}
+                if not cards:
+                    return {"ok": False, "detail": "Nenhum controle de formulário JohnDrop foi encontrado"}
 
-                await page.goto(create_url, wait_until="domcontentloaded", timeout=60000)
+                # JohnDrop can render "Cadastrar Produto" as a button without
+                # an href. Use the same navigation-only click the robot uses
+                # to open the form; no product field or integration is touched.
+                try:
+                    async with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+                        await cards[0].click()
+                except Exception as exc:
+                    if "/createv2/" not in (page.url or ""):
+                        return {"ok": False, "detail": f"Não foi possível abrir o formulário JohnDrop: {str(exc)[:180]}"}
                 await page.wait_for_timeout(750)
                 snapshot = await snapshot_integration_controls(page)
                 return {

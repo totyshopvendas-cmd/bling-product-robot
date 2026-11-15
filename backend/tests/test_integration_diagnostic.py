@@ -83,7 +83,9 @@ def test_diagnostic_never_calls_product_processing_or_integration_selection(bot_
 
     assert "snapshot_integration_controls(page)" in source
     assert "await _open_catalog(page)" in source
-    assert "page.goto(create_url" in source
+    assert "async with page.expect_navigation" in source
+    assert "await cards[0].click()" in source
+    assert '"/createv2/" not in (page.url or "")' in source
     assert "_process_one_product" not in source
     assert "_select_integration(page)" not in source
     assert "select_option" not in source
