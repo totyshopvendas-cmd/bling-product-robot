@@ -9,6 +9,7 @@ const REFRESH_INTERVAL_MS = 5000;
 const STATUS_META = {
   success: { color: "bg-emerald-100 text-emerald-800 border-emerald-300", icon: CheckCircle2, label: "Concluído" },
   waiting_ai: { color: "bg-violet-100 text-violet-800 border-violet-300", icon: Clock, label: "Aguardando IA" },
+  needs_review: { color: "bg-orange-100 text-orange-800 border-orange-300", icon: AlertTriangle, label: "Revisar dados" },
   error: { color: "bg-rose-100 text-rose-800 border-rose-300", icon: AlertTriangle, label: "Erro" },
   not_found: { color: "bg-amber-100 text-amber-800 border-amber-300", icon: Clock, label: "Aguardando sync" },
 };
@@ -88,13 +89,12 @@ export default function BlingEnrichmentPage() {
         <h1 className="font-display text-3xl font-bold tracking-tighter">Enriquecimento de Produtos</h1>
         <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
           Após cada cadastro confirmado no JohnDrop ou TrimPro, o produto aparece automaticamente no Bling. O sistema então
-          gera <strong>descrição curta</strong>, <strong>6 ou 8 bullets técnicos</strong> e seleciona a{" "}
-          <strong>categoria</strong> ideal usando IA. Só é concluído quando as duas descrições estiverem completas.
+          gera <strong>descrição curta</strong>, <strong>6 ou 8 bullets técnicos</strong>, categoria, marca, fornecedor e variações reais. Só é concluído quando todas as etapas obrigatórias estiverem completas.
         </p>
       </div>
 
       {stats && (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-0 border border-border bg-white">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-0 border border-border bg-white">
           <div className="p-5 border-r border-border">
             <div className="label-overline">Total</div>
             <div className="font-display text-3xl font-bold tracking-tighter">{stats.total}</div>
@@ -110,6 +110,10 @@ export default function BlingEnrichmentPage() {
           <div className="p-5 border-r border-border">
             <div className="label-overline">Aguardando IA</div>
             <div className="font-display text-3xl font-bold tracking-tighter text-violet-600">{stats.waiting_ai || 0}</div>
+          </div>
+          <div className="p-5 border-r border-border">
+            <div className="label-overline">Revisar dados</div>
+            <div className="font-display text-3xl font-bold tracking-tighter text-orange-600">{stats.needs_review || 0}</div>
           </div>
           <div className="p-5">
             <div className="label-overline">Erros</div>

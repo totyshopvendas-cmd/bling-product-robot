@@ -4,7 +4,8 @@ Mantém em memória o estado de cada SKU:
   - waiting_sync: aguardando o fornecedor sincronizar dados/imagens
   - enriching: gerando descrição curta, bullets e metadados
   - waiting_ai: descrição incompleta; usuário deve corrigir IA/saldo e retentar
-  - done: descrição curta e 6 ou 8 bullets concluídos
+  - needs_review: categoria, fornecedor ou variação obrigatória pendente
+  - done: descrição curta, metadados e variações obrigatórias concluídos
   - failed: erro técnico
 
 A função `track(sku, stage, **info)` é chamada de dentro de `bling_enrichment.py`
@@ -31,8 +32,8 @@ def _now() -> str:
 def track(sku: str, stage: str, **info) -> None:
     """Update or insert an entry for ``sku``.
 
-    Stages are queued, waiting_sync, enriching, waiting_ai, done and failed.
-    Extra info kwargs go into the entry as-is.
+    Stages are queued, waiting_sync, enriching, waiting_ai, needs_review,
+    done and failed. Extra info kwargs go into the entry as-is.
     """
     if not sku:
         return
@@ -57,6 +58,7 @@ async def progress(limit: int = 30) -> dict:
             "active": len(active),
             "done": sum(1 for it in _TRACK.values() if it.get("stage") == "done"),
             "waiting_ai": sum(1 for it in _TRACK.values() if it.get("stage") == "waiting_ai"),
+            "needs_review": sum(1 for it in _TRACK.values() if it.get("stage") == "needs_review"),
             "failed": sum(1 for it in _TRACK.values() if it.get("stage") == "failed"),
         },
     }

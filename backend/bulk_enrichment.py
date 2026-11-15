@@ -6,24 +6,58 @@ the LLM enrichment pipeline (short description + 6 or 8 factual bullets + catego
 Job state is kept in-memory: only one bulk job runs at a time.
 """
 import asyncio
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
 import bling_service
 import bling_enrichment
+from db import db
 from robot_service import add_log
 
 
 # ---------------------------------------------------------------- helpers
 
-def _is_enriched(product: dict) -> bool:
-    """A product is considered 'already enriched' when it has both a short
-    description and a complementary description AND its brand is Generico/Generica."""
+def _completion_gaps(product: dict) -> list[str]:
+    """Return original enrichment fields still missing from a Bling product.
+
+    This is intentionally stricter than the former "has two descriptions and a
+    generic brand" rule. Brand may legitimately be the configured store name or
+    a manufacturer; what matters is that all TotyShop fields were actually
+    applied before the UI labels the product as enriched.
+    """
     short = (product.get("descricaoCurta") or "").strip()
-    comp = (product.get("descricaoComplementar") or "").strip()
-    brand = (product.get("marca") or "").strip().lower()
-    return bool(short) and bool(comp) and brand in ("generico", "generica")
+    comp = (product.get("descricaoComplementar") or "").replace("<br>", "\n")
+    bullets = [line for line in comp.splitlines() if line.strip().lstrip().startswith("-")]
+    gaps: list[str] = []
+    if len(re.sub(r"<[^>]+>", "", short).strip()) < 20:
+        gaps.append("descrição curta")
+    if len(bullets) not in (6, 8):
+        gaps.append("6 ou 8 bullets")
+    if not (product.get("marca") or "").strip():
+        gaps.append("marca")
+    if str(product.get("condicao") or "") != "1":
+        gaps.append("condição novo")
+    if (product.get("tipoProducao") or "").strip().upper() != "T":
+        gaps.append("produção terceiros")
+    gtin = str(product.get("gtin") or "").strip()
+    gtin_pack = str(product.get("gtinEmbalagem") or "").strip()
+    if gtin not in ("", "0") or gtin_pack not in ("", "0"):
+        gaps.append("GTIN limpo")
+    if not ((product.get("categoria") or {}).get("id")):
+        gaps.append("categoria")
+    images = (product.get("midia") or {}).get("imagens") or {}
+    if not ((images.get("internas") or []) or (images.get("externas") or [])):
+        gaps.append("imagem")
+    if (product.get("formato") or "").upper() == "V" and not (product.get("variacoes") or []):
+        gaps.append("variações")
+    return gaps
+
+
+def _is_enriched(product: dict) -> bool:
+    """True only after all inspectable original enrichment fields are ready."""
+    return not _completion_gaps(product)
 
 
 async def _fetch_full(product_id: int) -> Optional[dict]:
@@ -56,7 +90,27 @@ async def list_products_with_status(
         pid = it.get("id")
         full = await _fetch_full(pid) if pid else None
         product = full or it
-        is_enr = _is_enriched(product)
+        # Children inherit their parent metadata and must never be sent through
+        # the parent-enrichment flow as independent products. They are created
+        # and stocked by bling_variations with their own source codes instead.
+        if ((product.get("produtoPai") or {}).get("id")):
+            continue
+        gaps = _completion_gaps(product)
+        # The detailed Bling product response does not reliably expose the
+        # supplier relation/source code, nor enough information to prove every
+        # requested variation was saved. The cache is written only after the
+        # shared pipeline verifies those steps. Old cache rows (without this
+        # version marker) intentionally remain pending for a safe re-check.
+        try:
+            cache = await db.bling_enriched_cache.find_one(
+                {"product_id": pid}, {"_id": 0, "completion_contract": 1},
+            ) if pid else None
+        except Exception:
+            cache = None
+        verified = (cache or {}).get("completion_contract") == bling_enrichment.ENRICHMENT_CONTRACT_VERSION
+        if not verified:
+            gaps.append("fornecedor/variações não verificados")
+        is_enr = not gaps
         enriched_items.append({
             "id": pid,
             "codigo": product.get("codigo") or it.get("codigo") or "",
@@ -64,6 +118,7 @@ async def list_products_with_status(
             "preco": product.get("preco") or it.get("preco") or 0,
             "situacao": product.get("situacao") or it.get("situacao") or "",
             "enriched": is_enr,
+            "completion_gaps": gaps,
             "marca": product.get("marca") or "",
             "categoria_id": (product.get("categoria") or {}).get("id"),
         })
@@ -133,6 +188,12 @@ async def _enrich_one(product_id: int) -> dict:
         return {"ok": False, "reason": "produto não encontrado no Bling"}
     sku = (full.get("codigo") or "").strip()
     name = (full.get("nome") or "").strip()
+    if ((full.get("produtoPai") or {}).get("id")):
+        return {
+            "ok": True,
+            "skip_enrichment": True,
+            "reason": "variação filha herda o enriquecimento do produto pai",
+        }
     # Prefer the RAW description from JohnDrop (the only place variation text
     # lives). `descricaoCurta`/`descricaoComplementar` are already enriched and
     # don't contain the variation phrases.
@@ -176,7 +237,16 @@ async def _run_job(product_ids: List[int]) -> None:
 
             try:
                 result = await _enrich_one(pid)
-                if result.get("ok"):
+                if result.get("skip_enrichment"):
+                    job.skipped += 1
+                    job.items.append({
+                        "product_id": pid,
+                        "sku": job.current_sku,
+                        "name": job.current_name,
+                        "status": "skipped",
+                        "message": result.get("reason", "variação filha herda o produto pai"),
+                    })
+                elif result.get("ok"):
                     job.success += 1
                     job.items.append({
                         "product_id": pid,

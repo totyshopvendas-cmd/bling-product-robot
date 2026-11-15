@@ -311,6 +311,20 @@ async def _tick() -> None:
                         "needs_llm_retry": True,
                     }},
                 )
+            elif result.get("needs_review"):
+                # The descriptive text is ready but a required original field
+                # (category, supplier or an explicit variation) still needs
+                # attention. Keep the item visible instead of cycling forever.
+                await db.enrich_pending.update_one(
+                    {"sku": sku},
+                    {"$set": {
+                        "status": "needs_review",
+                        "product_id": result.get("product_id") or product.get("id"),
+                        "last_status": "needs_review",
+                        "last_error": str(result.get("reason", "revisão necessária")),
+                        "last_check": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
             else:
                 await db.enrich_pending.update_one(
                     {"sku": sku},
@@ -367,6 +381,7 @@ async def list_queue(status: Optional[str] = None, limit: int = 100) -> dict:
         "pending": await db.enrich_pending.count_documents({"status": "pending"}),
         "processing": await db.enrich_pending.count_documents({"status": "processing"}),
         "waiting_ai": await db.enrich_pending.count_documents({"status": "waiting_ai"}),
+        "needs_review": await db.enrich_pending.count_documents({"status": "needs_review"}),
         "done": await db.enrich_pending.count_documents({"status": "done"}),
         "giveup": await db.enrich_pending.count_documents({"status": "giveup"}),
     }
@@ -387,7 +402,8 @@ async def list_queue(status: Optional[str] = None, limit: int = 100) -> dict:
 async def retry_item(sku: str) -> dict:
     r = await db.enrich_pending.update_one(
         {"sku": sku},
-        {"$set": {"status": "pending", "attempts": 0, "last_error": None}},
+        {"$set": {"status": "pending", "attempts": 0, "last_error": None},
+         "$unset": {"completion_issues": ""}},
     )
     if r.matched_count == 0:
         return {"ok": False, "reason": "sku não está na fila"}

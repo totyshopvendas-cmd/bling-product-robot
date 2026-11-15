@@ -11,6 +11,7 @@ const STAGE_META = {
   waiting_sync:  { Icon: Clock,         label: "Aguardando sync", color: "text-amber-700",   bg: "bg-amber-100" },
   enriching:     { Icon: Sparkles,      label: "Enriquecendo",   color: "text-blue-700",    bg: "bg-blue-100" },
   waiting_ai:    { Icon: Clock,         label: "Aguardando IA",  color: "text-violet-700",  bg: "bg-violet-100" },
+  needs_review:  { Icon: XCircle,       label: "Revisar dados",  color: "text-orange-700",  bg: "bg-orange-100" },
   done:          { Icon: CheckCircle2,  label: "Concluído",      color: "text-emerald-700", bg: "bg-emerald-100" },
   failed:        { Icon: XCircle,       label: "Falhou",         color: "text-rose-700",    bg: "bg-rose-100" },
 };
@@ -100,10 +101,11 @@ export default function EnrichmentProgressPage() {
       </header>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <Card label="Total" value={s.total || 0} color="zinc" Icon={Activity} />
         <Card label="Ativos" value={s.active || 0} color="blue" Icon={Loader2} spinning={(s.active || 0) > 0} />
         <Card label="Aguardando IA" value={s.waiting_ai || 0} color="violet" Icon={Clock} />
+        <Card label="Revisar dados" value={s.needs_review || 0} color="orange" Icon={XCircle} />
         <Card label="Concluídos" value={s.done || 0} color="emerald" Icon={CheckCircle2} />
         <Card label="Falhas" value={s.failed || 0} color="rose" Icon={XCircle} />
       </div>
@@ -157,8 +159,8 @@ export default function EnrichmentProgressPage() {
                             : "OK"}
                         </span>
                       )}
-                      {it.stage === "failed" && (
-                        <span className="text-rose-600 truncate block max-w-[200px]" title={it.error}>{it.error || "—"}</span>
+                      {(it.stage === "failed" || it.stage === "needs_review" || it.stage === "waiting_ai") && (
+                        <span className={`${it.stage === "failed" ? "text-rose-600" : it.stage === "waiting_ai" ? "text-violet-700" : "text-orange-700"} truncate block max-w-[200px]`} title={it.error}>{it.error || "—"}</span>
                       )}
                     </td>
                     <td className="px-4 py-2 text-xs text-muted-foreground">
@@ -181,6 +183,7 @@ function Card({ label, value, color, Icon, spinning = false }) {
     zinc: "border-border bg-white",
     blue: "border-blue-200 bg-blue-50",
     violet: "border-violet-200 bg-violet-50",
+    orange: "border-orange-200 bg-orange-50",
     emerald: "border-emerald-200 bg-emerald-50",
     rose: "border-rose-200 bg-rose-50",
   };
@@ -188,6 +191,7 @@ function Card({ label, value, color, Icon, spinning = false }) {
     zinc: "text-zinc-500",
     blue: "text-blue-600",
     violet: "text-violet-600",
+    orange: "text-orange-600",
     emerald: "text-emerald-600",
     rose: "text-rose-600",
   };

@@ -97,7 +97,9 @@ async def create_variations(
 ) -> dict:
     """Create variations on a Bling parent. Single PATCH call.
 
-    Returns {created, per_child_stock}.
+    Returns {created, skipped, ready, per_child_stock}. ``ready`` is the
+    verified total among the requested options: newly created children plus
+    children that were already present before an idempotent retry.
 
     If `parent_images` is given (URLs from JohnDrop), each child variation will
     receive a copy of those images via a follow-up PATCH using `imagensURL`.
@@ -107,21 +109,21 @@ async def create_variations(
     split of remaining stock (Regra de Distribuição Balanceada).
     """
     if not variations:
-        return {"created": 0, "per_child_stock": 0}
+        return {"created": 0, "skipped": 0, "ready": 0, "per_child_stock": 0}
 
     # Fetch current parent state (we need name, code, price)
     if not parent_current:
         r = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
         if r.status_code >= 400:
             await add_log("warning", f"Variações pid={parent_id}: produto não encontrado")
-            return {"created": 0, "per_child_stock": 0}
+            return {"created": 0, "skipped": 0, "ready": 0, "per_child_stock": 0}
         parent_current = (r.json() or {}).get("data") or {}
 
     parent_name = (parent_current.get("nome") or "").strip()
     parent_sku = (parent_current.get("codigo") or "").strip()
     parent_price = parent_current.get("preco") or 0
     if not parent_sku:
-        return {"created": 0, "per_child_stock": 0}
+        return {"created": 0, "skipped": 0, "ready": 0, "per_child_stock": 0}
 
     # READ parent's CURRENT stock so we can redistribute when total_stock isn't given.
     # Important: JohnDrop syncs the product to Bling in TWO phases — the product
@@ -183,7 +185,12 @@ async def create_variations(
         })
 
     if not new_vars:
-        return {"created": 0, "per_child_stock": 0, "skipped": skipped}
+        return {
+            "created": 0,
+            "skipped": skipped,
+            "ready": skipped,
+            "per_child_stock": 0,
+        }
 
     # Single PATCH — formato change + variations in one shot
     is_already_v = (parent_current.get("formato") or "").upper() == "V"
@@ -198,27 +205,27 @@ async def create_variations(
         )
     except Exception as e:
         await add_log("warning", f"Variações pid={parent_id}: erro de rede — {e}")
-        return {"created": 0, "per_child_stock": 0}
+        return {"created": 0, "skipped": skipped, "ready": skipped, "per_child_stock": 0}
 
     if resp.status_code >= 400:
         await add_log(
             "warning",
             f"Variações pid={parent_id}: Bling rejeitou (HTTP {resp.status_code}) — {resp.text[:500]}",
         )
-        return {"created": 0, "per_child_stock": 0}
+        return {"created": 0, "skipped": skipped, "ready": skipped, "per_child_stock": 0}
 
-    created = 0
     saved: List[dict] = []
     try:
         body = resp.json() or {}
         saved = ((body.get("data") or {}).get("variations") or {}).get("saved") or []
-        created = len(saved)
     except Exception:
-        created = len(new_vars)
+        # A successful HTTP response without JSON is not enough evidence to
+        # count children as ready. The parent read below is the source of truth.
+        saved = []
 
     # Resolve each newly saved child to the exact option name found in the
-    # JohnDrop description. ``nomeVariacao`` is preferred, and payload order is
-    # the fallback for Bling responses that only return child IDs.
+    # supplier description. ``nomeVariacao`` is preferred, and request order
+    # is only a fallback for Bling responses that return child IDs alone.
     name_to_id: dict = {}
     saved_ids: List[int] = []
     for index, item in enumerate(saved):
@@ -232,11 +239,11 @@ async def create_variations(
             if key:
                 name_to_id[key] = sid
 
-    # A few Bling responses acknowledge the PATCH but omit variation names.
-    # Re-read the parent in that case instead of accidentally giving stock to
-    # an out-of-stock child.
+    # A few Bling responses acknowledge the PATCH but omit variation names or
+    # all ``saved`` entries. Re-read the parent whenever the response did not
+    # prove every requested child exists; never mark an unverified child ready.
     target_keys = {_variation_key(name) for name in new_names}
-    if saved_ids and not target_keys.issubset(name_to_id):
+    if not target_keys.issubset(name_to_id):
         try:
             refreshed_response = await bling_service.bling_request("GET", f"/produtos/{parent_id}")
             if refreshed_response.status_code < 400:
@@ -250,9 +257,18 @@ async def create_variations(
         except Exception:
             pass
 
+    # A child is counted only after an ID is confirmed. This makes retries
+    # idempotent and prevents a 200/PATCH acknowledgement from becoming a false
+    # "done" outcome when Bling did not actually create all variations.
+    child_names = [name for name in new_names if _variation_key(name) in name_to_id]
+    created = len(child_names)
+    ready = skipped + created
+    saved_ids = list(dict.fromkeys(
+        name_to_id[_variation_key(name)] for name in child_names
+    ))
+
     # Build a complete absolute-stock plan. E.g. with total=12, Branco and
     # Cinza Escuro (ESGOTADO), it produces Branco=12 and Cinza Escuro=0.
-    child_names = [name for name in new_names if _variation_key(name) in name_to_id]
     stock_by_variation = _build_stock_plan(total_stock, child_names, explicit_quantities)
     per_child = 0
     if stock_by_variation:
@@ -308,7 +324,12 @@ async def create_variations(
         "success",
         f"Variações criadas pid={parent_id}: {created} ({flat}) — estoque/variação: {per_child}",
     )
-    return {"created": created, "per_child_stock": per_child, "skipped": skipped}
+    return {
+        "created": created,
+        "skipped": skipped,
+        "ready": ready,
+        "per_child_stock": per_child,
+    }
 
 
 _DEPOSITO_CACHE: dict = {"id": None, "checked": False}
