@@ -362,7 +362,10 @@ export default function BlingBulkEnrichPage() {
                           <CheckCircle2 className="h-3 w-3" /> Enriquecido
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 border border-amber-300 bg-amber-50 text-amber-800">
+                        <span
+                          title={p.completion_gaps?.length ? `Falta: ${p.completion_gaps.join(", ")}` : "Pendente de enriquecimento"}
+                          className="inline-flex items-center gap-1 text-xs px-2 py-0.5 border border-amber-300 bg-amber-50 text-amber-800"
+                        >
                           <AlertTriangle className="h-3 w-3" /> Pendente
                         </span>
                       )}

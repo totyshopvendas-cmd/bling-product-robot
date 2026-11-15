@@ -947,6 +947,10 @@ async def find_bling_product_by_sku(sku: str, max_attempts: Optional[int] = None
     return None
 
 
+# Cache records are only trusted by the bulk screen when they were written by
+# this complete contract. Older cache rows represented a description-only pass.
+ENRICHMENT_CONTRACT_VERSION = 2
+
 _SUPPLIER_CACHE: dict = {}
 
 # JohnDrop's native Bling integration writes the supplier product identifier in
@@ -983,6 +987,42 @@ def _extract_johndrop_id_from_observations(product: Optional[dict]) -> Optional[
     return match.group(1) if match else None
 
 
+def _is_johndrop_supplier(supplier_name: Optional[str]) -> bool:
+    """Only JohnDrop products may replace their source code from Observações."""
+    compact = re.sub(r"[^a-z0-9]+", "", (supplier_name or "").casefold())
+    return "jonh" in compact or "john" in compact
+
+
+def _completion_issues(
+    *,
+    category_id: Optional[int],
+    current: Optional[dict],
+    supplier_ok: bool,
+    supplier_reason: str,
+    expected_variations: int = 0,
+    ready_variations: int = 0,
+) -> list[str]:
+    """Original TotyShop fields that must not silently disappear at the end.
+
+    Existing category is acceptable when the native supplier integration already
+    assigned one; creating an arbitrary new category is never an option.
+    """
+    issues: list[str] = []
+    current_category = ((current or {}).get("categoria") or {}).get("id")
+    if not category_id and not current_category:
+        issues.append("categoria existente não encontrada")
+    images = ((current or {}).get("midia") or {}).get("imagens") or {}
+    if not ((images.get("internas") or []) or (images.get("externas") or [])):
+        issues.append("imagem não sincronizada")
+    if not supplier_ok:
+        issues.append(supplier_reason or "fornecedor não vinculado")
+    if expected_variations and ready_variations < expected_variations:
+        issues.append(
+            f"variações incompletas ({ready_variations}/{expected_variations})"
+        )
+    return issues
+
+
 async def update_bling_product(
     product_id: int,
     current: dict,
@@ -994,19 +1034,13 @@ async def update_bling_product(
     raw_title: str = "",
     raw_description: str = "",
     supplier_name: str = "JONH VARIEDADES",
-) -> bool:
-    """PATCH the Bling product, sending ONLY the fields the TotyShop manual asks
-    us to change. Every other field stays EXACTLY as it came from JohnDrop.
+) -> dict:
+    """Apply the original TotyShop enrichment fields without touching catalog data.
 
-    Fields we touch:
-      1. descricaoCurta (sanitized + bullets)
-      2. descricaoComplementar (6 ou 8 bullets + Ficha Técnica com atributos IA)
-      3. marca (marca real do fabricante OU nome da loja, conforme Configurações → Marca)
-      4. condicao = 1 (Novo)
-      5. tipoProducao = "T" (Terceiros)
-      6. gtin = ""
-      7. gtinEmbalagem = ""
-      (+ categoria when LLM matched one, + fornecedor via separate endpoint)
+    The returned status deliberately separates the product PATCH from the
+    supplier link.  The old flow ignored a missing/failed supplier relation and
+    still labelled the product as enriched, even though supplier code and cost
+    are part of the original project contract.
     """
     parent_name = current.get("nome") or ""
 
@@ -1049,9 +1083,12 @@ async def update_bling_product(
     # fazer upload manual no Bling Dashboard.
     _ = images  # kept for API signature compatibility
 
-    # Supplier collected here, applied AFTER the patch succeeds (separate endpoint)
+    # Supplier collected here, applied AFTER the patch succeeds (separate endpoint).
+    # It is not optional: the original TotyShop workflow requires a supplier,
+    # supplier code and cost whenever the supplier provides them.
     supplier_id = await _find_supplier_id(supplier_name)
     supplier_entry: Optional[dict] = None
+    supplier_reason = ""
     if supplier_id:
         supplier_entry = {
             "produto": {"id": product_id},
@@ -1065,30 +1102,40 @@ async def update_bling_product(
         if cost and cost > 0:
             supplier_entry["precoCusto"] = round(float(cost), 2)
             supplier_entry["precoCompra"] = round(float(cost), 2)
+    else:
+        supplier_reason = f"Fornecedor '{supplier_name}' não foi encontrado no Bling."
 
-    # Send PATCH — this is parcial, never overwrites unspecified fields
+    # Send PATCH — this is parcial, never overwrites unspecified fields.
     resp = await bling_service.bling_request(
         "PATCH", f"/produtos/{product_id}", json=patch_payload,
     )
     if resp.status_code >= 400:
-        await add_log("warning", f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}")
-        return False
+        reason = f"Bling {product_id}: HTTP {resp.status_code} — {resp.text[:800]}"
+        await add_log("warning", reason)
+        return {"ok": False, "reason": reason, "supplier_ok": False}
 
-    # AFTER successful PATCH: link supplier (JONH VARIEDADES) via dedicated endpoint.
+    supplier_ok = False
     if supplier_entry:
         try:
             sr = await bling_service.bling_request(
                 "POST", "/produtos/fornecedores", json=supplier_entry,
             )
-            if sr.status_code >= 400 and "já" not in sr.text.lower():
-                await add_log(
-                    "info",
-                    f"Bling fornecedor {product_id}: HTTP {sr.status_code} — {sr.text[:200]}",
-                )
+            # Bling can respond that the relationship already exists; that is a
+            # valid idempotent result for a re-enrichment.
+            supplier_ok = sr.status_code < 400 or "já" in (sr.text or "").lower()
+            if not supplier_ok:
+                supplier_reason = f"Fornecedor {supplier_name}: HTTP {sr.status_code} — {sr.text[:200]}"
         except Exception as e:
-            await add_log("info", f"Bling fornecedor {product_id}: {e}")
+            supplier_reason = f"Fornecedor {supplier_name}: {e}"
 
-    return True
+    if supplier_reason:
+        await add_log("warning", f"Bling fornecedor {product_id}: {supplier_reason}")
+    return {
+        "ok": True,
+        "supplier_ok": supplier_ok,
+        "supplier_id": supplier_id,
+        "supplier_reason": supplier_reason,
+    }
 
 
 async def _fetch_bling_product_full(product_id: int) -> Optional[dict]:
@@ -1108,6 +1155,10 @@ async def _save_log(sku: str, status: str, message: str, **fields) -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         **fields,
     }
+    if status == "success":
+        # Historical "success" rows were written by a description-only flow;
+        # only this marker represents every required enrichment field verified.
+        doc.setdefault("completion_contract", ENRICHMENT_CONTRACT_VERSION)
     await db.bling_enrichment_logs.insert_one(doc)
 
 
@@ -1154,6 +1205,7 @@ async def _upsert_enriched_cache(product_id: int, sku: str) -> None:
                 "image_url": img_url,
                 "descricao_curta": (full.get("descricaoCurta") or "")[:200],
                 "marca": full.get("marca") or "",
+                "completion_contract": ENRICHMENT_CONTRACT_VERSION,
                 "enriched_at": datetime.now(timezone.utc).isoformat(),
             }},
             upsert=True,
@@ -1267,18 +1319,42 @@ async def enrich_product_by_sku(
     if not sku:
         return {"ok": False, "reason": "sku vazio"}
 
-    # Persist the raw_description AT THE START so bulk re-enrichment can recover it
-    # later (Bling stores enriched HTML in descricaoCurta — the original variation
-    # text from JohnDrop ends up lost otherwise). We upsert by SKU so subsequent
-    # runs don't duplicate the record.
+    # Resolve durable source metadata BEFORE persisting anything.  Bulk and
+    # manual re-enrichment normally call this function without supplier_name;
+    # defaulting first would overwrite a saved TrimPro record as JohnDrop.
+    raw_record: Optional[dict] = None
+    try:
+        raw_record = await db.product_raw.find_one({"sku": sku})
+    except Exception:
+        raw_record = None
+
+    was_missing_description = not raw_description or len(raw_description) < 30
+    if raw_record:
+        if was_missing_description:
+            raw_description = raw_record.get("raw_description") or raw_description
+        johndrop_id = johndrop_id or raw_record.get("johndrop_id")
+        cost = cost if cost is not None else raw_record.get("cost")
+        if not images:
+            images = raw_record.get("images")
+        supplier_name = supplier_name or raw_record.get("supplier_name")
+        if was_missing_description and raw_description:
+            await add_log("info", f"Bling: raw recuperado do Mongo para {sku} ({len(raw_description)} chars)")
+
+    # JohnDrop remains the safe legacy default only when no source was ever
+    # recorded.  A live robot call (TRIMPRO/JONH VARIEDADES) always wins over
+    # the durable record so corrections can repair older data.
+    supplier_name = (supplier_name or "JONH VARIEDADES").strip()
+
+    # Persist the raw supplier text and the RESOLVED source metadata.  This
+    # lets a later bulk pass reproduce source code, cost, images and real
+    # variations even after Bling stores only the generated descriptions.
     if raw_description and len(raw_description) > 30:
-        supplier_name = (supplier_name or "JONH VARIEDADES").strip()
         try:
             await db.product_raw.update_one(
                 {"sku": sku},
                 {"$set": {
                     "sku": sku,
-                    "raw_title": raw_title,
+                    "raw_title": raw_title or (raw_record or {}).get("raw_title") or "",
                     "raw_description": raw_description,
                     "johndrop_id": johndrop_id,
                     "cost": cost,
@@ -1290,25 +1366,6 @@ async def enrich_product_by_sku(
             )
         except Exception as e:
             await add_log("warning", f"Falhou ao persistir raw para {sku}: {e}")
-
-    # If caller passed empty raw_description (typical of bulk re-enrich after a
-    # restart), try to load the persisted version from Mongo.
-    if not raw_description or len(raw_description) < 30:
-        try:
-            doc = await db.product_raw.find_one({"sku": sku})
-            if doc:
-                raw_description = doc.get("raw_description") or raw_description
-                johndrop_id = johndrop_id or doc.get("johndrop_id")
-                cost = cost if cost is not None else doc.get("cost")
-                if not images:
-                    images = doc.get("images")
-                supplier_name = supplier_name or doc.get("supplier_name") or "JONH VARIEDADES"
-                if raw_description:
-                    await add_log("info", f"Bling: raw recuperado do Mongo para {sku} ({len(raw_description)} chars)")
-        except Exception:
-            pass
-
-    supplier_name = (supplier_name or "JONH VARIEDADES").strip()
 
     # Track for live dashboard
     try:
@@ -1345,17 +1402,18 @@ async def enrich_product_by_sku(
     else:
         full_after_sync = await _fetch_bling_product_full(product_id) or product
 
-    # The native JohnDrop integration leaves its product ID in Observações.
-    # Prefer that value when present so the JONH VARIEDADES supplier record in
-    # Bling receives the same code the user sees in the product screen.
-    observation_johndrop_id = _extract_johndrop_id_from_observations(full_after_sync or product)
-    if observation_johndrop_id:
-        if observation_johndrop_id != str(johndrop_id or ""):
-            await add_log(
-                "info",
-                f"Bling: ID JohnDrop {observation_johndrop_id} lido das observações para {sku}",
-            )
-        johndrop_id = observation_johndrop_id
+    # Only JohnDrop's native integration writes its source ID in Observações.
+    # Never overwrite the TrimPro supplier code with an old JohnDrop note when
+    # a product is revisited by bulk enrichment.
+    if _is_johndrop_supplier(supplier_name):
+        observation_johndrop_id = _extract_johndrop_id_from_observations(full_after_sync or product)
+        if observation_johndrop_id:
+            if observation_johndrop_id != str(johndrop_id or ""):
+                await add_log(
+                    "info",
+                    f"Bling: ID JohnDrop {observation_johndrop_id} lido das observações para {sku}",
+                )
+            johndrop_id = observation_johndrop_id
 
     bling_imgs = (full_after_sync.get("midia") or {}).get("imagens") or {}
     bling_internal = [(i.get("link") or "") for i in (bling_imgs.get("internas") or [])]
@@ -1471,7 +1529,7 @@ async def enrich_product_by_sku(
                 # it so the product receives the explicit sortido notice too.
                 payload["descricaoCurta"] = short_desc_html
 
-        ok = await update_bling_product(
+        update_result = await update_bling_product(
             product_id, full, payload,
             johndrop_id=johndrop_id, cost=cost, variations=variations or None,
             images=images,
@@ -1479,131 +1537,192 @@ async def enrich_product_by_sku(
             supplier_name=supplier_name,
         )
     except Exception as e:
-        await add_log("error", f"Bling: PUT falhou para {sku}: {e}")
-        await _save_log(sku, "error", f"PUT: {e}", product_id=product_id)
-        _track(sku, "failed", error=f"PUT: {e}")
+        await add_log("error", f"Bling: PATCH falhou para {sku}: {e}")
+        await _save_log(sku, "error", f"PATCH: {e}", product_id=product_id)
+        _track(sku, "failed", error=f"patch: {e}")
         return {"ok": False, "reason": str(e)}
 
-    if ok:
-        if description_error:
-            reason = f"Descrição aguardando IA: {description_error}"
-            # A real supplier product can already exist in Bling while the AI
-            # service is unavailable. Keep it visible and retryable, but never
-            # present raw/partial text as a completed enrichment.
-            try:
-                await db.enrich_pending.update_one(
-                    {"sku": sku},
-                    {"$set": {
-                        "status": "waiting_ai",
-                        "product_id": product_id,
-                        "needs_llm_retry": True,
-                        "llm_last_error": description_error,
-                        "last_error": reason,
-                        "description_status": "waiting_ai",
-                        "last_check": datetime.now(timezone.utc).isoformat(),
-                    }},
-                )
-            except Exception:
-                pass
-            await _save_log(sku, "waiting_ai", reason, product_id=product_id)
-            _track(sku, "waiting_ai", product_id=product_id, error=reason)
-            return {
-                "ok": False,
-                "reason": reason,
-                "needs_ai_retry": True,
-                "product_id": product_id,
-            }
+    if not update_result.get("ok"):
+        reason = update_result.get("reason") or "patch_failed"
+        await _save_log(sku, "error", reason, product_id=product_id)
+        _track(sku, "failed", error=reason)
+        return {"ok": False, "reason": reason, "product_id": product_id}
 
-        await add_log(
-            "success",
-            f"Bling enriquecido: {sku} (descrição curta + {len(bullets)} bullets; cat={category_id})",
-        )
-        await _save_log(
-            sku, "success", "enriquecido",
-            product_id=product_id,
-            short_description=short_desc,
-            bullets=bullets,
-            category_id=category_id,
-            johndrop_id=johndrop_id,
-            cost=cost,
-            variations=variations,
-        )
-        # Cache for fast /ad/products listing
-        await _upsert_enriched_cache(product_id, sku)
-        # AFTER successful enrichment: try to create variations (color/size).
-        # This NEVER raises — if Bling rejects, only a warning is logged.
-        variations_created = 0
-        if variations:
-            try:
-                import bling_variations
-                # Re-fetch product to get latest state (after the PUT just done)
-                latest = await _fetch_bling_product_full(product_id) or full
-                # Parse explicit per-variation quantities from description (e.g. "Rosa: 5")
-                explicit_qty = _parse_variation_quantities(raw_description, variations)
-                if explicit_qty:
-                    await add_log(
-                        "info",
-                        f"Quantidades específicas detectadas: {explicit_qty}",
-                    )
-                result = await bling_variations.create_variations(
-                    product_id, latest, variations, total_stock=0,
-                    parent_images=images, explicit_quantities=explicit_qty or None,
-                )
-                variations_created = result.get("created", 0)
-            except Exception as e:
-                await add_log("warning", f"Variações pós-enrich falharam para {sku}: {e}")
-        # Keep direct/bulk enrichment in the same finished state as the worker.
-        # It also clears a former "waiting_ai" marker after a successful retry.
+    if description_error:
+        reason = f"Descrição aguardando IA: {description_error}"
+        # A real supplier product can already exist in Bling while the AI
+        # service is unavailable. Keep it visible and retryable, but never
+        # present raw/partial text as a completed enrichment.
         try:
             await db.enrich_pending.update_one(
                 {"sku": sku},
                 {"$set": {
-                    "status": "done",
+                    "status": "waiting_ai",
                     "product_id": product_id,
-                    "description_status": "complete",
-                    "description_bullets": len(bullets),
-                    "finished_at": datetime.now(timezone.utc).isoformat(),
-                }, "$unset": {
-                    "needs_llm_retry": "",
-                    "llm_last_error": "",
-                    "last_error": "",
+                    "needs_llm_retry": True,
+                    "llm_last_error": description_error,
+                    "last_error": reason,
+                    "description_status": "waiting_ai",
+                    "last_check": datetime.now(timezone.utc).isoformat(),
                 }},
             )
         except Exception:
             pass
-        _track(sku, "done", product_id=product_id,
-               variations_detected=len(variations) if variations else 0,
-               variations_created=variations_created)
+        await _save_log(sku, "waiting_ai", reason, product_id=product_id)
+        _track(sku, "waiting_ai", product_id=product_id, error=reason)
         return {
-            "ok": True,
+            "ok": False,
+            "reason": reason,
+            "needs_ai_retry": True,
             "product_id": product_id,
-            "category_id": category_id,
-            "description_bullets": len(bullets),
-            "variations_detected": len(variations) if variations else 0,
-            "variations_created": variations_created,
         }
 
-    await add_log("warning", f"Bling: PUT retornou erro para {sku}")
-    await _save_log(sku, "error", "PUT retornou status >= 400", product_id=product_id)
-    _track(sku, "failed", error="put_failed")
-    return {"ok": False, "reason": "put_failed"}
+    # Variations belong to the original enrichment contract.  A supplier's
+    # explicit option list cannot fail silently after the descriptions succeed.
+    variations_created = 0
+    variations_ready = 0
+    if variations:
+        try:
+            import bling_variations
+            latest = await _fetch_bling_product_full(product_id) or full
+            explicit_qty = _parse_variation_quantities(raw_description, variations)
+            if explicit_qty:
+                await add_log("info", f"Quantidades específicas detectadas: {explicit_qty}")
+            variation_result = await bling_variations.create_variations(
+                product_id, latest, variations, total_stock=0,
+                parent_images=images, explicit_quantities=explicit_qty or None,
+            )
+            variations_created = int(variation_result.get("created") or 0)
+            # `ready` is verified by bling_variations after a POST/PATCH.  Keep
+            # the fallback for older/third-party implementations of the helper.
+            variations_ready = int(
+                variation_result.get(
+                    "ready",
+                    variations_created + int(variation_result.get("skipped") or 0),
+                ) or 0
+            )
+        except Exception as e:
+            await add_log("warning", f"Variações pós-enrich falharam para {sku}: {e}")
+
+    issues = _completion_issues(
+        category_id=category_id,
+        current=full,
+        supplier_ok=bool(update_result.get("supplier_ok")),
+        supplier_reason=update_result.get("supplier_reason") or "",
+        expected_variations=len(variations),
+        ready_variations=variations_ready,
+    )
+    if issues:
+        reason = "Revisão necessária: " + "; ".join(issues)
+        try:
+            await db.enrich_pending.update_one(
+                {"sku": sku},
+                {"$set": {
+                    "status": "needs_review",
+                    "product_id": product_id,
+                    "last_error": reason,
+                    "completion_issues": issues,
+                    "description_status": "complete",
+                    "description_bullets": len(bullets),
+                    "last_check": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+        except Exception:
+            pass
+        await _save_log(
+            sku, "needs_review", reason, product_id=product_id,
+            short_description=short_desc, bullets=bullets, category_id=category_id,
+            johndrop_id=johndrop_id, cost=cost, variations=variations,
+        )
+        _track(sku, "needs_review", product_id=product_id, error=reason)
+        return {
+            "ok": False,
+            "reason": reason,
+            "needs_review": True,
+            "product_id": product_id,
+        }
+
+    await add_log(
+        "success",
+        f"Bling enriquecido: {sku} (descrição curta + {len(bullets)} bullets; cat={category_id})",
+    )
+    await _save_log(
+        sku, "success", "enriquecido",
+        product_id=product_id,
+        short_description=short_desc,
+        bullets=bullets,
+        category_id=category_id,
+        johndrop_id=johndrop_id,
+        cost=cost,
+        variations=variations,
+    )
+    # Cache only products that completed every original enrichment field.
+    await _upsert_enriched_cache(product_id, sku)
+    try:
+        await db.enrich_pending.update_one(
+            {"sku": sku},
+            {"$set": {
+                "status": "done",
+                "product_id": product_id,
+                "description_status": "complete",
+                "description_bullets": len(bullets),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }, "$unset": {
+                "needs_llm_retry": "",
+                "llm_last_error": "",
+                "last_error": "",
+                "completion_issues": "",
+            }},
+        )
+    except Exception:
+        pass
+    _track(sku, "done", product_id=product_id,
+           variations_detected=len(variations) if variations else 0,
+           variations_created=variations_created)
+    return {
+        "ok": True,
+        "product_id": product_id,
+        "category_id": category_id,
+        "description_bullets": len(bullets),
+        "variations_detected": len(variations) if variations else 0,
+        "variations_created": variations_created,
+    }
 
 
 async def get_enrichment_logs(limit: int = 100) -> list:
     cur = db.bling_enrichment_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(limit)
-    return await cur.to_list(limit)
+    rows = await cur.to_list(limit)
+    # Do not display a legacy description-only result as "Concluído". Keep
+    # the original row intact in Mongo; this is a safe presentation migration.
+    for row in rows:
+        if (
+            row.get("status") == "success"
+            and row.get("completion_contract") != ENRICHMENT_CONTRACT_VERSION
+        ):
+            row["status"] = "needs_review"
+            row["message"] = f"Verificação completa pendente: {row.get('message') or 'resultado anterior'}"
+    return rows
 
 
 async def get_enrichment_stats() -> dict:
     total = await db.bling_enrichment_logs.count_documents({})
-    success = await db.bling_enrichment_logs.count_documents({"status": "success"})
+    success = await db.bling_enrichment_logs.count_documents({
+        "status": "success",
+        "completion_contract": ENRICHMENT_CONTRACT_VERSION,
+    })
     errors = await db.bling_enrichment_logs.count_documents({"status": "error"})
     not_found = await db.bling_enrichment_logs.count_documents({"status": "not_found"})
     waiting_ai = await db.bling_enrichment_logs.count_documents({"status": "waiting_ai"})
+    needs_review = await db.bling_enrichment_logs.count_documents({"status": "needs_review"})
+    legacy_success = await db.bling_enrichment_logs.count_documents({
+        "status": "success",
+        "completion_contract": {"$ne": ENRICHMENT_CONTRACT_VERSION},
+    })
     return {
         "total": total,
         "success": success,
         "errors": errors,
         "not_found": not_found,
         "waiting_ai": waiting_ai,
+        "needs_review": needs_review + legacy_success,
     }
