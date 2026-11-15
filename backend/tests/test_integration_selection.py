@@ -199,6 +199,16 @@ def test_native_category_guard_targets_johndrop_meli_field_even_without_html_req
     assert "identity(el) === 'selcategorymeli'" in script
 
 
+def test_johndrop_root_meli_category_is_filled_even_if_subcategory_element_exists():
+    """A disabled subcategory is absent from POST, so root Meli must remain set."""
+    script = marketplace_category._CATEGORY_FIELD_PROBE
+
+    assert "meliCategories.concat(subcategoriesToFill)" in script
+    assert "meliSubcategories.length ? meliSubcategories" not in script
+    assert "new FormData(form).getAll(select.name)" in script
+    assert "valor não confirmado no envio" in script
+
+
 def test_native_category_guard_rechecks_fields_revealed_by_category_selection():
     page = CategoryPage(
         {
