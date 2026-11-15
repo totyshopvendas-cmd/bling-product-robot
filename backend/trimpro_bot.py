@@ -22,7 +22,6 @@ if (
 
 from datetime import datetime, timezone
 from typing import Optional, Tuple
-from urllib.parse import urljoin
 
 from title_cleaner import clean_title
 from pricing_service import lookup_price
@@ -489,9 +488,10 @@ async def _select_integration(page) -> bool:
 async def diagnose_integration_controls() -> dict:
     """Read integration radios from one TrimPro form without changing products.
 
-    The diagnostic logs in, applies TrimPro's catalog list filter, follows an
-    existing create form by GET, then reads DOM metadata. It never fills a
-    product field, selects an integration, submits, or records a product.
+    The diagnostic logs in, applies TrimPro's catalog list filter, opens an
+    existing create form through its catalog control, then reads DOM metadata.
+    It never fills a product field, selects an integration, submits, or records
+    a product.
     """
     if trimpro_robot.state == "running" or (trimpro_robot.task and not trimpro_robot.task.done()):
         return {"ok": False, "detail": "Robô TrimPro está em execução"}
@@ -522,16 +522,15 @@ async def diagnose_integration_controls() -> dict:
                 # pending create links are rendered; it never changes a product.
                 await _open_catalog(page)
                 cards = await page.query_selector_all(CARD_SELECTOR)
-                create_url = ""
-                for card in cards:
-                    href = (await card.get_attribute("href") or "").strip()
-                    if "/createv2/" in href:
-                        create_url = urljoin(TRIMPRO_CATALOG_BASE_URL, href)
-                        break
-                if not create_url:
-                    return {"ok": False, "detail": "Nenhum link de formulário TrimPro foi encontrado"}
+                if not cards:
+                    return {"ok": False, "detail": "Nenhum controle de formulário TrimPro foi encontrado"}
 
-                await page.goto(create_url, wait_until="domcontentloaded", timeout=60000)
+                try:
+                    async with page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+                        await cards[0].click()
+                except Exception as exc:
+                    if "/createv2/" not in (page.url or ""):
+                        return {"ok": False, "detail": f"Não foi possível abrir o formulário TrimPro: {str(exc)[:180]}"}
                 await page.wait_for_timeout(750)
                 snapshot = await snapshot_integration_controls(page)
                 return {
