@@ -11,16 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 
-# The probe deliberately scopes a checked marker to the *TotyShop-Bling* card.
-# Some supplier forms render all integration choices inside one generic .card;
-# accepting any checked radio inside that ancestor can incorrectly treat Shopee
-# as the selected TotyShop-Bling integration.
+# The probe scopes a checked marker to the TotyShop-Bling control. Some supplier
+# forms render every integration card inside one generic wrapper; accepting a
+# checked radio from that wrapper could otherwise treat Shopee as Bling.
 #
-# The supplier pages in production also contain repeated Bling-looking cards.
-# The operator-established card position is therefore an additional invariant:
-# JohnDrop uses the fourth integration card and TrimPro uses the third one.
-# A card at that position must still have the TotyShop-Bling label, otherwise
-# the probe fails closed rather than falling back to a lookalike card.
+# The operator confirmed the visible native-radio order for each portal:
+# JohnDrop uses radio 4 and TrimPro uses radio 3. We deliberately order radios,
+# not containers whose repeated/nested HTML can differ from the visual cards.
 _SELECT_INTEGRATION_PROBE = r"""
 (config) => {
     const normalize = (value) => (value || '')
@@ -44,21 +41,44 @@ _SELECT_INTEGRATION_PROBE = r"""
         controls.push(...root.querySelectorAll(controlSelector));
         return controls;
     };
-    const controlMatches = (input) => {
-        const labels = input.labels && input.labels.length
-            ? Array.from(input.labels).map((label) => label.innerText || label.textContent).join(' ')
-            : '';
-        const context = `${input.value || ''} ${input.name || ''} ${input.id || ''} ${input.getAttribute('aria-label') || ''} ${labels}`;
-        return normalize(context).includes(wanted);
+    const labelsFor = (input) => input.labels && input.labels.length
+        ? Array.from(input.labels)
+        : [];
+    const visibleControl = (input) => visible(input) || labelsFor(input).some(visible);
+    const rectFor = (input) => {
+        if (visible(input)) return input.getBoundingClientRect();
+        const label = labelsFor(input).find(visible);
+        return label ? label.getBoundingClientRect() : input.getBoundingClientRect();
     };
+    const rootForControl = (input) => {
+        // Start at the parent so a visible input itself is not mistaken for a
+        // card. Prefer the nearest one-control ancestor that has card text.
+        let root = input.parentElement;
+        let fallback = input;
+        while (root && root !== document.body) {
+            const controls = controlsIn(root);
+            if (visible(root) && controls.length === 1) {
+                fallback = root;
+                if (String(root.innerText || root.textContent || '').trim()) return root;
+            }
+            root = root.parentElement;
+        }
+        return fallback;
+    };
+    const controlContext = (input, root = rootForControl(input)) => {
+        const labels = labelsFor(input).map((label) => label.innerText || label.textContent).join(' ');
+        return normalize(
+            `${input.value || ''} ${input.name || ''} ${input.id || ''} `
+            + `${input.getAttribute('aria-label') || ''} ${labels} `
+            + `${root?.innerText || root?.textContent || ''}`
+        );
+    };
+    const controlMatches = (input) => controlContext(input).includes(wanted);
     const rootFor = (candidate) => {
         let root = candidate;
         while (root && root !== document.body) {
             const text = normalize(root.innerText || root.textContent);
             const controls = controlsIn(root);
-            // A target card is safe when its own text is exactly the target,
-            // it owns a control whose label/value names the target, or it has
-            // exactly one control and no other integration labels.
             if (
                 text === wanted
                 || controls.some(controlMatches)
@@ -67,18 +87,6 @@ _SELECT_INTEGRATION_PROBE = r"""
             root = root.parentElement;
         }
         return candidate;
-    };
-    const integrationRootFor = (candidate) => {
-        let root = candidate;
-        while (root && root !== document.body) {
-            const text = normalize(root.innerText || root.textContent);
-            const controls = controlsIn(root);
-            // Each visible supplier integration card owns exactly one radio.
-            // Do not use an outer wrapper: it can contain every integration.
-            if (visible(root) && controls.length === 1 && text.includes('totyshop')) return root;
-            root = root.parentElement;
-        }
-        return null;
     };
     const targetControl = (root) => {
         const controls = controlsIn(root);
@@ -91,30 +99,37 @@ _SELECT_INTEGRATION_PROBE = r"""
         const text = normalize(root.innerText || root.textContent);
         return controls.length === 1 && text.includes(wanted) ? controls[0] : null;
     };
-    const selected = (root) => {
-        const control = targetControl(root);
-        if (control) return Boolean(control.checked);
-        // Custom radio cards may not expose a native input. Check only the
-        // target root itself, never a selected marker inherited from a sibling.
-        const state = `${root.getAttribute('aria-checked') || ''} ${root.getAttribute('data-state') || ''} ${root.className || ''}`.toLowerCase();
-        return root.getAttribute('aria-checked') === 'true'
-            || root.getAttribute('data-state') === 'checked'
-            || /(?:^|[\s_-])(selected|active|checked)(?:$|[\s_-])/.test(state);
+    const selected = (root, control = targetControl(root)) => {
+        if (control?.checked) return true;
+        // Custom radio cards may not expose a native checked property. Inspect
+        // only this card and its own descendants, never a generic parent.
+        const marked = [root, ...Array.from(root.querySelectorAll('*'))];
+        return marked.some((el) => {
+            const state = `${el.getAttribute('aria-checked') || ''} ${el.getAttribute('data-state') || ''} ${el.className || ''}`.toLowerCase();
+            return el.getAttribute('aria-checked') === 'true'
+                || el.getAttribute('data-state') === 'checked'
+                || /(?:^|[\s_-])(selected|active|checked)(?:$|[\s_-])/.test(state);
+        });
     };
-    const choose = (root, position) => {
+    const choose = (root, position, exactControl = null) => {
+        const control = exactControl || targetControl(root);
         const positionDetail = position ? ` no ${position}º ícone` : '';
-        if (selected(root)) {
+        if (selected(root, control)) {
             return { found: true, selected: true, detail: `TotyShop-Bling já estava selecionada${positionDetail}` };
         }
         try {
             root.scrollIntoView({ block: 'center', inline: 'nearest' });
             root.click();
         } catch (_) {}
-        const control = targetControl(root);
         if (control && !control.checked) {
-            try { control.click(); } catch (_) {}
+            // A label click is needed by some controlled Bootstrap cards; a
+            // direct input click is the final, exact fallback for this card.
+            try { labelsFor(control).find(visible)?.click(); } catch (_) {}
+            if (!control.checked) {
+                try { control.click(); } catch (_) {}
+            }
         }
-        if (selected(root)) {
+        if (selected(root, control)) {
             return { found: true, selected: true, detail: `TotyShop-Bling selecionada e confirmada${positionDetail}` };
         }
         return {
@@ -125,46 +140,35 @@ _SELECT_INTEGRATION_PROBE = r"""
     };
 
     if (expectedPosition) {
-        // Cards are collected by their own radio/checkbox and sorted in the
-        // visual order shown to the operator. This avoids a duplicate label
-        // elsewhere in the form winning merely because it appears first in
-        // DOM order.
-        const cardRoots = [];
-        const addCard = (candidate) => {
-            const root = integrationRootFor(candidate);
-            if (root && !cardRoots.includes(root)) cardRoots.push(root);
-        };
-        Array.from(document.querySelectorAll(controlSelector)).forEach(addCard);
-        Array.from(document.querySelectorAll(
-            'label, button, [role="radio"], [role="checkbox"], [data-integration], [data-testid], div, span'
-        )).filter((el) => {
-            const text = normalize(el.innerText || el.textContent);
-            return visible(el) && text.startsWith('totyshop');
-        }).forEach(addCard);
-        cardRoots.sort((left, right) => {
-            const a = left.getBoundingClientRect();
-            const b = right.getBoundingClientRect();
-            // A portal can wrap cards onto a second line; use row then column.
-            if (Math.abs(a.top - b.top) > 12) return a.top - b.top;
-            return a.left - b.left;
-        });
-        const root = cardRoots[expectedPosition - 1];
-        if (!root) {
+        // The visible radios are the controls the operator sees as the circles
+        // beside each integration. Sort them by screen row then column; do not
+        // count nested divs, duplicate labels, or generic card wrappers.
+        const integrationControls = Array.from(document.querySelectorAll(controlSelector))
+            .filter(visibleControl)
+            .map((input) => ({ input, root: rootForControl(input) }))
+            .filter(({ input, root }) => controlContext(input, root).includes('totyshop'))
+            .sort((left, right) => {
+                const a = rectFor(left.input);
+                const b = rectFor(right.input);
+                if (Math.abs(a.top - b.top) > 12) return a.top - b.top;
+                return a.left - b.left;
+            });
+        const entry = integrationControls[expectedPosition - 1];
+        if (!entry) {
             return {
                 found: false,
                 selected: false,
-                detail: `${expectedPosition}º ícone TotyShop-Bling não encontrado; ${cardRoots.length} cartões TotyShop visíveis`,
+                detail: `${expectedPosition}º ícone TotyShop-Bling não encontrado; ${integrationControls.length} rádios de integração visíveis`,
             };
         }
-        const actual = normalize(root.innerText || root.textContent);
-        if (!actual.includes(wanted)) {
+        if (!controlContext(entry.input, entry.root).includes(wanted)) {
             return {
                 found: false,
                 selected: false,
                 detail: `${expectedPosition}º ícone não é TotyShop-Bling; seleção bloqueada`,
             };
         }
-        return choose(root, expectedPosition);
+        return choose(entry.root, expectedPosition, entry.input);
     }
 
     const textCandidates = Array.from(document.querySelectorAll(
@@ -228,7 +232,7 @@ async def select_required_integration(
     """Select and verify exactly the requested supplier integration.
 
     A target-specific checked state is mandatory. If ``expected_position`` is
-    supplied, that one-based visual card position must also be TotyShop-Bling.
+    supplied, that one-based visual radio position must also be TotyShop-Bling.
     If either condition is not met, callers stop before submitting the product.
     """
     target = (integration_name or "").strip()

@@ -82,19 +82,30 @@ def test_target_probe_never_accepts_a_checked_sibling_in_generic_card():
     script = integration_selection._SELECT_INTEGRATION_PROBE
 
     assert "controls.some((input) => input.checked)" not in script
-    assert "const control = targetControl(root);" in script
+    assert "const control = exactControl || targetControl(root);" in script
     assert "TotyShop-Bling foi localizada, mas sua seleção não foi confirmada" in script
 
 
-def test_positioned_selector_uses_visual_card_order_and_blocks_a_wrong_card():
-    """A duplicate Bling label cannot override the user-confirmed card index."""
+def test_positioned_selector_uses_native_visible_radio_order_and_blocks_a_wrong_card():
+    """Nested labels/wrappers cannot change the user-confirmed icon index."""
     script = integration_selection._SELECT_INTEGRATION_PROBE
 
-    assert "const root = cardRoots[expectedPosition - 1];" in script
+    assert "const entry = integrationControls[expectedPosition - 1];" in script
+    assert "Array.from(document.querySelectorAll(controlSelector))" in script
+    assert ".filter(visibleControl)" in script
     assert "a.top - b.top" in script
     assert "a.left - b.left" in script
     assert "ícone não é TotyShop-Bling; seleção bloqueada" in script
-    assert "Do not use an outer wrapper" in script
+    assert "count nested divs, duplicate labels, or generic card wrappers" in script
+
+
+def test_positioned_selector_clicks_the_exact_native_control_not_a_matching_sibling():
+    script = integration_selection._SELECT_INTEGRATION_PROBE
+
+    assert "return choose(entry.root, expectedPosition, entry.input);" in script
+    assert "const control = exactControl || targetControl(root);" in script
+    assert "labelsFor(control).find(visible)?.click()" in script
+    assert "control.click()" in script
 
 
 def test_both_supplier_robots_use_the_same_verified_integration_guard():
