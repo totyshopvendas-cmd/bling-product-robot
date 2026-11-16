@@ -28,15 +28,18 @@ from pricing_service import lookup_price
 from integration_selection import select_required_integration
 from integration_diagnostic import snapshot_integration_controls
 from marketplace_category import ensure_required_marketplace_category
-from submission_confirmation import confirm_supplier_submission
+from submission_confirmation import (
+    confirm_silent_submission_from_catalog,
+    confirm_supplier_submission,
+)
 from robot_service import robot, add_log
 from db import db
 
 
 # ---------------------------------------------------------------------------
-# Persistent memory — a confirmed JohnDrop cadastro must never be retried.
-# The supplier catalog filter can update after a delay, so keep durable source
-# keys as the final protection against duplicate registrations.
+# Persistent memory — confirmed JohnDrop cadastros use the durable no-repeat
+# registry. Inconclusive post-click results use a separate review quarantine:
+# it prevents retries without ever being recorded as a confirmed cadastro.
 # ---------------------------------------------------------------------------
 def _source_key(value: str) -> str:
     match = re.search(r"/createv2/(\d+)", value or "")
@@ -63,12 +66,22 @@ async def _load_processed_keys() -> set:
                 key = str(key or "").strip()
                 if key:
                     keys.add(key)
+
+        # A silent click without a legitimate confirmation is neither a
+        # success nor a no-repeat cadastro. It is separately quarantined for
+        # review, but its source keys still must be skipped by future runs.
+        review = db.johndrop_submission_review.find({}, {"_id": 0, "key": 1})
+        async for doc in review:
+            key = str(doc.get("key") or "").strip()
+            if key:
+                keys.add(key)
     except Exception as exc:
         await add_log("warning", f"Não consegui carregar histórico JohnDrop: {exc}")
     return keys
 
 
 async def _remember_processed(keys: list[str]) -> None:
+    """Persist only a legitimately confirmed JohnDrop cadastro."""
     now = datetime.now(timezone.utc).isoformat()
     for key in keys:
         key = str(key or "").strip()
@@ -82,6 +95,23 @@ async def _remember_processed(keys: list[str]) -> None:
             )
         except Exception as exc:
             await add_log("warning", f"Não consegui guardar histórico JohnDrop: {exc}")
+
+
+async def _quarantine_submission_review(keys: list[str]) -> None:
+    """Block an unconfirmed click from retry without recording it as success."""
+    now = datetime.now(timezone.utc).isoformat()
+    for key in keys:
+        key = str(key or "").strip()
+        if not key:
+            continue
+        try:
+            await db.johndrop_submission_review.update_one(
+                {"key": key},
+                {"$set": {"key": key, "status": "pending_review", "updated_at": now}},
+                upsert=True,
+            )
+        except Exception as exc:
+            await add_log("warning", f"Não consegui bloquear revisão JohnDrop: {exc}")
 
 
 JOHNDROP_LOGIN_URL = "https://app.jonhdrop.com.br/login"
@@ -885,10 +915,23 @@ def _parse_brl_number(text: str) -> float:
         return 0.0
 
 
-async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: str) -> bool:
-    """Click the green 'Criar Produto' button and wait for the post-submit redirect to settle."""
+async def _submit_product(
+    page,
+    cleaned_title: str,
+    sale_price: int,
+    raw_title: str,
+    source_href: str = "",
+    source_key: str = "",
+) -> dict:
+    """Submit once and return a confirmed or safely blocked supplier outcome.
+
+    A silent portal response gets a read-only catalog reconciliation before it
+    can be accepted. If that reconciliation is inconclusive, the source is
+    later persisted for manual review instead of being retried automatically.
+    """
+    clicked = False
+    review_required = False
     try:
-        clicked = False
         for sel in [
             'button:has-text("Criar Produto")',
             'button.btn-success:has-text("Criar")',
@@ -902,12 +945,40 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
                 break
         if not clicked:
             await add_log("error", "Botão 'Criar Produto' não encontrado", raw_title=raw_title)
-            return False
+            return {"confirmed": False, "uncertain": False}
 
         # A click is not enough: reject a form that remains on /createv2
-        # without either a redirect or an explicit supplier success message.
+        # without either a redirect or explicit supplier feedback. A silent
+        # state receives a read-only catalog reconciliation below.
         await page.wait_for_timeout(2500)
         confirmation = await confirm_supplier_submission(page)
+        if not confirmation["confirmed"] and confirmation.get("catalog_verification_needed"):
+            # A silent post-click state cannot be retried automatically even
+            # when the catalog still shows the item: supplier propagation can
+            # lag and only an explicit provider error is a proven rejection.
+            review_required = True
+            catalog_confirmation = await confirm_silent_submission_from_catalog(
+                page,
+                source_href=source_href,
+                source_key=source_key,
+                refresh_catalog=_open_catalog,
+                card_selector=CARD_SELECTOR,
+            )
+            if catalog_confirmation["confirmed"]:
+                confirmation = catalog_confirmation
+                await add_log(
+                    "info",
+                    f"Cadastro JohnDrop confirmado por conferência do catálogo: {confirmation['detail']}",
+                    raw_title=raw_title,
+                    cleaned_title=cleaned_title,
+                )
+            else:
+                confirmation["detail"] = (
+                    f"{confirmation['detail']}; conferência do catálogo: "
+                    f"{catalog_confirmation['detail']}"
+                )[:300]
+                confirmation["uncertain"] = bool(catalog_confirmation.get("uncertain"))
+
         if not confirmation["confirmed"]:
             await add_log(
                 "error",
@@ -915,7 +986,11 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
                 raw_title=raw_title,
                 cleaned_title=cleaned_title,
             )
-            return False
+            return {
+                "confirmed": False,
+                "uncertain": bool(confirmation.get("uncertain")),
+                "review_required": review_required,
+            }
         await page.wait_for_timeout(1500)
 
         await add_log(
@@ -925,10 +1000,14 @@ async def _submit_product(page, cleaned_title: str, sale_price: int, raw_title: 
             cleaned_title=cleaned_title,
             sale_price=sale_price,
         )
-        return True
+        return {"confirmed": True, "uncertain": False}
     except Exception as e:
         await add_log("error", f"Falha ao submeter: {e}", raw_title=raw_title)
-        return False
+        return {
+            "confirmed": False,
+            "uncertain": bool(clicked),
+            "review_required": bool(clicked),
+        }
 
 
 async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
@@ -1049,6 +1128,7 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
 
     # 8. Submit (or just log if dry-run)
     submitted_ok = False
+    submission = {"confirmed": False, "uncertain": False}
     if dry_run:
         await add_log(
             "info",
@@ -1059,47 +1139,69 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         )
         robot.success += 1
         submitted_ok = True
-    elif await _submit_product(page, cleaned["cleaned"], price.sale_price_int, raw_title):
-        robot.success += 1
-        submitted_ok = True
-        # ARQUITETURA: o robô JohnDrop SÓ cadastra. NÃO dispara enriquecimento
-        # imediatamente — JohnDrop sincroniza com Bling de forma assíncrona
-        # (5-15 min) e durante esse período o produto fica sem imagens/estoque.
-        # Em vez disso, salvamos o SKU em `enrich_pending` e um worker periódico
-        # detecta quando o produto está completo no Bling e dispara o enriquecimento.
-        if sku:
-            try:
-                from db import db as _db
-                from datetime import datetime, timezone
-                await _db.enrich_pending.update_one(
-                    {"sku": sku},
-                    {"$set": {
-                        "sku": sku,
-                        "raw_title": cleaned["cleaned"],
-                        "raw_description": raw_description,
-                        "johndrop_id": johndrop_id,
-                        "cost": cost,
-                        "images": raw_images,
-                        "status": "pending",
-                        "queued_at": datetime.now(timezone.utc).isoformat(),
-                        "attempts": 0,
-                    }},
-                    upsert=True,
-                )
-                await add_log(
-                    "info",
-                    f"Produto {sku} cadastrado na JohnDrop. Aguardando sync→Bling. "
-                    "Worker vai enriquecer automaticamente quando estiver completo.",
-                )
-            except Exception as e:
-                await add_log("warning", f"Falhou ao agendar enriquecimento de {sku}: {e}")
     else:
-        robot.failed += 1
+        submission = await _submit_product(
+            page,
+            cleaned["cleaned"],
+            price.sale_price_int,
+            raw_title,
+            source_href=chosen_href,
+            source_key=johndrop_id or _source_key(chosen_href),
+        )
+        if submission["confirmed"]:
+            robot.success += 1
+            submitted_ok = True
+            # ARQUITETURA: o robô JohnDrop SÓ cadastra. NÃO dispara enriquecimento
+            # imediatamente — JohnDrop sincroniza com Bling de forma assíncrona
+            # (5-15 min) e durante esse período o produto fica sem imagens/estoque.
+            # Em vez disso, salvamos o SKU em `enrich_pending` e um worker periódico
+            # detecta quando o produto está completo no Bling e dispara o enriquecimento.
+            if sku:
+                try:
+                    from db import db as _db
+                    from datetime import datetime, timezone
+                    await _db.enrich_pending.update_one(
+                        {"sku": sku},
+                        {"$set": {
+                            "sku": sku,
+                            "raw_title": cleaned["cleaned"],
+                            "raw_description": raw_description,
+                            "johndrop_id": johndrop_id,
+                            "cost": cost,
+                            "images": raw_images,
+                            "status": "pending",
+                            "queued_at": datetime.now(timezone.utc).isoformat(),
+                            "attempts": 0,
+                        }},
+                        upsert=True,
+                    )
+                    await add_log(
+                        "info",
+                        f"Produto {sku} cadastrado na JohnDrop. Aguardando sync→Bling. "
+                        "Worker vai enriquecer automaticamente quando estiver completo.",
+                    )
+                except Exception as e:
+                    await add_log("warning", f"Falhou ao agendar enriquecimento de {sku}: {e}")
+        else:
+            robot.failed += 1
+            if submission.get("review_required"):
+                review_keys = [chosen_href, johndrop_id, sku]
+                await _quarantine_submission_review(review_keys)
+                for key in review_keys:
+                    if key:
+                        seen_skus.add(key)
+                await add_log(
+                    "warning",
+                    "Cadastro JohnDrop sem confirmação conclusiva; item em revisão e bloqueado para não repetir automaticamente",
+                    raw_title=raw_title,
+                    cleaned_title=cleaned["cleaned"],
+                )
 
     robot.processed += 1
 
-    # Only a confirmed real submit enters the durable no-repeat registry.
-    # Failed and dry-run products stay available for a future corrected run.
+    # Only a confirmed submit enters the durable no-repeat registry. A silent,
+    # inconclusive click enters the separate review quarantine; explicit
+    # failures and dry-runs stay available for a future corrected run.
     if submitted_ok and not dry_run:
         confirmed_keys = [chosen_href, johndrop_id, sku]
         await _remember_processed(confirmed_keys)

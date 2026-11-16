@@ -43,6 +43,25 @@ def test_trimpro_remembers_confirmed_cadastros_across_later_runs():
     assert trimpro_bot._source_key(href) == source_id
 
 
+def test_trimpro_blocks_an_inconclusive_submission_without_marking_it_confirmed():
+    source_id = str(time.time_ns())
+    href = f"/dashboard/product/createv2/{source_id}"
+
+    async def run():
+        await trimpro_bot._quarantine_submission_review([href, source_id])
+        keys = await trimpro_bot._load_processed_keys()
+        review = await db.trimpro_submission_review.find_one({"key": source_id}, {"_id": 0})
+        confirmed = await db.trimpro_processed.find_one({"key": source_id}, {"_id": 0})
+        await db.trimpro_submission_review.delete_many({"key": {"$in": [href, source_id]}})
+        return keys, review, confirmed
+
+    keys, review, confirmed = asyncio.run(run())
+    assert href in keys
+    assert source_id in keys
+    assert review["status"] == "pending_review"
+    assert confirmed is None
+
+
 def test_trimpro_reads_visible_title_below_nome_not_blank_input():
     source = trimpro_bot._choose_trimpro_source_title([
         {"text": "NOME", "distance": 90},

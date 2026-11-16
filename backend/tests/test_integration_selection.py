@@ -254,6 +254,224 @@ def test_submission_rejects_visible_provider_validation_error():
     assert page.wait_calls == []
 
 
+def test_silent_supplier_response_requests_catalog_reconciliation_not_success():
+    page = ConfirmationPage({}, redirects=False)
+
+    result = asyncio.run(submission_confirmation.confirm_supplier_submission(page))
+
+    assert result == {
+        "confirmed": False,
+        "detail": "o fornecedor não confirmou o cadastro nem redirecionou a página",
+        "catalog_verification_needed": True,
+    }
+    assert page.wait_calls
+
+
+class CatalogCard:
+    def __init__(self, reference):
+        self.reference = reference
+
+    async def evaluate(self, script):
+        assert "outerHTML" in script
+        return self.reference
+
+
+class CatalogVerificationPage:
+    def __init__(self, states, cards_by_refresh, empty_states=None):
+        self.states = states
+        self.cards_by_refresh = cards_by_refresh
+        self.empty_states = empty_states or [False]
+        self.refreshes = 0
+        self.waits = []
+
+    async def evaluate(self, script):
+        index = min(max(self.refreshes - 1, 0), len(self.states) - 1)
+        if script == submission_confirmation._CATALOG_FILTER_STATE_PROBE:
+            return self.states[index]
+        if script == submission_confirmation._CATALOG_EMPTY_STATE_PROBE:
+            empty_index = min(max(self.refreshes - 1, 0), len(self.empty_states) - 1)
+            return {"readable_empty": self.empty_states[empty_index]}
+        raise AssertionError("unexpected catalog probe")
+
+    async def query_selector_all(self, _selector):
+        return self.cards_by_refresh[min(max(self.refreshes - 1, 0), len(self.cards_by_refresh) - 1)]
+
+    async def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
+
+
+async def _refresh_catalog(page):
+    page.refreshes += 1
+
+
+def test_silent_submission_is_confirmed_only_after_two_filtered_catalog_absences():
+    page = CatalogVerificationPage(
+        [
+            {"catalog": True, "without_integration_filter": True},
+            {"catalog": True, "without_integration_filter": True},
+        ],
+        [[], []],
+        empty_states=[True, True],
+    )
+
+    result = asyncio.run(submission_confirmation.confirm_silent_submission_from_catalog(
+        page,
+        source_href="/dashboard/product/createv2/123",
+        source_key="123",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result == {
+        "confirmed": True,
+        "detail": "fonte ausente em duas consultas do catálogo sem integração",
+        "uncertain": False,
+    }
+    assert page.refreshes == 2
+    assert page.waits == [1500]
+
+
+def test_silent_submission_stays_failed_when_its_exact_source_is_still_pending():
+    page = CatalogVerificationPage(
+        [{"catalog": True, "without_integration_filter": True}],
+        [[CatalogCard('/dashboard/product/createv2/123')]],
+    )
+
+    result = asyncio.run(submission_confirmation.confirm_silent_submission_from_catalog(
+        page,
+        source_href="/dashboard/product/createv2/123",
+        source_key="123",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result == {
+        "confirmed": False,
+        "detail": "a fonte ainda aparece em 'Todos que eu não cadastrei'",
+        "uncertain": False,
+    }
+    assert page.refreshes == 1
+
+
+def test_silent_submission_is_inconclusive_when_catalog_filter_cannot_be_proven():
+    page = CatalogVerificationPage(
+        [{"catalog": True, "without_integration_filter": False}],
+        [[]],
+    )
+
+    result = asyncio.run(submission_confirmation.confirm_silent_submission_from_catalog(
+        page,
+        source_href="/dashboard/product/createv2/123",
+        source_key="123",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result["confirmed"] is False
+    assert result["uncertain"] is True
+    assert "confirmação bloqueada" in result["detail"]
+
+
+def test_silent_submission_is_inconclusive_when_empty_catalog_cannot_be_read():
+    page = CatalogVerificationPage(
+        [{"catalog": True, "without_integration_filter": True}],
+        [[]],
+        empty_states=[False],
+    )
+
+    result = asyncio.run(submission_confirmation.confirm_silent_submission_from_catalog(
+        page,
+        source_href="/dashboard/product/createv2/123",
+        source_key="123",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result == {
+        "confirmed": False,
+        "detail": "leitura do catálogo inconclusiva; confirmação bloqueada",
+        "uncertain": True,
+    }
+
+
+def test_catalog_source_match_does_not_confuse_a_source_id_prefix():
+    assert submission_confirmation._reference_contains_source("/createv2/123", "", "12") is False
+    assert submission_confirmation._reference_contains_source("/createv2/12?x=1", "", "12") is True
+
+
+@pytest.mark.parametrize("bot_module", [johndrop_bot, trimpro_bot])
+def test_both_supplier_robots_reconcile_silent_submissions_without_auto_retry(bot_module):
+    source = inspect.getsource(bot_module._submit_product)
+    process_source = inspect.getsource(bot_module._process_one_product)
+
+    assert bot_module.confirm_silent_submission_from_catalog is submission_confirmation.confirm_silent_submission_from_catalog
+    assert "catalog_verification_needed" in source
+    assert "review_required = True" in source
+    assert "refresh_catalog=_open_catalog" in source
+    assert "submission.get(\"review_required\")" in process_source
+    assert "await _quarantine_submission_review(review_keys)" in process_source
+    assert "sem confirmação conclusiva; item em revisão" in process_source
+    assert "bloqueado para não repetir automaticamente" in process_source
+
+
+class SilentSubmitButton:
+    async def scroll_into_view_if_needed(self):
+        return None
+
+    async def click(self):
+        return None
+
+
+class SilentSubmitPage:
+    async def query_selector(self, _selector):
+        return SilentSubmitButton()
+
+    async def wait_for_timeout(self, _milliseconds):
+        return None
+
+
+@pytest.mark.parametrize(
+    ("bot_module", "log_name"),
+    [(johndrop_bot, "add_log"), (trimpro_bot, "_trimpro_log")],
+)
+def test_silent_visible_source_is_blocked_from_future_automatic_retry(monkeypatch, bot_module, log_name):
+    async def silent_response(_page):
+        return {
+            "confirmed": False,
+            "detail": "sem retorno explícito",
+            "catalog_verification_needed": True,
+        }
+
+    async def visible_source(_page, **_kwargs):
+        return {
+            "confirmed": False,
+            "detail": "a fonte ainda aparece em 'Todos que eu não cadastrei'",
+            "uncertain": False,
+        }
+
+    async def no_log(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(bot_module, "confirm_supplier_submission", silent_response)
+    monkeypatch.setattr(bot_module, "confirm_silent_submission_from_catalog", visible_source)
+    monkeypatch.setattr(bot_module, log_name, no_log)
+
+    result = asyncio.run(bot_module._submit_product(
+        SilentSubmitPage(),
+        "Produto teste",
+        99,
+        "Produto teste",
+        source_href="/dashboard/product/createv2/123",
+        source_key="123",
+    ))
+
+    assert result == {
+        "confirmed": False,
+        "uncertain": False,
+        "review_required": True,
+    }
+
+
 def test_submission_probe_reports_supplier_invalid_fields_instead_of_hiding_them():
     source = submission_confirmation._feedback.__code__.co_consts
     # The page-side probe must inspect native and framework validation state,
