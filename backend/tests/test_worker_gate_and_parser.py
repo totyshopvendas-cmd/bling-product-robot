@@ -12,8 +12,13 @@ enrichment investigation:
      (because of the >=2 rule), losing real variations.
 """
 import asyncio
-import pytest
 
+import pytest
+import playwright.async_api
+
+import enrich_worker
+import johndrop_bot
+import johndrop_export
 from enrich_worker import (
     _is_ready_for_enrichment,
     _is_totyshop_bling_integration,
@@ -78,6 +83,65 @@ def test_manual_johndrop_uses_original_bling_description():
     )
     assert title == "Lanterna manual"
     assert description == "Cor:\n- Preto\n- Azul"
+
+
+def test_manual_johndrop_monitor_passes_both_credentials_to_export_login(monkeypatch):
+    """The read-only manual monitor must call export's positional login API."""
+    captured = {}
+
+    async def fake_credentials():
+        return {"username": "conta@example.com", "password": "senha-segura"}
+
+    async def fake_login(page, username, password):
+        captured.update(page=page, username=username, password=password)
+
+    async def fake_goto(_page, _url, _creds):
+        return None
+
+    class FakePage:
+        async def evaluate(self, script, *_args):
+            if script == johndrop_export._SET_PAGE_SIZE_JS:
+                return False
+            if script == johndrop_export._READ_TABLE_JS:
+                return {"headers": [], "rows": []}
+            raise AssertionError("unexpected page read")
+
+        async def wait_for_selector(self, selector, timeout):
+            assert selector == "table tbody tr"
+            assert timeout == 15000
+
+        async def wait_for_load_state(self, *_args, **_kwargs):
+            return None
+
+    class FakeContext:
+        async def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        async def new_context(self):
+            return FakeContext()
+
+        async def close(self):
+            return None
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            class Chromium:
+                async def launch(self, **_kwargs):
+                    return FakeBrowser()
+            return type("Playwright", (), {"chromium": Chromium()})()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(johndrop_bot, "get_johndrop_credentials", fake_credentials)
+    monkeypatch.setattr(johndrop_export, "_login", fake_login)
+    monkeypatch.setattr(johndrop_export, "_goto", fake_goto)
+    monkeypatch.setattr(playwright.async_api, "async_playwright", lambda: FakePlaywrightContext())
+
+    assert asyncio.run(enrich_worker._discover_manual_johndrop_products()) == 0
+    assert captured["username"] == "conta@example.com"
+    assert captured["password"] == "senha-segura"
 
 
 def test_extracts_johndrop_supplier_id_from_observations():
