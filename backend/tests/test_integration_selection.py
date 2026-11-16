@@ -495,10 +495,24 @@ def test_both_supplier_robots_reconcile_silent_submissions_without_auto_retry(bo
     assert "catalog_verification_needed" in source
     assert "review_required = True" in source
     assert "refresh_catalog=_open_catalog" in source
+    assert "card_selector=CATALOG_SOURCE_SELECTOR" in source
     assert "submission.get(\"review_required\")" in process_source
     assert "await _quarantine_submission_review(review_keys)" in process_source
     assert "sem confirmação conclusiva; item em revisão" in process_source
     assert "bloqueado para não repetir automaticamente" in process_source
+
+
+@pytest.mark.parametrize("bot_module", [johndrop_bot, trimpro_bot])
+def test_silent_catalog_reconciliation_reads_only_controls_with_source_ids(bot_module):
+    # The broad catalog selector is still allowed to open forms. Reconciliation
+    # must not mistake its decorative text-only buttons for pending sources.
+    review_source = inspect.getsource(bot_module.inspect_catalog_review)
+
+    assert 'button:has-text("Cadastrar Produto")' in bot_module.CARD_SELECTOR
+    assert 'button:has-text("Cadastrar Produto")' not in bot_module.CATALOG_SOURCE_SELECTOR
+    assert 'href*="/dashboard/product/createv2/"' in bot_module.CATALOG_SOURCE_SELECTOR
+    assert 'data-href*="/dashboard/product/createv2/"' in bot_module.CATALOG_SOURCE_SELECTOR
+    assert "card_selector=CATALOG_SOURCE_SELECTOR" in review_source
 
 
 class SilentSubmitButton:
@@ -522,6 +536,8 @@ class SilentSubmitPage:
     [(johndrop_bot, "add_log"), (trimpro_bot, "_trimpro_log")],
 )
 def test_silent_visible_source_is_blocked_from_future_automatic_retry(monkeypatch, bot_module, log_name):
+    captured = {}
+
     async def silent_response(_page):
         return {
             "confirmed": False,
@@ -530,6 +546,7 @@ def test_silent_visible_source_is_blocked_from_future_automatic_retry(monkeypatc
         }
 
     async def visible_source(_page, **_kwargs):
+        captured.update(_kwargs)
         return {
             "confirmed": False,
             "detail": "a fonte ainda aparece em 'Todos que eu não cadastrei'",
@@ -557,6 +574,7 @@ def test_silent_visible_source_is_blocked_from_future_automatic_retry(monkeypatc
         "uncertain": False,
         "review_required": True,
     }
+    assert captured["card_selector"] == bot_module.CATALOG_SOURCE_SELECTOR
 
 
 def test_submission_probe_reports_supplier_invalid_fields_instead_of_hiding_them():

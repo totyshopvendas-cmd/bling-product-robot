@@ -102,7 +102,9 @@ async def _discover_manual_johndrop_products() -> int:
             try:
                 context = await browser.new_context()
                 page = await context.new_page()
-                await johndrop_export._login(page, creds)
+                # johndrop_export uses positional username/password, while its
+                # later navigation helper accepts the credentials mapping.
+                await johndrop_export._login(page, creds["username"], creds["password"])
                 await johndrop_export._goto(page, johndrop_export.PRODUCTS_URL, creds)
                 # Read only the newest page. JohnDrop lists the recent products
                 # first, and this keeps the monitor fast and non-invasive.

@@ -389,10 +389,22 @@ async def run_bot(max_products: int = 10, dry_run: bool = True):
             robot.state = "idle"
 
 
+# Used only to open the next pending form. Suppliers can render both an anchor
+# and a text-only button for the same card, so this intentionally stays broad.
 CARD_SELECTOR = (
     'a[href*="/dashboard/product/createv2/"], '
     'a:has-text("Cadastrar Produto"), '
     'button:has-text("Cadastrar Produto")'
+)
+
+# A silent-submit reconciliation cannot use the broad selector above: a
+# decorative text button carries no stable source ID. Only controls that expose
+# the createv2 identifier are evidence that a source is still pending.
+CATALOG_SOURCE_SELECTOR = (
+    'a[href*="/dashboard/product/createv2/"], '
+    '[data-href*="/dashboard/product/createv2/"], '
+    '[data-url*="/dashboard/product/createv2/"], '
+    '[onclick*="/dashboard/product/createv2/"]'
 )
 
 
@@ -595,7 +607,7 @@ async def inspect_catalog_review(identifier: str) -> dict:
                     page,
                     identifier=identifier,
                     refresh_catalog=_open_catalog,
-                    card_selector=CARD_SELECTOR,
+                    card_selector=CATALOG_SOURCE_SELECTOR,
                 )
                 return {"ok": not result.get("uncertain", False), "supplier": "johndrop", "read_only": True, **result}
             finally:
@@ -1007,7 +1019,7 @@ async def _submit_product(
                 source_href=source_href,
                 source_key=source_key,
                 refresh_catalog=_open_catalog,
-                card_selector=CARD_SELECTOR,
+                card_selector=CATALOG_SOURCE_SELECTOR,
             )
             if catalog_confirmation["confirmed"]:
                 confirmation = catalog_confirmation
