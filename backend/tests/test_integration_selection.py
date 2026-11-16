@@ -346,65 +346,89 @@ def test_trimpro_does_not_report_mock_success_when_browser_is_unavailable(monkey
     assert trimpro_bot.trimpro_robot.success == 0
 
 
-def test_native_category_guard_targets_johndrop_meli_field_even_without_html_required():
-    """JohnDrop validates sel_category_meli server-side, not always in HTML."""
+def test_category_guard_never_targets_or_requires_mercado_livre_fields():
+    """TotyShop-Bling must not select or block on stale Meli controls."""
     script = marketplace_category._CATEGORY_FIELD_PROBE
+    custom_script = marketplace_category._CATEGORY_CUSTOM_OPTION_PROBE
 
-    assert "meliCategory" in script
-    assert "meliSubcategory" in script
-    assert "meliRequired" in script
-    assert "requiredSelects.concat(meliRequired)" in script
-    assert "identity(el) === 'selcategorymeli'" in script
-
-
-def test_johndrop_root_meli_category_is_filled_even_if_subcategory_element_exists():
-    """A disabled subcategory is absent from POST, so root Meli must remain set."""
-    script = marketplace_category._CATEGORY_FIELD_PROBE
-
-    assert "meliCategories.concat(subcategoriesToFill)" in script
-    assert "meliSubcategories.length ? meliSubcategories" not in script
-    assert "new FormData(form).getAll(select.name)" in script
-    assert "POST=sim" in script
-    assert "POST=não" in script
+    assert "const isMeliField" in script
+    assert "const selects = allSelects.filter((select) => !isMeliField(select));" in script
+    assert "const fields = allFields.filter((field) => !isMeliField(field));" in script
+    assert "campos do Mercado Livre ignorados para TotyShop-Bling" in script
+    assert "meliRequired" not in script
+    assert "meliCategories" not in script
+    assert "const isMeliOption" in custom_script
+    assert "mlb\\d+" in custom_script
+    assert "!isMeliOption(el)" in custom_script
 
 
-def test_native_category_guard_rechecks_fields_revealed_by_category_selection():
+def test_meli_only_category_is_nonblocking_and_reported_as_ignored():
+    page = CategoryPage({
+        "present": False,
+        "selected": True,
+        "ignored_meli": True,
+        "detail": "campos do Mercado Livre ignorados para TotyShop-Bling",
+    })
+
+    result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
+
+    assert result["selected"] is True
+    assert result["present"] is False
+    assert result["ignored_meli"] is True
+    assert "Mercado Livre ignorados" in result["detail"]
+    assert page.waits == 0
+
+
+@pytest.mark.parametrize(("bot_module", "log_name"), [
+    (johndrop_bot, "add_log"),
+    (trimpro_bot, "_trimpro_log"),
+])
+def test_both_supplier_robots_report_ignored_meli_without_blocking_totyshop(
+    bot_module, log_name,
+):
+    source = inspect.getsource(bot_module._process_one_product)
+
+    assert 'category.get("ignored_meli")' in source
+    assert "Campos de categoria do Mercado Livre ignorados para TotyShop-Bling" in source
+    assert log_name in inspect.getsource(bot_module)
+
+
+def test_native_category_guard_rechecks_non_meli_fields_revealed_by_selection():
     page = CategoryPage(
         {
             "present": True,
             "selected": True,
             "changed": True,
-            "detail": "sel_category_meli: Moda",
+            "detail": "sel_category_shopee: Moda",
         },
         {
             "present": True,
             "selected": True,
             "changed": False,
-            "detail": "sel_meli_subCategory_meli: Bolsas",
+            "detail": "sel_subcategory_shopee: Bolsas",
         },
     )
 
     result = asyncio.run(marketplace_category.ensure_required_marketplace_category(page))
 
     assert result["selected"] is True
-    assert "subCategory" in result["detail"]
+    assert "subcategory" in result["detail"]
     assert page.waits == 1
 
 
-def test_category_guard_waits_for_async_supplier_options_before_failing():
-    """JohnDrop must give sel_category_meli time to populate asynchronously."""
+def test_category_guard_waits_for_async_non_meli_options_before_failing():
     page = CategoryPage(
         {
             "present": True,
             "selected": False,
             "waiting_options": True,
-            "detail": "sel_category_meli: sem opção válida carregada",
+            "detail": "sel_category_supplier: sem opção válida carregada",
         },
         {
             "present": True,
             "selected": True,
             "changed": False,
-            "detail": "sel_category_meli=MLB1 [POST=sim; disabled=não] Casa",
+            "detail": "sel_category_supplier=SUP1 [POST=sim; disabled=não] Casa",
         },
     )
 
@@ -415,12 +439,12 @@ def test_category_guard_waits_for_async_supplier_options_before_failing():
     assert page.waits == 1
 
 
-def test_category_guard_reports_waited_timeout_without_submitting_blank_category():
+def test_category_guard_reports_waited_timeout_without_submitting_blank_non_meli_category():
     page = CategoryPage({
         "present": True,
         "selected": False,
         "waiting_options": True,
-        "detail": "sel_category_meli: sem opção válida carregada",
+        "detail": "sel_category_supplier: sem opção válida carregada",
     })
     # The same supplier state persists on every poll.
     page.responses *= marketplace_category._CATEGORY_OPTION_WAIT_ATTEMPTS

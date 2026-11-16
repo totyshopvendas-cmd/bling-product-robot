@@ -1,11 +1,10 @@
-"""Shared required-marketplace-category guard for supplier create forms.
+"""Shared required-category guard for supplier create forms.
 
-Both supplier portals may expose one or more category fields before accepting a
-product.  The fields can be native ``select`` elements (for example
-``sel_category_meli``) or custom controls.  The helper fills and verifies every
-native field the supplier marks as required; it never treats a value in an
-unrelated Shopee/category field as proof that the required marketplace field
-was supplied.
+The suppliers can expose native or custom category controls before accepting a
+product.  This helper verifies genuine required supplier categories, while
+explicitly ignoring Mercado Livre-specific controls: JohnDrop and TrimPro
+create only the ``TotyShop-Bling`` integration and must never select, depend on,
+or submit a Mercado Livre category.
 """
 from __future__ import annotations
 
@@ -23,14 +22,16 @@ _CATEGORY_FIELD_PROBE = r"""
         const text = (option.textContent || '').trim();
         return !option.disabled && String(option.value || '').trim() && !placeholder.test(text);
     };
-    const matching = (el) => {
-        const context = [
-            el.name, el.id, el.getAttribute('data-testid'), el.getAttribute('data-field'),
-            el.getAttribute('aria-label'), el.getAttribute('placeholder'),
-            el.closest('label, .form-group, .field, .form-field, [class*="category"], [class*="categoria"]')?.innerText,
-        ].join(' ');
-        return target.test(norm(context));
-    };
+    const contextFor = (el) => [
+        el.name, el.id, el.getAttribute('data-testid'), el.getAttribute('data-field'),
+        el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+        el.closest('label, .form-group, .field, .form-field, [class*="category"], [class*="categoria"]')?.innerText,
+    ].join(' ');
+    const matching = (el) => target.test(norm(contextFor(el)));
+    // A JohnDrop/TrimPro TotyShop-Bling form can still render old Meli fields.
+    // They are not part of this integration and must never be clicked, filled,
+    // or used to block its product flow.
+    const isMeliField = (el) => /(?:mercadolivre|meli)/.test(norm(contextFor(el)));
     const visible = (el) => {
         if (!el) return false;
         const style = window.getComputedStyle(el);
@@ -42,15 +43,6 @@ _CATEGORY_FIELD_PROBE = r"""
         || el.getAttribute('data-required') === 'true'
         || /\brequired\b/i.test(el.className || '');
     const fieldName = (el) => el.name || el.id || 'categoria';
-    const identity = (el) => norm([el.name, el.id, el.getAttribute('data-field')].join(' '));
-    // JohnDrop's server-side validation names these inputs explicitly. They do
-    // not always carry the native `required` attribute, so relying only on the
-    // DOM flag silently skips the field that the supplier will reject.
-    const meliCategory = (el) => (
-        identity(el) === 'selcategorymeli'
-        || /(?:sel)?categorymeli|categori[a-z]*meli/.test(identity(el))
-    ) && !/sub(?:category|categoria)/.test(identity(el));
-    const meliSubcategory = (el) => /meli.*sub(?:category|categoria)|sub(?:category|categoria).*meli/.test(identity(el));
     const unique = (items) => items.filter((item, index) => items.indexOf(item) === index);
     const dispatch = (select) => {
         select.dispatchEvent(new Event('input', { bubbles: true }));
@@ -60,27 +52,13 @@ _CATEGORY_FIELD_PROBE = r"""
         if (window.jQuery) window.jQuery(select).trigger('change');
     };
 
-    const selects = Array.from(document.querySelectorAll('select')).filter(matching);
+    const allSelects = Array.from(document.querySelectorAll('select')).filter(matching);
+    const ignoredMeliSelects = allSelects.filter(isMeliField);
+    const selects = allSelects.filter((select) => !isMeliField(select));
     if (selects.length) {
-        // JohnDrop's backend requires `sel_category_meli` whenever the Meli
-        // subcategory is absent from the *submitted form*.  An earlier guard
-        // selected only the subcategory when its element existed in the DOM.
-        // Some provider pages render that element disabled/empty, so it is not
-        // posted and JohnDrop rejects the missing root category.  Always fill
-        // and verify the root Meli category as well; fill a subcategory only
-        // when it has a real option (or the page explicitly marks it required).
         const requiredSelects = selects.filter(required);
-        const meliCategories = selects.filter(meliCategory);
-        const meliSubcategories = selects.filter(meliSubcategory);
-        const subcategoriesToFill = meliSubcategories.filter((select) => {
-            const current = select.options[select.selectedIndex];
-            return required(select)
-                || (current && usableOption(current))
-                || Array.from(select.options).some(usableOption);
-        });
-        const meliRequired = meliCategories.concat(subcategoriesToFill);
         const visibleSelects = selects.filter(visible);
-        const targets = unique(requiredSelects.concat(meliRequired));
+        const targets = unique(requiredSelects);
         if (!targets.length) {
             targets.push(visibleSelects.length ? visibleSelects[0] : selects[0]);
         }
@@ -122,9 +100,6 @@ _CATEGORY_FIELD_PROBE = r"""
             if (!posted) selected = false;
             const optionText = (chosen.textContent || '').trim().slice(0, 70);
             const value = String(chosen.value || '').trim().slice(0, 70);
-            // The detail is intentionally emitted into the robot log. A dry
-            // run can therefore prove the exact Meli root field and its POST
-            // state before the operator allows a real supplier submission.
             details.push(
                 posted
                     ? `${fieldName(select)}=${value} [POST=sim; disabled=${select.disabled ? 'sim' : 'não'}] ${optionText}`
@@ -136,32 +111,63 @@ _CATEGORY_FIELD_PROBE = r"""
             selected,
             changed,
             waiting_options: waitingOptions.length > 0,
+            ignored_meli: ignoredMeliSelects.length > 0,
             detail: selected
                 ? `categoria confirmada: ${details.join(' | ')}`
                 : `categoria pendente: ${details.join(' | ')}`,
         };
     }
-
     // Custom selects usually have a hidden input plus a visible button/combobox.
-    const fields = Array.from(document.querySelectorAll('input, button, [role="combobox"], [data-select], [class*="select"]'))
+    // Do not return early for ignored native Meli fields: the same form can
+    // still contain a genuine non-Meli custom category that must be verified.
+    const allFields = Array.from(document.querySelectorAll('input, button, [role="combobox"], [data-select], [class*="select"]'))
         .filter(matching);
-    if (!fields.length) return { present: false, selected: true, detail: 'campo de categoria não existe neste portal' };
+    const ignoredMeliFields = allFields.filter(isMeliField);
+    const ignoredMeli = ignoredMeliSelects.length > 0 || ignoredMeliFields.length > 0;
+    const fields = allFields.filter((field) => !isMeliField(field));
+    if (!fields.length) {
+        if (ignoredMeli) {
+            return {
+                present: false,
+                selected: true,
+                changed: false,
+                waiting_options: false,
+                ignored_meli: true,
+                detail: 'campos do Mercado Livre ignorados para TotyShop-Bling',
+            };
+        }
+        return { present: false, selected: true, detail: 'campo de categoria não existe neste portal' };
+    }
 
     const field = fields.find(visible) || fields[0];
     if (field.matches('input') && String(field.value || '').trim()) {
-        return { present: true, selected: true, detail: 'categoria já preenchida' };
+        return {
+            present: true,
+            selected: true,
+            ignored_meli: ignoredMeli,
+            detail: 'categoria já preenchida',
+        };
     }
     const trigger = field.matches('button, [role="combobox"]')
         ? field
         : field.closest('label, .form-group, .field, .form-field, [class*="category"], [class*="categoria"]')?.querySelector('button, [role="combobox"]') || field;
     try { trigger.scrollIntoView({ block: 'center' }); trigger.click(); } catch (_) {}
-    return { present: true, selected: false, custom_opened: true, detail: 'seletor de categoria aberto' };
+    return {
+        present: true,
+        selected: false,
+        custom_opened: true,
+        ignored_meli: ignoredMeli,
+        detail: 'seletor de categoria aberto',
+    };
 }
 """
 
 
 _CATEGORY_CUSTOM_OPTION_PROBE = r"""
 () => {
+    const norm = (value) => (value || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '');
     const placeholder = /^(?:selecione|selecionar|escolha|categoria|category|nenhuma|none|-+)$/i;
     const visible = (el) => {
         if (!el) return false;
@@ -169,14 +175,20 @@ _CATEGORY_CUSTOM_OPTION_PROBE = r"""
         const box = el.getBoundingClientRect();
         return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
     };
+    // Mercado Livre categories often expose only their MLB code in data-value,
+    // so exclude both the marketplace name and that code prefix.
+    const isMeliOption = (el) => /(?:mercadolivre|meli|mlb\d+)/.test(norm([
+        el.innerText || el.textContent, el.getAttribute('data-value'), el.value,
+        el.getAttribute('aria-label'), el.getAttribute('data-marketplace'),
+    ].join(' ')));
     const options = Array.from(document.querySelectorAll('[role="option"], .select-option, .dropdown-item, [data-value], li, button'))
         .filter((el) => {
             const text = (el.innerText || el.textContent || '').trim();
             const value = el.getAttribute('data-value') || el.value || text;
-            return visible(el) && text && !placeholder.test(text) && value;
+            return visible(el) && text && !placeholder.test(text) && value && !isMeliOption(el);
         });
     const option = options.find((el) => !/cancelar|fechar|voltar|criar produto/i.test(el.innerText || el.textContent || ''));
-    if (!option) return { selected: false, detail: 'seletor de categoria aberto, mas sem opção válida visível' };
+    if (!option) return { selected: false, detail: 'seletor de categoria aberto, mas sem opção válida fora do Mercado Livre' };
     const text = (option.innerText || option.textContent || '').trim();
     try { option.click(); } catch (_) { return { selected: false, detail: 'não foi possível escolher a categoria' }; }
     return { selected: true, detail: `categoria escolhida: ${text.slice(0, 100)}` };
@@ -193,27 +205,27 @@ def _result(data: Any) -> dict:
         "custom_opened": bool(data.get("custom_opened")),
         "changed": bool(data.get("changed")),
         "waiting_options": bool(data.get("waiting_options")),
+        "ignored_meli": bool(data.get("ignored_meli")),
     }
 
 
-# JohnDrop fills its Meli category options asynchronously on some products.
-# Poll briefly before declaring the form impossible, but never submit a blank
-# category merely because the supplier was still loading its list.
+# Supplier options can be populated asynchronously. Poll briefly before
+# declaring a genuine non-Meli category impossible, but never submit blank.
 _CATEGORY_OPTION_WAIT_ATTEMPTS = 8
 _CATEGORY_OPTION_WAIT_MS = 750
 
 
 async def ensure_required_marketplace_category(page) -> dict:
-    """Fill and verify supplier category fields before submitting a product.
+    """Fill and verify non-Meli supplier category fields before a submission.
 
-    A portal without a category field is left unchanged. A known field that
-    cannot be selected returns ``selected=False`` so the calling robot stops
-    before creating a product the supplier would reject.
+    A portal without a relevant category field is left unchanged. Mercado Livre
+    fields are explicitly ignored because this project only creates products
+    through TotyShop-Bling; a known non-Meli field that cannot be selected still
+    returns ``selected=False`` and stops the caller before a supplier submit.
     """
-    # A category selection can asynchronously reveal the Meli subcategory
-    # field. JohnDrop also loads category options asynchronously for some
-    # products. Re-scan after a real native change and briefly wait for an
-    # otherwise empty native select before allowing the caller to give up.
+    # A non-Meli category can asynchronously reveal another non-Meli field.
+    # Re-scan after a real native change and briefly wait for an otherwise empty
+    # native select before allowing the caller to give up.
     first: dict = {}
     waited_for_options = False
     for _attempt in range(_CATEGORY_OPTION_WAIT_ATTEMPTS):
@@ -227,6 +239,7 @@ async def ensure_required_marketplace_category(page) -> dict:
                 "custom_opened": False,
                 "changed": False,
                 "waiting_options": False,
+                "ignored_meli": False,
             }
 
         if first["selected"] or not first["present"]:
@@ -268,6 +281,9 @@ async def ensure_required_marketplace_category(page) -> dict:
             "detail": f"falha ao escolher categoria: {str(exc)[:160]}",
             "custom_opened": True,
             "changed": False,
+            "waiting_options": False,
+            "ignored_meli": first["ignored_meli"],
         }
     picked["present"] = True
+    picked["ignored_meli"] = first["ignored_meli"]
     return picked

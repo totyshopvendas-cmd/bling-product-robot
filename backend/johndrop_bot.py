@@ -1042,6 +1042,8 @@ async def _process_one_product(page, dry_run: bool, seen_skus: set) -> bool:
         robot.message = "Categoria obrigatória do fornecedor não foi preenchida"
         await _open_catalog(page)
         return True
+    if category.get("ignored_meli"):
+        await add_log("info", "Campos de categoria do Mercado Livre ignorados para TotyShop-Bling")
     if category["present"]:
         await add_log("info", f"Categoria do fornecedor confirmada: {category['detail']}")
 
