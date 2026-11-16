@@ -98,8 +98,6 @@ TRIMPRO_LOGIN_URL = "https://app.trimpro.com.br/login"
 TRIMPRO_CATALOG_BASE_URL = "https://app.trimpro.com.br/dashboard/catalog"
 TRIMPRO_CATALOG_URL = f"{TRIMPRO_CATALOG_BASE_URL}?integration_filter=without_integration"
 INTEGRATION_NAME = "TotyShop-Bling"
-# The TrimPro form has TotyShop-Bling as the third visible integration card.
-INTEGRATION_CARD_POSITION = 3
 SKU_ALLOWED_RE = re.compile(r"[^A-Za-z0-9\-]")
 DELAY_BETWEEN_PRODUCTS_S = 25  # pause após cadastrar com sucesso (evita rate-limit do TrimPro)
 
@@ -466,21 +464,14 @@ async def _open_catalog(page) -> None:
 
 
 async def _select_integration(page) -> bool:
-    """Select TrimPro's third TotyShop-Bling card before submit."""
-    result = await select_required_integration(
-        page,
-        INTEGRATION_NAME,
-        expected_position=INTEGRATION_CARD_POSITION,
-    )
+    """Select TotyShop-Bling and require a verified selected state before submit."""
+    result = await select_required_integration(page, INTEGRATION_NAME)
     if result["selected"]:
-        await _trimpro_log(
-            "info",
-            f"Integração '{INTEGRATION_NAME}' confirmada no {INTEGRATION_CARD_POSITION}º ícone",
-        )
+        await _trimpro_log("info", f"Integração '{INTEGRATION_NAME}' confirmada")
         return True
     await _trimpro_log(
         "error",
-        f"Integração '{INTEGRATION_NAME}' no {INTEGRATION_CARD_POSITION}º ícone não confirmada: {result['detail']}",
+        f"Integração '{INTEGRATION_NAME}' não confirmada: {result['detail']}",
     )
     return False
 
@@ -537,7 +528,6 @@ async def diagnose_integration_controls() -> dict:
                     "ok": True,
                     "supplier": "trimpro",
                     "integration": INTEGRATION_NAME,
-                    "expected_position": INTEGRATION_CARD_POSITION,
                     "snapshot": snapshot,
                 }
             finally:
