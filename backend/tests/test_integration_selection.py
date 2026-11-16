@@ -1,5 +1,8 @@
 """Regression coverage for the shared TotyShop-Bling card guard."""
 import asyncio
+import inspect
+
+import pytest
 
 import integration_selection
 import johndrop_bot
@@ -9,17 +12,27 @@ import trimpro_bot
 
 
 class ProbePage:
-    def __init__(self, result):
-        self.result = result
+    """A page double that records the exact browser-probe contract."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
         self.calls = []
+        self.waits = []
 
     async def evaluate(self, script, target):
         self.calls.append((script, target))
-        return self.result
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    async def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
 
 
 def test_shared_selector_accepts_only_a_verified_selected_state():
     page = ProbePage({"found": True, "selected": True, "detail": "selecionada e confirmada"})
+
     result = asyncio.run(
         integration_selection.select_required_integration(page, "TotyShop-Bling"),
     )
@@ -29,142 +42,181 @@ def test_shared_selector_accepts_only_a_verified_selected_state():
         "selected": True,
         "detail": "selecionada e confirmada",
     }
-    assert page.calls[0][1] == "TotyShop-Bling"
+    assert page.calls == [(integration_selection._SELECT_INTEGRATION_PROBE, "TotyShop-Bling")]
+    assert page.waits == []
 
 
 def test_shared_selector_fails_closed_when_card_has_no_selected_state():
-    page = ProbePage({
-        "found": True,
-        "selected": False,
-        "detail": "opção encontrada, mas a seleção não foi confirmada",
-    })
+    page = ProbePage(
+        {"found": True, "selected": False, "detail": "opção encontrada, mas a seleção não foi confirmada"},
+        {"found": True, "selected": False, "detail": "opção encontrada, mas a seleção não foi confirmada"},
+    )
+
     result = asyncio.run(
         integration_selection.select_required_integration(page, "TotyShop-Bling"),
     )
 
     assert result["found"] is True
     assert result["selected"] is False
+    assert page.waits == [350]
+    assert [target for _, target in page.calls] == ["TotyShop-Bling", "TotyShop-Bling"]
 
 
-def test_shared_selector_passes_operator_confirmed_card_position_to_browser():
-    page = ProbePage({"found": True, "selected": True, "detail": "selecionada"})
+def test_shared_selector_rechecks_the_same_text_target_after_async_render():
+    page = ProbePage(
+        {"found": True, "selected": False, "detail": "aguardando React"},
+        {"found": True, "selected": True, "detail": "selecionada após atualização"},
+    )
 
     result = asyncio.run(
-        integration_selection.select_required_integration(
-            page,
-            "TotyShop-Bling",
-            expected_position=4,
-        ),
+        integration_selection.select_required_integration(page, "TotyShop-Bling"),
     )
 
     assert result["selected"] is True
-    assert page.calls[0][1] == {"target": "TotyShop-Bling", "position": 4}
+    assert result["detail"] == "selecionada após atualização"
+    assert page.waits == [350]
+    assert page.calls == [
+        (integration_selection._SELECT_INTEGRATION_PROBE, "TotyShop-Bling"),
+        (integration_selection._SELECT_INTEGRATION_PROBE, "TotyShop-Bling"),
+    ]
 
 
-def test_selector_rejects_invalid_card_position_without_touching_supplier_form():
-    page = ProbePage({"found": True, "selected": True, "detail": "não deve executar"})
+def test_empty_or_unreadable_integration_never_reports_selection():
+    empty_page = ProbePage({"found": True, "selected": True, "detail": "não deve executar"})
+    empty = asyncio.run(integration_selection.select_required_integration(empty_page, ""))
+    assert empty == {"found": False, "selected": False, "detail": "integração vazia"}
+    assert empty_page.calls == []
 
-    result = asyncio.run(
-        integration_selection.select_required_integration(
-            page,
-            "TotyShop-Bling",
-            expected_position=0,
-        ),
+    broken_page = ProbePage(RuntimeError("supplier DOM unavailable"))
+    broken = asyncio.run(
+        integration_selection.select_required_integration(broken_page, "TotyShop-Bling"),
     )
+    assert broken["found"] is False
+    assert broken["selected"] is False
+    assert broken["detail"].startswith("falha ao verificar a integração:")
 
-    assert result["selected"] is False
-    assert "posição" in result["detail"]
-    assert page.calls == []
 
-
-def test_target_probe_never_accepts_a_checked_sibling_in_generic_card():
-    """A checked Shopee radio inside a shared wrapper is not TotyShop-Bling."""
+def test_textual_probe_is_scoped_to_the_named_control_not_a_checked_sibling():
+    """A generic card with a checked Shopee radio cannot confirm TotyShop-Bling."""
     script = integration_selection._SELECT_INTEGRATION_PROBE
 
+    assert script.lstrip().startswith("(target) =>")
+    assert "expectedPosition" not in script
     assert "controls.some((input) => input.checked)" not in script
-    assert "const control = exactControl || targetControl(root);" in script
+    assert "const control = targetControl(root);" in script
+    assert "if (control) return Boolean(control.checked);" in script
+    assert "Check only the" in script
+    assert "target root itself" in script
     assert "TotyShop-Bling foi localizada, mas sua seleção não foi confirmada" in script
 
 
-def test_positioned_selector_uses_native_visible_radio_order_and_blocks_a_wrong_card():
-    """Nested labels/wrappers cannot change the user-confirmed icon index."""
-    script = integration_selection._SELECT_INTEGRATION_PROBE
-
-    assert "const entry = integrationControls[expectedPosition - 1];" in script
-    assert "Array.from(document.querySelectorAll(controlSelector))" in script
-    assert ".filter(visibleControl)" in script
-    assert "a.top - b.top" in script
-    assert "a.left - b.left" in script
-    assert "ícone não é TotyShop-Bling; seleção bloqueada" in script
-    assert "count nested divs, duplicate labels, or generic card wrappers" in script
-    assert "const allVisibleControls" in script
-    assert "inventário dos rádios visíveis" in script
-    assert "describeControls(allVisibleControls)" in script
-
-
-def test_integration_probe_keeps_radio_inventory_in_the_error_detail():
-    detail = "radio=" + ("x" * 700)
-
-    result = integration_selection._result({
-        "found": False,
-        "selected": False,
-        "detail": detail,
-    })
-
-    assert result["detail"] == detail
-
-
-def test_positioned_selector_clicks_the_exact_native_control_not_a_matching_sibling():
-    script = integration_selection._SELECT_INTEGRATION_PROBE
-
-    assert "return choose(entry.root, expectedPosition, entry.input);" in script
-    assert "const control = exactControl || targetControl(root);" in script
-    assert "labelsFor(control).find(visible)?.click()" in script
-    assert "control.click()" in script
+def test_recovered_selector_uses_textual_target_without_card_indexes():
+    assert "expected_position" not in inspect.signature(
+        integration_selection.select_required_integration,
+    ).parameters
+    assert "INTEGRATION_CARD_POSITION" not in inspect.getsource(johndrop_bot)
+    assert "INTEGRATION_CARD_POSITION" not in inspect.getsource(trimpro_bot)
+    assert "expected_position" not in inspect.getsource(johndrop_bot.diagnose_integration_controls)
+    assert "expected_position" not in inspect.getsource(trimpro_bot.diagnose_integration_controls)
 
 
 def test_both_supplier_robots_use_the_same_verified_integration_guard():
-    """A fix for the integration card must never diverge across suppliers."""
+    """A selector correction must never diverge between JohnDrop and TrimPro."""
     assert johndrop_bot.select_required_integration is integration_selection.select_required_integration
     assert trimpro_bot.select_required_integration is integration_selection.select_required_integration
-    assert johndrop_bot.INTEGRATION_CARD_POSITION == 4
-    assert trimpro_bot.INTEGRATION_CARD_POSITION == 3
 
 
-def test_johndrop_pins_totyshop_bling_to_its_fourth_icon(monkeypatch):
+@pytest.mark.parametrize(
+    ("bot_module", "log_name"),
+    [
+        (johndrop_bot, "add_log"),
+        (trimpro_bot, "_trimpro_log"),
+    ],
+)
+def test_both_bots_request_only_totyshop_bling(monkeypatch, bot_module, log_name):
     calls = []
 
-    async def choose(page, target, expected_position=None):
-        calls.append((page, target, expected_position))
+    async def choose(page, target):
+        calls.append((page, target))
         return {"found": True, "selected": True, "detail": "confirmada"}
 
     async def log(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(johndrop_bot, "select_required_integration", choose)
-    monkeypatch.setattr(johndrop_bot, "add_log", log)
+    monkeypatch.setattr(bot_module, "select_required_integration", choose)
+    monkeypatch.setattr(bot_module, log_name, log)
 
     page = object()
-    assert asyncio.run(johndrop_bot._select_integration(page)) is True
-    assert calls == [(page, "TotyShop-Bling", 4)]
+    assert asyncio.run(bot_module._select_integration(page)) is True
+    assert calls == [(page, "TotyShop-Bling")]
 
 
-def test_trimpro_pins_totyshop_bling_to_its_third_icon(monkeypatch):
-    calls = []
+class _Navigation:
+    async def __aenter__(self):
+        return self
 
-    async def choose(page, target, expected_position=None):
-        calls.append((page, target, expected_position))
-        return {"found": True, "selected": True, "detail": "confirmada"}
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _PendingCard:
+    async def get_attribute(self, attribute):
+        assert attribute == "href"
+        return "/dashboard/product/createv2/123"
+
+    async def click(self):
+        return None
+
+
+class _GuardPage:
+    async def query_selector_all(self, _selector):
+        return [_PendingCard()]
+
+    def expect_navigation(self, **_kwargs):
+        return _Navigation()
+
+
+@pytest.mark.parametrize(
+    ("bot_module", "state_name", "log_name"),
+    [
+        (johndrop_bot, "robot", "add_log"),
+        (trimpro_bot, "trimpro_robot", "_trimpro_log"),
+    ],
+)
+def test_unconfirmed_integration_stops_before_product_fields_or_submit(
+    monkeypatch, bot_module, state_name, log_name,
+):
+    """Both flows fail closed before any fill or provider submission."""
+    state = getattr(bot_module, state_name)
+    state_before = vars(state).copy()
+    opened_catalog = []
+
+    async def reject(_page):
+        return False
+
+    async def open_catalog(page):
+        opened_catalog.append(page)
+
+    async def unexpected_product_work(*_args, **_kwargs):
+        raise AssertionError("product fields or submit must not run without TotyShop-Bling")
 
     async def log(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(trimpro_bot, "select_required_integration", choose)
-    monkeypatch.setattr(trimpro_bot, "_trimpro_log", log)
+    monkeypatch.setattr(bot_module, "_select_integration", reject)
+    monkeypatch.setattr(bot_module, "_open_catalog", open_catalog)
+    monkeypatch.setattr(bot_module, "_read_product_fields", unexpected_product_work)
+    monkeypatch.setattr(bot_module, "_submit_product", unexpected_product_work)
+    monkeypatch.setattr(bot_module, log_name, log)
 
-    page = object()
-    assert asyncio.run(trimpro_bot._select_integration(page)) is True
-    assert calls == [(page, "TotyShop-Bling", 3)]
+    try:
+        handled = asyncio.run(bot_module._process_one_product(_GuardPage(), dry_run=False, seen_skus=set()))
+    finally:
+        vars(state).clear()
+        vars(state).update(state_before)
+
+    assert handled is True
+    assert opened_catalog and isinstance(opened_catalog[0], _GuardPage)
 
 
 class ConfirmationPage:
