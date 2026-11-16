@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from urllib.parse import urlencode
 
 ROOT_DIR = Path(__file__).parent
@@ -524,7 +524,12 @@ async def save_brand_settings(req: BrandSettings) -> dict:
 
 
 
-# ---------- Shopee Robot ----------
+# ---------- JohnDrop Robot ----------
+class CatalogReviewRequest(BaseModel):
+    """Read-only supplier catalog lookup; it never submits a product."""
+    identifier: str = Field(min_length=1, max_length=160)
+
+
 @api.post("/robot/start", response_model=RobotStatusResponse)
 async def robot_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
     if robot_service.robot.state == "running":
@@ -574,6 +579,12 @@ async def johndrop_integration_diagnostic() -> dict:
     return await johndrop_bot.diagnose_integration_controls()
 
 
+@api.post("/robot/submission-review/check")
+async def johndrop_submission_review_check(req: CatalogReviewRequest) -> dict:
+    """Read only JohnDrop's pending catalog to inspect a past silent click."""
+    return await johndrop_bot.inspect_catalog_review(req.identifier)
+
+
 # ---------- TrimPro Robot ----------
 @api.post("/trimpro/start", response_model=RobotStatusResponse)
 async def trimpro_start(cfg: RobotJobConfig = Body(default_factory=RobotJobConfig)) -> RobotStatusResponse:
@@ -619,6 +630,12 @@ async def trimpro_logs_clear() -> dict:
 async def trimpro_integration_diagnostic() -> dict:
     """Read one TrimPro form's integration controls without a cadastro."""
     return await trimpro_bot.diagnose_integration_controls()
+
+
+@api.post("/trimpro/submission-review/check")
+async def trimpro_submission_review_check(req: CatalogReviewRequest) -> dict:
+    """Read only TrimPro's pending catalog to inspect a past silent click."""
+    return await trimpro_bot.inspect_catalog_review(req.identifier)
 
 
 # ---------- Shopee Robot ----------

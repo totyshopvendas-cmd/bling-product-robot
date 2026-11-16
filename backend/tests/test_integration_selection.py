@@ -7,6 +7,7 @@ import pytest
 import integration_selection
 import johndrop_bot
 import marketplace_category
+import server
 import submission_confirmation
 import trimpro_bot
 
@@ -277,10 +278,11 @@ class CatalogCard:
 
 
 class CatalogVerificationPage:
-    def __init__(self, states, cards_by_refresh, empty_states=None):
+    def __init__(self, states, cards_by_refresh, empty_states=None, texts=None):
         self.states = states
         self.cards_by_refresh = cards_by_refresh
         self.empty_states = empty_states or [False]
+        self.texts = texts or [""]
         self.refreshes = 0
         self.waits = []
 
@@ -291,6 +293,9 @@ class CatalogVerificationPage:
         if script == submission_confirmation._CATALOG_EMPTY_STATE_PROBE:
             empty_index = min(max(self.refreshes - 1, 0), len(self.empty_states) - 1)
             return {"readable_empty": self.empty_states[empty_index]}
+        if script == submission_confirmation._CATALOG_TEXT_PROBE:
+            text_index = min(max(self.refreshes - 1, 0), len(self.texts) - 1)
+            return self.texts[text_index]
         raise AssertionError("unexpected catalog probe")
 
     async def query_selector_all(self, _selector):
@@ -397,6 +402,88 @@ def test_silent_submission_is_inconclusive_when_empty_catalog_cannot_be_read():
 def test_catalog_source_match_does_not_confuse_a_source_id_prefix():
     assert submission_confirmation._reference_contains_source("/createv2/123", "", "12") is False
     assert submission_confirmation._reference_contains_source("/createv2/12?x=1", "", "12") is True
+
+
+def test_read_only_catalog_review_reports_a_visible_historic_sku_without_confirming_it():
+    page = CatalogVerificationPage(
+        [{"catalog": True, "without_integration_filter": True}],
+        [[CatalogCard('/dashboard/product/createv2/123')]],
+        texts=["Rádio Retrô Portátil Bluetooth KA-8705"],
+    )
+
+    result = asyncio.run(submission_confirmation.inspect_catalog_identifier(
+        page,
+        identifier="KA-8705",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result == {
+        "confirmed": False,
+        "found": True,
+        "detail": "identificador ainda aparece em 'Todos que eu não cadastrei'",
+        "uncertain": False,
+        "identifier_type": "text",
+    }
+    assert page.refreshes == 1
+
+
+def test_read_only_catalog_review_never_confirms_an_old_sku_from_text_absence():
+    page = CatalogVerificationPage(
+        [
+            {"catalog": True, "without_integration_filter": True},
+            {"catalog": True, "without_integration_filter": True},
+        ],
+        [[], []],
+        empty_states=[True, True],
+        texts=["Nenhum produto", "Nenhum produto"],
+    )
+
+    result = asyncio.run(submission_confirmation.inspect_catalog_identifier(
+        page,
+        identifier="KA-8705",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result["confirmed"] is False
+    assert result["found"] is False
+    assert result["uncertain"] is True
+    assert "ausência não confirma cadastro" in result["detail"]
+    assert page.refreshes == 2
+
+
+def test_read_only_catalog_review_only_confirms_absence_for_an_explicit_source_url():
+    page = CatalogVerificationPage(
+        [
+            {"catalog": True, "without_integration_filter": True},
+            {"catalog": True, "without_integration_filter": True},
+        ],
+        [[], []],
+        empty_states=[True, True],
+    )
+
+    result = asyncio.run(submission_confirmation.inspect_catalog_identifier(
+        page,
+        identifier="/dashboard/product/createv2/123",
+        refresh_catalog=_refresh_catalog,
+        card_selector="a[href*='createv2']",
+    ))
+
+    assert result == {
+        "confirmed": True,
+        "detail": "fonte ausente em duas consultas do catálogo sem integração",
+        "uncertain": False,
+        "found": False,
+        "identifier_type": "source",
+    }
+
+
+def test_both_read_only_catalog_review_routes_are_exposed_without_a_panel_change():
+    routes = {route.path for route in server.app.routes}
+
+    assert "/api/robot/submission-review/check" in routes
+    assert "/api/trimpro/submission-review/check" in routes
 
 
 @pytest.mark.parametrize("bot_module", [johndrop_bot, trimpro_bot])
