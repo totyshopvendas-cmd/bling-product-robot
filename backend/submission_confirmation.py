@@ -97,6 +97,11 @@ _CATALOG_EMPTY_STATE_PROBE = r"""
 }
 """
 
+_CATALOG_TEXT_PROBE = r"""
+() => (document.querySelector('main, .content-page, .content, body')?.innerText || '')
+    .replace(/\s+/g, ' ').trim().slice(0, 200000)
+"""
+
 
 async def _catalog_content_is_readable(page, cards: list) -> bool:
     """Require cards or an explicit empty state before trusting an absence.
@@ -229,6 +234,131 @@ async def confirm_silent_submission_from_catalog(
         "confirmed": True,
         "detail": "fonte ausente em duas consultas do catálogo sem integração",
         "uncertain": False,
+    }
+
+
+async def inspect_catalog_identifier(
+    page,
+    *,
+    identifier: str,
+    refresh_catalog,
+    card_selector: str,
+) -> dict:
+    """Read a supplier catalog twice without creating or changing a product.
+
+    An explicit ``createv2/<id>`` source URL can use the strict
+    absence-based confirmation routine. A SKU/title is useful for reviewing an
+    older run whose source ID was not retained, but an absent text match is
+    intentionally *not* treated as confirmation: it cannot prove which source
+    card existed before that historic click.
+    """
+    requested = str(identifier or "").strip()
+    if not requested:
+        return {
+            "confirmed": False,
+            "found": False,
+            "detail": "informe um SKU, título ou identificador da fonte para conferir",
+            "uncertain": True,
+        }
+
+    # Never infer that a numeric SKU is a supplier source ID. Only an explicit
+    # create-form URL is allowed to take the absence-as-success path.
+    source_match = re.search(r"createv2/(\d+)(?:[/?#].*)?$", requested)
+    if source_match:
+        result = await confirm_silent_submission_from_catalog(
+            page,
+            source_href=requested if "createv2/" in requested else "",
+            source_key=source_match.group(1),
+            refresh_catalog=refresh_catalog,
+            card_selector=card_selector,
+        )
+        return {
+            **result,
+            "found": result.get("detail") == "a fonte ainda aparece em 'Todos que eu não cadastrei'",
+            "identifier_type": "source",
+        }
+
+    needle = requested.casefold()
+    for attempt in range(2):
+        try:
+            await refresh_catalog(page)
+        except Exception as exc:
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": f"não foi possível conferir o catálogo: {str(exc)[:150]}",
+                "uncertain": True,
+            }
+
+        state = await _catalog_filter_state(page)
+        if not state["catalog"] or not state["without_integration_filter"]:
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": "catálogo sem o filtro 'Todos que eu não cadastrei'; confirmação bloqueada",
+                "uncertain": True,
+            }
+
+        try:
+            cards = await page.query_selector_all(card_selector)
+        except Exception as exc:
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": f"não foi possível ler os cartões do catálogo: {str(exc)[:150]}",
+                "uncertain": True,
+            }
+
+        if not await _catalog_content_is_readable(page, cards):
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": "leitura do catálogo inconclusiva; confirmação bloqueada",
+                "uncertain": True,
+            }
+
+        references = [await _card_reference(card) for card in cards]
+        if cards and any("createv2/" not in reference for reference in references):
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": "cartão do catálogo sem identificador legível; confirmação bloqueada",
+                "uncertain": True,
+            }
+        try:
+            catalog_text = await page.evaluate(_CATALOG_TEXT_PROBE)
+        except Exception:
+            catalog_text = ""
+        readable_text = str(catalog_text or "")
+        if not readable_text:
+            return {
+                "confirmed": False,
+                "found": False,
+                "detail": "texto do catálogo não pôde ser lido; confirmação bloqueada",
+                "uncertain": True,
+            }
+        searchable = " ".join([readable_text, *references]).casefold()
+        if needle in searchable:
+            return {
+                "confirmed": False,
+                "found": True,
+                "detail": "identificador ainda aparece em 'Todos que eu não cadastrei'",
+                "uncertain": False,
+                "identifier_type": "text",
+            }
+
+        if attempt == 0:
+            try:
+                await page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+    return {
+        "confirmed": False,
+        "found": False,
+        "detail": "identificador não localizado em duas consultas; sem o ID da fonte anterior, ausência não confirma cadastro",
+        "uncertain": True,
+        "identifier_type": "text",
     }
 
 

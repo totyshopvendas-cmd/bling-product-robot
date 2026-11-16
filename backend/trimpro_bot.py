@@ -31,6 +31,7 @@ from marketplace_category import ensure_required_marketplace_category
 from submission_confirmation import (
     confirm_silent_submission_from_catalog,
     confirm_supplier_submission,
+    inspect_catalog_identifier,
 )
 from robot_service import RobotState, add_log as _base_add_log
 from db import db
@@ -564,6 +565,50 @@ async def diagnose_integration_controls() -> dict:
                 await browser.close()
     except Exception as exc:
         return {"ok": False, "detail": f"Diagnóstico TrimPro falhou: {str(exc)[:220]}"}
+
+
+async def inspect_catalog_review(identifier: str) -> dict:
+    """Safely inspect one TrimPro catalog identifier without a cadastro.
+
+    This opens only the supplier catalog and reapplies its normal pending-item
+    filter. It never opens a product form, selects an integration, writes a
+    no-repeat key, queues enrichment, or clicks ``Criar Produto``.
+    """
+    if trimpro_robot.state == "running" or (trimpro_robot.task and not trimpro_robot.task.done()):
+        return {"ok": False, "detail": "Robô TrimPro está em execução"}
+    creds = await _get_credentials()
+    if not creds or not creds.get("username") or not creds.get("password"):
+        return {"ok": False, "detail": "Credenciais TrimPro não configuradas"}
+    if not chromium_status().get("installed"):
+        return {"ok": False, "detail": "Chromium não está pronto"}
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return {"ok": False, "detail": "Playwright não está disponível"}
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                context = await browser.new_context(viewport={"width": 1366, "height": 900})
+                page = await context.new_page()
+                if not await _login_trimpro(page, creds["username"], creds["password"]):
+                    return {"ok": False, "detail": "Login TrimPro falhou"}
+                result = await inspect_catalog_identifier(
+                    page,
+                    identifier=identifier,
+                    refresh_catalog=_open_catalog,
+                    card_selector=CARD_SELECTOR,
+                )
+                return {"ok": not result.get("uncertain", False), "supplier": "trimpro", "read_only": True, **result}
+            finally:
+                await browser.close()
+    except Exception as exc:
+        return {"ok": False, "detail": f"Conferência TrimPro falhou: {str(exc)[:220]}"}
 
 
 async def _clean_sku_field(page) -> Optional[str]:
